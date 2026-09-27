@@ -14,6 +14,7 @@ import { fastifyStatic } from '@fastify/static';
 import { fastifyMultipart } from '@fastify/multipart';
 import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
+import argon2 from 'argon2';
 
 import { mkdirSync } from 'fs';
 import { config } from './config';
@@ -425,6 +426,28 @@ let webhookRetryInterval: NodeJS.Timeout | null = null;
 
 const start = async () => {
   try {
+    const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    const adminPassword = (process.env.ADMIN_PASSWORD || process.env.SEED_ADMIN_PASSWORD)?.trim();
+    if (adminEmail && adminPassword) {
+      const passwordHash = await argon2.hash(adminPassword);
+      await prisma.user.upsert({
+        where: { email: adminEmail },
+        update: { passwordHash, role: 'ADMIN', adminRole: 'SUPER_ADMIN', isBlocked: false },
+        create: {
+          email: adminEmail,
+          phone: process.env.ADMIN_PHONE?.trim() || '+998900000001',
+          passwordHash,
+          name: process.env.ADMIN_NAME?.trim() || 'Администратор AVERON',
+          role: 'ADMIN',
+          adminRole: 'SUPER_ADMIN',
+          verified: true,
+        },
+      });
+      server.log.info({ email: adminEmail }, 'Super admin account synchronized from environment');
+    } else {
+      server.log.warn('ADMIN_EMAIL and ADMIN_PASSWORD are not set; admin bootstrap skipped');
+    }
+
     await server.listen({ port: config.PORT, host: '0.0.0.0' });
     server.log.info(`✅ Server listening on port ${config.PORT} (${config.NODE_ENV})`);
 

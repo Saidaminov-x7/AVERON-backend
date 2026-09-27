@@ -6,7 +6,8 @@ import { FastifyBaseLogger } from 'fastify';
 import { config } from '../config';
 
 function getTelegramApiBase(): string | null {
-  return config.TELEGRAM_BOT_TOKEN ? `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}` : null;
+  const token = config.TELEGRAM_TOKEN_2FA || config.TELEGRAM_BOT_TOKEN;
+  return token ? `https://api.telegram.org/bot${token}` : null;
 }
 
 const REDIS_CHAT_ID_KEY = 'telegram:admin:chat_id';
@@ -27,7 +28,7 @@ export async function sendTelegramMessage(
   const apiBase = getTelegramApiBase();
   if (!apiBase) {
     if (logger) {
-      logger.warn('[Telegram] TELEGRAM_BOT_TOKEN is not configured. Message skipped.');
+      logger.warn('[Telegram] TELEGRAM_TOKEN_2FA is not configured. Message skipped.');
     }
     return false;
   }
@@ -87,7 +88,7 @@ export async function sendTelegram2FACode(
 
   const timeString = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const message = `
-🔐 <b>Код подтверждения для входа в Админ-панель Ijarauz</b>
+🔐 <b>Код подтверждения для входа в AVERON Admin</b>
 
 Ваш одноразовый код: <code>${code}</code>
 
@@ -106,8 +107,8 @@ export async function sendTelegram2FACode(
  * Запуск Long Polling для обработки команд бота (/start)
  */
 export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
-  if (!config.TELEGRAM_BOT_TOKEN) {
-    logger?.warn('[Telegram] TELEGRAM_BOT_TOKEN not configured. Bot polling skipped.');
+  if (!config.TELEGRAM_TOKEN_2FA && !config.TELEGRAM_BOT_TOKEN) {
+    logger?.warn('[Telegram] TELEGRAM_TOKEN_2FA not configured. Bot polling skipped.');
     return;
   }
 
@@ -149,6 +150,12 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
             const chatId = msg.chat.id;
             const firstName = msg.from?.first_name || 'Администратор';
 
+            // Если владелец задан в Railway, бот полностью игнорирует всех остальных.
+            if (config.TELEGRAM_ADMIN_CHAT_ID && String(chatId) !== config.TELEGRAM_ADMIN_CHAT_ID) {
+              logger?.warn({ chatId }, '[Telegram] Ignored message from unauthorized chat');
+              continue;
+            }
+
             if (text.startsWith('/start')) {
               const currentBoundId = await redis.get(REDIS_CHAT_ID_KEY);
               // Всегда актуализируем chat ID
@@ -160,7 +167,7 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
                 const welcomeMsg = `
 👋 Здравствуйте, <b>${firstName}</b>!
 
-✅ <b>Ваш Telegram успешно привязан к системе безопасности Ijarauz!</b>
+✅ <b>Ваш Telegram успешно привязан к системе безопасности AVERON!</b>
 Ваш Chat ID (<code>${chatId}</code>) сохранен в системе.
 Теперь бот будет присылать 6-значные коды 2FA только при попытке входа в админ-панель.
 `.trim();

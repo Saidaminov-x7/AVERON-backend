@@ -20,6 +20,7 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
 
   // Telegram 2FA & Notification Bot
+  TELEGRAM_TOKEN_2FA: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_ADMIN_CHAT_ID: z.string().optional(),
 

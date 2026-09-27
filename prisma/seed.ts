@@ -14,7 +14,8 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🌱 Starting safe idempotent database seed...');
 
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD?.trim() || 'admin1';
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase() || 'vosilhojasaidaminov@gmail.com';
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD?.trim() || process.env.ADMIN_PASSWORD?.trim() || 'admin1';
 
   // Хэширование пароля супер-администратора (argon2 hash)
   const superAdminPasswordHash = await argon2.hash(adminPassword);
@@ -23,7 +24,7 @@ async function main() {
   console.log('Ensuring Super Admin account exists...');
 
   const superAdmin = await prisma.user.upsert({
-    where: { email: 'vosilhojasaidaminov@gmail.com' },
+    where: { email: adminEmail },
     update: {
       role: Role.ADMIN,
       adminRole: AdminRole.SUPER_ADMIN,
@@ -31,7 +32,7 @@ async function main() {
       isBlocked: false,
     },
     create: {
-      email: 'vosilhojasaidaminov@gmail.com',
+      email: adminEmail,
       phone: '+998900000001',
       passwordHash: superAdminPasswordHash,
       name: 'Восилхожа Саидаминов',
@@ -41,13 +42,7 @@ async function main() {
     },
   });
 
-  // Удаляем всех остальных пользователей кроме супер-администратора
-  console.log('Cleaning up other users...');
-  await prisma.user.deleteMany({
-    where: {
-      email: { not: 'vosilhojasaidaminov@gmail.com' },
-    },
-  });
+  // Пользовательские аккаунты никогда не удаляются во время seed/deploy.
 
   // ─── 2. Настройки сайта (singleton) ────
   console.log('Ensuring SiteSettings singleton exists...');
@@ -59,8 +54,8 @@ async function main() {
       id: 'singleton',
       maintenanceMode: false,
       maintenanceMessage: 'Сайт временно недоступен. Мы проводим технические работы. Попробуйте позже.',
-      siteName: 'Ijarauz',
-      contactEmail: 'support@ijarauz.uz',
+      siteName: 'AVERON',
+      contactEmail: 'support@averon.uz',
       contactPhone: '+998 71 200-00-00',
       googleAuthEnabled: true,
       autoModerationEnabled: false,
@@ -300,7 +295,7 @@ async function main() {
   console.log('✅ Safe Seed completed successfully!');
   console.log('');
   console.log('--- Аккаунт администратора ---');
-  console.log(`Email:    vosilhojasaidaminov@gmail.com`);
+  console.log(`Email:    ${adminEmail}`);
   console.log(`Пароль:   [установлен из переменной SEED_ADMIN_PASSWORD]`);
   console.log(`Роль:     SUPER_ADMIN`);
 }
