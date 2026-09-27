@@ -1,0 +1,14 @@
+{
+  "name": "@ijarauz/shared-types",
+  "version": "1.0.0",
+  "description": "Общие типы и интерфейсы для фронтенда и бэкенда платформы Ijarauz",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

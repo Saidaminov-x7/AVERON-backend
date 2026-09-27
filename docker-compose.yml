@@ -1,0 +1,125 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: ijarauz_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ijarauz
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ijarauz_network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: ijarauz_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ijarauz_network
+
+  # Ollama (локальный LLM)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ijarauz_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ijarauz_network
+
+  # Node.js API
+  api:
+    build:
+      context: .
+      dockerfile: ./apps/api/Dockerfile
+    container_name: ijarauz_api
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ijarauz
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: supersecret_jwt_key_for_dev_only
+      REFRESH_SECRET: supersecret_refresh_key_for_dev_only
+      ENCRYPTION_KEY: 32_byte_encryption_key_for_dev_only_1234567890
+      OLLAMA_BASE_URL: http://ollama:11434
+      AI_SERVICE_URL: http://ai-service:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app/apps/api
+      - /app/apps/api/node_modules
+    networks:
+      - ijarauz_network
+
+  # Python AI Service
+  ai-service:
+    build:
+      context: .
+      dockerfile: ./apps/ai-service/Dockerfile
+    container_name: ijarauz_ai_service
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      ollama:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/ai-service:/app/apps/ai-service
+      - /app/apps/ai-service/.venv
+    networks:
+      - ijarauz_network
+
+  # Prometheus для метрик
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ijarauz_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - ijarauz_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+
+networks:
+  ijarauz_network:
+    driver: bridge

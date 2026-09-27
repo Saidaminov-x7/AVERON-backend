@@ -1,0 +1,14 @@
+# apps/ai-service/.dockerignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+venv
+.venv
+.env
+.env.*
+!.env.example
+*.log
+.pytest_cache

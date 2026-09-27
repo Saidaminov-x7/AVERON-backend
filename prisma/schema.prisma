@@ -1,0 +1,1075 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========== ENUMS ==========
+
+enum Role {
+  USER
+  LANDLORD
+  ADMIN
+}
+
+/// Роли внутри административной панели
+enum AdminRole {
+  SUPER_ADMIN // Полный доступ ко всем настройкам, сотрудникам, maintenance
+  ADMIN // Модерация, пользователи, аналитика, CMS (без сотрудников)
+  MODERATOR // Модерация объявлений, просмотр пользователей
+  SUPPORT // Read-only доступ к объявлениям и пользователям
+}
+
+enum ListingType {
+  APARTMENT
+  HOUSE
+  ROOM
+  COMMERCIAL
+  LAND
+}
+
+enum ListingStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+  DELETED
+}
+
+/// Уровни продвижения (Boost/VIP)
+enum PromotionTier {
+  BASIC // вверху своей категории
+  TOP // топ всей выдачи + бейдж
+  URGENT // бейдж "Срочно" + подсветка карточки
+}
+
+/// Статус модерации объявления (отдельный от ListingStatus)
+enum ModerationStatus {
+  PENDING // Ожидает модерации
+  APPROVED // Одобрено
+  REJECTED // Отклонено
+  CHANGES_REQUESTED // Запрошены правки у автора
+}
+
+enum PurchaseStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum BackupType {
+  MANUAL
+  SCHEDULED
+}
+
+enum BackupStatus {
+  COMPLETED
+  FAILED
+}
+
+enum ReportReason {
+  SCAM
+  ALREADY_RENTED
+  WRONG_PRICE
+  WRONG_PHOTOS
+  DUPLICATE
+  REALTOR
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum Amenity {
+  WIFI
+  PARKING
+  ELEVATOR
+  AIR_CONDITIONING
+  HEATING
+  BALCONY
+  PETS_ALLOWED
+  SECURITY
+  FURNITURE
+  KITCHEN
+  WASHING_MACHINE
+  GYM
+  POOL
+  SAUNA
+}
+
+enum MessageReadStatus {
+  DELIVERED
+  READ
+}
+
+enum ViewingStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  COMPLETED
+}
+
+// ========== MODELS ==========
+
+model User {
+  id               String     @id @default(uuid())
+  email            String     @unique
+  phone            String     @unique
+  passwordHash     String
+  name             String
+  avatar           String?
+  role             Role       @default(USER)
+  adminRole        AdminRole? // Роль сотрудника в админке
+  lastLoginAt      DateTime? // Дата последнего входа
+  verified         Boolean    @default(false)
+  isBlocked        Boolean    @default(false) // Заблокирован ли пользователь
+  blockedAt        DateTime? // Дата блокировки
+  blockedReason    String? // Причина блокировки
+  refreshTokenHash String?
+  twoFactorSecret  String? // TOTP / 2FA секрет
+  twoFactorEnabled Boolean    @default(false) // Включен ли 2FA
+  isDeleted        Boolean    @default(false) // Soft-delete флаг
+  deletedAt        DateTime? // Дата мягкого удаления
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  listings             Listing[]
+  favorites            Favorite[]
+  savedSearches        SavedSearch[]
+  reportsSubmitted     ListingReport[]     @relation("ReportedByUser")
+  viewingRequests      ViewingRequest[]
+  sentMessages         ChatMessage[]       @relation("Sender")
+  receivedMessages     ChatMessage[]       @relation("Recipient")
+  aiSessions           AISession[]
+  media                Media[]
+  auditLogs            AuditLog[]
+  siteSettingsUpdates  SiteSettings[]      @relation("SiteSettingsUpdater")
+  themeSettingsUpdates ThemeSettings[]
+  pages                Page[]
+  createdSections      PageSection[]       @relation("SectionCreator")
+  notifications        AdminNotification[] @relation("AdminNotifications")
+  userActivityLogs     UserActivityLog[]
+  reviewsWritten       Review[]            @relation("ReviewAuthor")
+  reviewsReceived      Review[]            @relation("LandlordReviews")
+  promoCodeUsages      PromoCodeUsage[]
+
+  @@index([email])
+  @@index([phone])
+  @@index([role])
+  @@index([adminRole])
+  @@index([isBlocked])
+  @@index([isDeleted])
+}
+
+model Listing {
+  id               String           @id @default(uuid())
+  ownerId          String
+  owner            User             @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title            String
+  description      String
+  price            Decimal          @db.Decimal(12, 2)
+  type             ListingType
+  rooms            Int
+  area             Decimal          @db.Decimal(10, 2)
+  floor            Int?
+  totalFloors      Int?
+  lat              Float?
+  lng              Float?
+  city             String
+  district         String
+  address          String?
+  amenities        Amenity[]
+  images           Media[]
+  status           ListingStatus    @default(DRAFT)
+  moderationStatus ModerationStatus @default(PENDING) // Статус модерации
+  moderationNote   String? // Комментарий/причина при модерации
+  viewsCount       Int              @default(0)
+  isDeleted        Boolean          @default(false) // Soft-delete флаг
+  deletedAt        DateTime? // Дата мягкого удаления
+
+  // Продвижение и VIP
+  isPromoted    Boolean        @default(false)
+  promotedUntil DateTime?
+  promotionTier PromotionTier?
+
+  // Верификация Ijarauz
+  isVerified Boolean   @default(false)
+  verifiedAt DateTime?
+  verifiedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  favorites       Favorite[]
+  messages        ChatMessage[]
+  reports         ListingReport[]
+  priceHistory    PriceHistory[]
+  viewingRequests ViewingRequest[]
+  purchases       PromotionPurchase[]
+  reviews         Review[]
+
+  @@index([ownerId])
+  @@index([city])
+  @@index([district])
+  @@index([price])
+  @@index([rooms])
+  @@index([status])
+  @@index([moderationStatus])
+  @@index([type])
+  @@index([isPromoted, promotedUntil])
+  @@index([isVerified])
+  @@index([isDeleted])
+  @@index([createdAt])
+  @@index([viewsCount])
+  @@index([city, district, type, status, price])
+}
+
+model Favorite {
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, listingId])
+  @@index([userId])
+  @@index([listingId])
+}
+
+model SavedSearch {
+  id             String    @id @default(uuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  filters        Json // { city, district, minPrice, maxPrice, rooms, type, amenities }
+  isActive       Boolean   @default(true)
+  lastNotifiedAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+model ListingReport {
+  id         String       @id @default(uuid())
+  listingId  String
+  listing    Listing      @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  reporterId String?
+  reporter   User?        @relation("ReportedByUser", fields: [reporterId], references: [id], onDelete: SetNull)
+  reason     ReportReason
+  comment    String?
+  status     ReportStatus @default(OPEN)
+  createdAt  DateTime     @default(now())
+
+  @@index([listingId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model PriceHistory {
+  id        String   @id @default(uuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  price     Decimal  @db.Decimal(12, 2)
+  changedAt DateTime @default(now())
+
+  @@index([listingId])
+  @@index([changedAt])
+}
+
+model ChatMessage {
+  id          String            @id @default(uuid())
+  senderId    String
+  sender      User              @relation("Sender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipientId String
+  recipient   User              @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  listingId   String?
+  listing     Listing?          @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  message     String
+  readStatus  MessageReadStatus @default(DELIVERED)
+  createdAt   DateTime          @default(now())
+
+  @@index([senderId])
+  @@index([recipientId])
+  @@index([listingId])
+  @@index([createdAt])
+}
+
+model Review {
+  id          String           @id @default(uuid())
+  authorId    String
+  author      User             @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  listingId   String?
+  listing     Listing?         @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  landlordId  String?
+  landlord    User?            @relation("LandlordReviews", fields: [landlordId], references: [id], onDelete: Cascade)
+  rating      Int              @default(5)
+  comment     String
+  status      ModerationStatus @default(PENDING)
+  moderatedAt DateTime?
+  moderatedBy String?
+  createdAt   DateTime         @default(now())
+
+  @@index([authorId])
+  @@index([listingId])
+  @@index([landlordId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AISession {
+  id        String          @id @default(uuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String          @default("New Chat")
+  messages  AIChatMessage[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([userId])
+}
+
+model AIChatMessage {
+  id        String    @id @default(uuid())
+  sessionId String
+  session   AISession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String // "user" | "assistant"
+  content   String
+  model     String    @default("llama3")
+  timestamp DateTime  @default(now())
+
+  @@index([sessionId])
+  @@index([timestamp])
+}
+
+model Media {
+  id        String   @id @default(uuid())
+  url       String
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  mimeType  String
+  size      Int
+  width     Int?
+  height    Int?
+  hash      String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([ownerId])
+  @@index([listingId])
+  @@index([hash])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String // Тип действия: LISTING_APPROVED, USER_BLOCKED, SETTINGS_UPDATED и т.д.
+  resource   String? // Тип ресурса: listing, user, page, settings
+  resourceId String? // ID ресурса
+  meta       Json? // Дополнительные данные (причина, старое/новое значение)
+  ip         String?
+  userAgent  String?
+  timestamp  DateTime @default(now())
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([action])
+  @@index([resource])
+}
+
+/// Настройки сайта — singleton-запись (id всегда "singleton")
+model SiteSettings {
+  id                    String  @id @default("singleton")
+  maintenanceMode       Boolean @default(false)
+  maintenanceMessage    String?
+  siteName              String  @default("AVERON")
+  contactEmail          String  @default("support@averon.uz")
+  contactPhone          String  @default("+998 71 200-00-00")
+  googleAuthEnabled     Boolean @default(true)
+  autoModerationEnabled Boolean @default(false)
+  maxImagesPerListing   Int     @default(10)
+  listingsPerPage       Int     @default(10) // Количество объявлений на странице в админке
+  logoUrl               String? // URL логотипа платформы
+  logoMediaKey          String? // Ключ медиа-файла для удаления в Cloudinary/storage
+  vipBoostEnabled       Boolean @default(true) // Feature-flag: VIP буст
+  verificationEnabled   Boolean @default(true) // Feature-flag: верификация
+  navLinks              Json? // Навигационные ссылки для шапки/подвала
+
+  // === РАСШИРЕННЫЕ FEATURE FLAGS & ИНТЕГРАЦИИ (1, 2, 3, 4, 6, 7, 8, 9, 10, 16, 18, 31, 26, 35, 37, 41, 47) ===
+  deviceIpBanEnabled         Boolean @default(false) // 1. Авто-бан по Device & IP
+  adaptiveRateLimitEnabled   Boolean @default(true) // 2. Адаптивный Rate Limiting / DDoS защита
+  twoFactorAuthEnabled       Boolean @default(false) // 3. Двухфакторная аутентификация (2FA / TOTP)
+  geoIpValidationEnabled     Boolean @default(false) // 4. Валидация геолокации по IP
+  tokenRotationEnabled       Boolean @default(true) // 6. Ротация Refresh токенов & Revocation
+  fieldEncryptionEnabled     Boolean @default(true) // 7. Field-Level Encryption
+  sessionQuarantineEnabled   Boolean @default(false) // 8. Авто-карантин подозрительных сессий
+  thunderingHerdEnabled      Boolean @default(true) // 9. Thundering Herd защита кэша
+  fullTextSearchEnabled      Boolean @default(true) // 10. Полнотекстовый поиск с морфологией
+  paymeClickEnabled          Boolean @default(false) // 16. Платежные шлюзы Payme / Click
+  autoFiscalizationEnabled   Boolean @default(false) // 18. Авто-фискализация чеков (Soliq OFD)
+  smsGatewayEnabled          Boolean @default(false) // 31. SMS-шлюз (Eskiz / PlayMobile)
+  watermarkDetectorEnabled   Boolean @default(false) // 26. Детектор водяных знаков на фото
+  webPushEnabled             Boolean @default(false) // 35. Web Push уведомления
+  oneIdAuthEnabled           Boolean @default(false) // 37. Верификация через OneID
+  yandexRealtyXmlEnabled     Boolean @default(true) // 41. Генератор Yandex Realty XML фида
+  openTelemetryEnabled       Boolean @default(true) // 47. Трассировка OpenTelemetry
+  yandexMetrikaId            String  @default("112059980") // ID счетчика Яндекс.Метрики
+  yandexMetrikaEnabled       Boolean @default(true) // Включить/выключить Яндекс.Метрику
+  maintenanceBypassPassword  String? // Пароль для обхода режима техобслуживания
+  maintenancePasswordEnabled Boolean @default(false) // Требовать пароль при техобслуживании
+  mobilePinchZoomEnabled     Boolean @default(true) // Масштабирование двумя пальцами на смартфонах
+
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+  updatedBy   User?    @relation("SiteSettingsUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+}
+
+/// Дизайн-токены для темы самой ПАНЕЛИ АДМИНИСТРАТОРА (независимо от темы сайта)
+model AdminThemeSettings {
+  id              String   @id @default("singleton")
+  primaryColor    String   @default("#2563eb")
+  secondaryColor  String   @default("#1d4ed8")
+  backgroundColor String   @default("#0f0f0f")
+  textColor       String   @default("#f1f5f9")
+  borderRadius    String   @default("0.5rem")
+  fontFamily      String   @default("Inter, sans-serif")
+  updatedById     String?
+  updatedAt       DateTime @updatedAt
+}
+
+/// Дизайн-токены для темы сайта
+model ThemeSettings {
+  id              String   @id @default("singleton")
+  primaryColor    String   @default("#a97724")
+  secondaryColor  String   @default("#151812")
+  backgroundColor String   @default("#f8f7f2")
+  textColor       String   @default("#171712")
+  borderRadius    String   @default("0.75rem") // rounded-xl
+  fontFamily      String   @default("Inter, sans-serif")
+  updatedAt       DateTime @updatedAt
+  updatedById     String?
+  updatedBy       User?    @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+}
+
+/// Динамические страницы сайта, создаваемые из админки
+model Page {
+  id                 String   @id @default(uuid())
+  slug               String   @unique // Используется в URL /pages/:slug
+  title              String
+  content            String // Markdown текст страницы
+  locale             String   @default("ru") // ru/uz/en
+  isPublished        Boolean  @default(false)
+  isUnderMaintenance Boolean  @default(false) // Страница на обслуживании
+  authorId           String?
+  author             User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([slug])
+  @@index([isPublished])
+  @@index([locale])
+}
+
+/// Лог уникальных визитов для честной аналитики без задваивания
+model VisitLog {
+  id        String   @id @default(uuid())
+  deviceId  String // Уникальный персистентный идентификатор устройства (UUID из localStorage)
+  dayKey    String // Ключ дня в формате "YYYY-MM-DD" для быстрой дедупликации
+  path      String // Путь посещенной страницы
+  ip        String? // IP-адрес
+  userAgent String? // User-Agent браузера
+  createdAt DateTime @default(now())
+
+  @@unique([deviceId, dayKey]) // Гарантия: одно устройство считается 1 раз в сутки
+  @@index([dayKey])
+  @@index([createdAt])
+  @@index([path])
+}
+
+/// Секции конструктора страниц (Page Builder / CMS)
+model PageSection {
+  id                 String   @id @default(uuid())
+  pageKey            String   @default("home") // Ключ страницы ("home" для главной)
+  sectionType        String // HERO_SEARCH, BENEFITS, POPULAR_LISTINGS, CTA_BANNER, CATEGORIES
+  title              String? // Название секции (для админки)
+  order              Int      @default(0) // Порядок отображения (0, 1, 2...)
+  isVisible          Boolean  @default(true) // Видимость на сайте
+  isUnderMaintenance Boolean  @default(false) // Секция на обслуживании
+  layoutRow          Int?     @default(1) // Номер строки для flex-layout (1, 2, 3...)
+  width              Int?     @default(12) // Ширина секции в колонках (1-12)
+  content            Json // Гибкий JSON с контентом и настройками секции (мультиязычный: { ru, uz, en })
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  updatedById        String?
+  updatedBy          User?    @relation("SectionCreator", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([pageKey, order])
+  @@index([pageKey, isVisible])
+}
+
+/// Системные уведомления для администраторов
+model AdminNotification {
+  id            String   @id @default(uuid())
+  type          String // NEW_LISTING, NEW_USER, LISTING_REPORT, SYSTEM
+  title         String // Заголовок уведомления
+  message       String // Текст сообщения
+  link          String? // Ссылка для перехода в админке
+  isRead        Boolean  @default(false)
+  targetAdminId String? // ID конкретного администратора (null = всем)
+  targetAdmin   User?    @relation("AdminNotifications", fields: [targetAdminId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+
+  @@index([isRead])
+  @@index([createdAt])
+  @@index([targetAdminId])
+}
+
+model ViewingRequest {
+  id            String        @id @default(uuid())
+  listingId     String
+  listing       Listing       @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  requesterId   String
+  requester     User          @relation(fields: [requesterId], references: [id], onDelete: Cascade)
+  status        ViewingStatus @default(PENDING)
+  preferredDate DateTime?
+  message       String?
+  createdAt     DateTime      @default(now())
+
+  @@index([listingId])
+  @@index([requesterId])
+  @@index([status])
+}
+
+model UserActivityLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    String // LOGIN, LOGOUT, REGISTER, LISTING_VIEWED, LISTING_CREATED, MESSAGE_SENT, FAVORITE_ADDED, MEDIA_UPLOADED
+  meta      Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model ClientErrorReport {
+  id        String   @id @default(uuid())
+  message   String
+  stack     String?
+  url       String
+  userAgent String?
+  userId    String?
+  severity  String   @default("error")
+  ip        String?
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([resolved])
+  @@index([createdAt])
+  @@index([severity])
+}
+
+model PromoCode {
+  id              String           @id @default(uuid())
+  code            String           @unique
+  discountPercent Int              @default(10)
+  maxUses         Int              @default(100)
+  usedCount       Int              @default(0)
+  isActive        Boolean          @default(true)
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  usages          PromoCodeUsage[]
+
+  @@index([code])
+  @@index([isActive])
+}
+
+model PromoCodeUsage {
+  id          String    @id @default(uuid())
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usedAt      DateTime  @default(now())
+
+  @@unique([promoCodeId, userId])
+  @@index([userId])
+  @@index([promoCodeId])
+}
+
+model SearchQueryLog {
+  id           String   @id @default(uuid())
+  query        String?
+  city         String?
+  district     String?
+  minPrice     Decimal? @db.Decimal(12, 2)
+  maxPrice     Decimal? @db.Decimal(12, 2)
+  rooms        Int?
+  resultsCount Int      @default(0)
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([city])
+  @@index([district])
+  @@index([createdAt])
+  @@index([resultsCount])
+}
+
+model SystemWebhook {
+  id         String            @id @default(uuid())
+  name       String
+  url        String
+  events     String[] // e.g. ["FRAUD_DETECTED", "REPORT_CREATED", "SYSTEM_ERROR", "PAYMENT_RECEIVED"]
+  isActive   Boolean           @default(true)
+  secret     String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  deliveries WebhookDelivery[]
+
+  @@index([isActive])
+}
+
+model WebhookDelivery {
+  id           String        @id @default(uuid())
+  webhookId    String
+  webhook      SystemWebhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  event        String
+  payload      Json
+  attempts     Int           @default(0)
+  maxAttempts  Int           @default(5)
+  nextRetryAt  DateTime?
+  status       String        @default("PENDING") // PENDING, SUCCESS, FAILED
+  responseCode Int?
+  lastError    String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([webhookId])
+  @@index([status])
+  @@index([nextRetryAt])
+}
+
+model BackupSnapshot {
+  id           String       @id @default(uuid())
+  triggeredBy  String? // adminId, null если по расписанию
+  type         BackupType
+  status       BackupStatus @default(COMPLETED)
+  recordCounts Json // { listings: number, users: number, reports: number }
+  createdAt    DateTime     @default(now())
+
+  @@index([createdAt])
+}
+
+model PromotionPurchase {
+  id        String         @id @default(uuid())
+  listingId String
+  listing   Listing        @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyerId   String
+  tier      PromotionTier
+  amount    Decimal        @db.Decimal(12, 2)
+  currency  String         @default("UZS")
+  status    PurchaseStatus @default(PENDING)
+  paidAt    DateTime?
+  createdAt DateTime       @default(now())
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ========== AVERON COMMERCE DOMAIN ==========
+
+enum ProductSource {
+  SOURCE_1688
+  TAOBAO
+  ALIBABA
+  ALIEXPRESS
+  MANUAL
+}
+
+enum ImportStatus {
+  FETCHED
+  AI_PROCESSING
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum ProductPublicationStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum AveronOrderStatus {
+  CREATED
+  PAID
+  ORDERED_FROM_SUPPLIER
+  SUPPLIER_CONFIRMED
+  IN_TRANSIT_CHINA
+  CARGO_WAREHOUSE
+  INTERNATIONAL_TRANSIT
+  ARRIVED_UZBEKISTAN
+  OUT_FOR_DELIVERY
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentState {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum SupplierPurchaseStatus {
+  WAITING_FOR_PURCHASE
+  PURCHASED
+  SUPPLIER_CONFIRMED
+  SHIPPED
+  IN_TRANSIT
+  ARRIVED
+  CANCELLED
+}
+
+enum ShipmentState {
+  DRAFT
+  IN_TRANSIT_CHINA
+  AT_CARGO_WAREHOUSE
+  INTERNATIONAL_TRANSIT
+  ARRIVED_UZBEKISTAN
+  DELIVERED
+}
+
+enum ExpenseType {
+  PURCHASE
+  CARGO
+  PAYMENT_FEE
+  LOCAL_DELIVERY
+  REFUND
+  PACKAGING
+  MARKETING
+  OTHER
+}
+
+model CommerceCategory {
+  id          String             @id @default(uuid())
+  parentId    String?
+  parent      CommerceCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children    CommerceCategory[] @relation("CategoryTree")
+  slug        String             @unique
+  name        Json
+  description Json?
+  imageUrl    String?
+  sortOrder   Int                @default(0)
+  active      Boolean            @default(true)
+  products    CommerceProduct[]
+  imports     ImportedProduct[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([parentId, sortOrder])
+  @@index([active])
+}
+
+model CommerceProduct {
+  id                String                   @id @default(uuid())
+  categoryId        String?
+  category          CommerceCategory?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  slug              String                   @unique
+  translations      Json
+  description       Json?
+  attributes        Json?
+  material          String?
+  source            ProductSource
+  sourceProductId   String
+  sourceUrl         String
+  originalPriceCny  Decimal                  @db.Decimal(14, 2)
+  exchangeRate      Decimal                  @db.Decimal(14, 4)
+  salePriceUzs      Decimal                  @db.Decimal(16, 2)
+  compareAtPriceUzs Decimal?                 @db.Decimal(16, 2)
+  status            ProductPublicationStatus @default(DRAFT)
+  approvedById      String?
+  approvedAt        DateTime?
+  publishedAt       DateTime?
+  images            CommerceProductImage[]
+  variants          CommerceProductVariant[]
+  orderItems        CommerceOrderItem[]
+  favoriteLinks     ProductFavorite[]
+  alerts            ProductPriceAlert[]
+  importedFrom      ImportedProduct?         @relation(fields: [importedFromId], references: [id], onDelete: SetNull)
+  importedFromId    String?                  @unique
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  @@unique([source, sourceProductId])
+  @@index([status, createdAt])
+  @@index([categoryId, status])
+  @@index([salePriceUzs])
+}
+
+model CommerceProductImage {
+  id        String          @id @default(uuid())
+  productId String
+  product   CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  alt       Json?
+  sortOrder Int             @default(0)
+
+  @@index([productId, sortOrder])
+}
+
+model CommerceProductVariant {
+  id              String              @id @default(uuid())
+  productId       String
+  product         CommerceProduct     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sku             String              @unique
+  sourceVariantId String?
+  color           String?
+  size            String?
+  sourcePriceCny  Decimal             @db.Decimal(14, 2)
+  salePriceUzs    Decimal             @db.Decimal(16, 2)
+  stock           Int                 @default(0)
+  active          Boolean             @default(true)
+  orderItems      CommerceOrderItem[]
+
+  @@index([productId, active])
+}
+
+model ImportedProduct {
+  id                String            @id @default(uuid())
+  source            ProductSource
+  sourceProductId   String
+  sourceUrl         String
+  sellerId          String?
+  originalTitle     String
+  sourcePriceCny    Decimal           @db.Decimal(14, 2)
+  sourceMetadata    Json?
+  normalizedPayload Json
+  aiPayload         Json?
+  aiWarnings        Json?
+  suggestedPriceUzs Decimal?          @db.Decimal(16, 2)
+  expectedCostUzs   Decimal?          @db.Decimal(16, 2)
+  expectedProfitUzs Decimal?          @db.Decimal(16, 2)
+  expectedMargin    Decimal?          @db.Decimal(8, 4)
+  status            ImportStatus      @default(PENDING_REVIEW)
+  categoryId        String?
+  category          CommerceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  reviewedById      String?
+  reviewedAt        DateTime?
+  rejectionReason   String?
+  product           CommerceProduct?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@unique([source, sourceProductId])
+  @@index([status, createdAt])
+  @@index([categoryId])
+}
+
+model CommerceOrder {
+  id              String                       @id @default(uuid())
+  orderNumber     String                       @unique
+  userId          String
+  status          AveronOrderStatus            @default(CREATED)
+  currency        String                       @default("UZS")
+  subtotal        Decimal                      @db.Decimal(16, 2)
+  discount        Decimal                      @default(0) @db.Decimal(16, 2)
+  deliveryCost    Decimal                      @default(0) @db.Decimal(16, 2)
+  totalRevenue    Decimal                      @db.Decimal(16, 2)
+  purchaseCost    Decimal                      @default(0) @db.Decimal(16, 2)
+  cargoCost       Decimal                      @default(0) @db.Decimal(16, 2)
+  paymentFee      Decimal                      @default(0) @db.Decimal(16, 2)
+  otherExpenses   Decimal                      @default(0) @db.Decimal(16, 2)
+  refundAmount    Decimal                      @default(0) @db.Decimal(16, 2)
+  netProfit       Decimal                      @default(0) @db.Decimal(16, 2)
+  contact         Json
+  deliveryAddress Json
+  notes           String?
+  items           CommerceOrderItem[]
+  statusHistory   CommerceOrderStatusHistory[]
+  payments        CommercePayment[]
+  purchases       SupplierPurchase[]
+  expenses        CommerceExpense[]
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model CommerceOrderItem {
+  id         String                  @id @default(uuid())
+  orderId    String
+  order      CommerceOrder           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String
+  product    CommerceProduct         @relation(fields: [productId], references: [id])
+  variantId  String?
+  variant    CommerceProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  title      String
+  quantity   Int
+  unitPrice  Decimal                 @db.Decimal(16, 2)
+  totalPrice Decimal                 @db.Decimal(16, 2)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model CommerceOrderStatusHistory {
+  id        String            @id @default(uuid())
+  orderId   String
+  order     CommerceOrder     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    AveronOrderStatus
+  note      String?
+  actorId   String?
+  createdAt DateTime          @default(now())
+
+  @@index([orderId, createdAt])
+}
+
+model CommercePayment {
+  id          String        @id @default(uuid())
+  orderId     String
+  order       CommerceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider    String
+  providerRef String?
+  amount      Decimal       @db.Decimal(16, 2)
+  currency    String        @default("UZS")
+  status      PaymentState  @default(PENDING)
+  paidAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([orderId, status])
+}
+
+model SupplierPurchase {
+  id               String                 @id @default(uuid())
+  orderId          String
+  order            CommerceOrder          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  source           ProductSource
+  sourceOrderId    String?
+  sourceUrl        String
+  purchasePriceCny Decimal                @db.Decimal(14, 2)
+  quantity         Int
+  variant          Json?
+  seller           Json?
+  trackingNumber   String?
+  status           SupplierPurchaseStatus @default(WAITING_FOR_PURCHASE)
+  shipments        CargoShipmentItem[]
+  expenses         CommerceExpense[]
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  @@index([orderId, status])
+  @@index([trackingNumber])
+}
+
+model CargoShipment {
+  id             String              @id @default(uuid())
+  provider       String              @default("IPOST")
+  trackingNumber String              @unique
+  weightKg       Decimal?            @db.Decimal(10, 3)
+  ratePerKg      Decimal?            @db.Decimal(14, 2)
+  cargoCost      Decimal?            @db.Decimal(16, 2)
+  status         ShipmentState       @default(DRAFT)
+  sentAt         DateTime?
+  arrivedAt      DateTime?
+  notes          String?
+  items          CargoShipmentItem[]
+  expenses       CommerceExpense[]
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model CargoShipmentItem {
+  id            String           @id @default(uuid())
+  shipmentId    String
+  shipment      CargoShipment    @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  purchaseId    String
+  purchase      SupplierPurchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  weightKg      Decimal?         @db.Decimal(10, 3)
+  allocatedCost Decimal?         @db.Decimal(16, 2)
+
+  @@unique([shipmentId, purchaseId])
+}
+
+model CommerceExpense {
+  id          String            @id @default(uuid())
+  type        ExpenseType
+  amount      Decimal           @db.Decimal(16, 2)
+  currency    String
+  description String
+  orderId     String?
+  order       CommerceOrder?    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  purchaseId  String?
+  purchase    SupplierPurchase? @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  shipmentId  String?
+  shipment    CargoShipment?    @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  createdAt   DateTime          @default(now())
+
+  @@index([orderId])
+  @@index([type, createdAt])
+}
+
+model ProductFavorite {
+  userId    String
+  productId String
+  product   CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime        @default(now())
+
+  @@id([userId, productId])
+  @@index([userId])
+}
+
+model ProductPriceAlert {
+  id          String          @id @default(uuid())
+  userId      String
+  productId   String
+  product     CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  targetPrice Decimal         @db.Decimal(16, 2)
+  active      Boolean         @default(true)
+  notifiedAt  DateTime?
+  createdAt   DateTime        @default(now())
+
+  @@index([userId, active])
+  @@index([productId])
+}
+
+model CustomOrderRequest {
+  id              String        @id @default(uuid())
+  userId          String?
+  source          ProductSource
+  sourceUrl       String
+  parsedPayload   Json?
+  selectedVariant Json?
+  quantity        Int           @default(1)
+  contact         Json
+  status          ImportStatus  @default(PENDING_REVIEW)
+  reviewedById    String?
+  reviewedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([status, createdAt])
+  @@index([userId])
+}
