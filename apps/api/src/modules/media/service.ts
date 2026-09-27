@@ -186,7 +186,7 @@ export class MediaService {
     const limit = query.limit && query.limit > 0 ? Math.min(query.limit, 100) : 24;
     const skip = (page - 1) * limit;
     const where = query.mimeType ? { mimeType: { startsWith: query.mimeType } } : {};
-    const [rawItems, total] = await this.prisma.$transaction([
+    const [rawItems, total, storage] = await this.prisma.$transaction([
       this.prisma.media.findMany({
         where,
         skip,
@@ -194,6 +194,7 @@ export class MediaService {
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.media.count({ where }),
+      this.prisma.media.aggregate({ where, _sum: { size: true } }),
     ]);
 
     const items: MediaWithThumbnail[] = rawItems.map((item) => ({
@@ -210,6 +211,7 @@ export class MediaService {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+        totalBytes: storage._sum.size ?? 0,
       },
     };
   }
