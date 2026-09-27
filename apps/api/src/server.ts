@@ -27,6 +27,7 @@ import { themeModule } from './modules/admin/theme';
 import { siteSettingsPublicModule } from './modules/site-settings';
 import { errorReportsModule } from './modules/error-reports';
 import { commerceModule } from './modules/commerce';
+import { aiChatModule } from './modules/ai-chat';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -92,8 +93,23 @@ server.register(fastifyHelmet, {
   },
 });
 
+const trustedProductionOrigins = new Set([
+  ...config.CORS_ORIGINS,
+  'https://averon-frontend-three.vercel.app',
+  'https://averon-admin-panel.vercel.app',
+]);
+
 server.register(fastifyCors, {
-  origin: config.CORS_ORIGINS,
+  origin(origin, callback) {
+    // Requests without Origin are server-to-server/health checks. Browser origins
+    // stay allow-listed; this also prevents a stale Railway variable from breaking
+    // the two official Vercel applications.
+    if (!origin || trustedProductionOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Origin is not allowed by CORS'), false);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 });
@@ -201,6 +217,7 @@ server.register(profileModule, { prefix: '/admin' });
 server.register(themeModule, { prefix: '/admin' });
 server.register(notificationsModule, { prefix: '/admin/notifications' });
 server.register(commerceModule, { prefix: '/api/v1' });
+server.register(aiChatModule, { prefix: '/ai-chat' });
 
 // ─── Публичные эндпоинты (без авторизации) ───────────────────────────────────
 server.register(siteSettingsPublicModule, { prefix: '/site-settings' });

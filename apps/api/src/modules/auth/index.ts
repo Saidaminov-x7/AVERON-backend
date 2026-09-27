@@ -11,8 +11,17 @@ import { googleAuthHandler } from './google';
 import { forgotPasswordHandler, resetPasswordHandler } from './forgot-password';
 import { exportUserDataHandler } from './export';
 import { authMiddleware } from '../../lib/authMiddleware';
+import { requestPhoneOtp, verifyPhoneOtp } from './phone-otp';
 
 export const authModule: FastifyPluginAsync = async (server) => {
+  server.post('/phone/request-code', {
+    config: { rateLimit: { max: 3, timeWindow: '10 minutes', keyGenerator: (req) => `${req.ip}:${(req.body as any)?.phone || 'unknown'}` } },
+  }, requestPhoneOtp);
+
+  server.post('/phone/verify-code', {
+    config: { rateLimit: { max: 10, timeWindow: '10 minutes', keyGenerator: (req) => `${req.ip}:${(req.body as any)?.phone || 'unknown'}` } },
+  }, verifyPhoneOtp);
+
   // Запрос на сброс пароля (rate limit: 5 запросов за 15 минут с одного IP)
   server.post('/forgot-password', {
     config: {
