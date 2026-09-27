@@ -7,7 +7,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc --project tsconfig.json",
+    "build": "prisma generate --schema=../../prisma/schema.prisma && tsc --project tsconfig.json",
     "start": "prisma db push --schema=../../prisma/schema.prisma && node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "prisma:generate": "prisma generate --schema=../../prisma/schema.prisma",
