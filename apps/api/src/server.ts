@@ -226,6 +226,13 @@ server.register(errorReportsModule, { prefix: '/error-reports' });
 
 // ─── Health-check эндпоинты ───────────────────────────────────────────────────
 
+server.get('/', async (_request, reply) => reply.send({
+  name: 'AVERON API',
+  status: 'ok',
+  health: '/health',
+  version: process.env.npm_package_version || '1.0.0',
+}));
+
 // B2: Health с реальной проверкой DB + Redis
 server.get('/health', {
   schema: { tags: ['Health'] },
