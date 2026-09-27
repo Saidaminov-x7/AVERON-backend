@@ -32,7 +32,7 @@ export class CloudinaryStorageAdapter implements IStorageAdapter {
     hash: string;
   }): Promise<StorageUploadResult> {
     const startTime = Date.now();
-    const folder = config.CLOUDINARY_FOLDER || 'ijarauz/listings';
+    const folder = config.CLOUDINARY_FOLDER || 'averon/products';
     const publicId = file.hash.slice(0, 32);
 
     // 1. Клиентская пред-оптимизация через sharp перед загрузкой в облако

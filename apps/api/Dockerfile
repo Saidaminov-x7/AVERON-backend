@@ -75,7 +75,7 @@ RUN chown -R apiuser:nodejs /app
 
 USER apiuser
 
-EXPOSE 3000
+EXPOSE 8080
 
 # dumb-init для правильного forwarding сигналов в Node.js
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
