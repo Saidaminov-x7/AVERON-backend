@@ -1100,9 +1100,9 @@ export class AdminService {
       create: {
         id: 'singleton',
         maintenanceMode: false,
-        siteName: 'Ijarauz',
-        contactEmail: 'support@ijarauz.uz',
-        contactPhone: '+998 71 200-00-00',
+        siteName: 'AVERON',
+        contactEmail: process.env.ADMIN_EMAIL?.trim().toLowerCase() || '',
+        contactPhone: '',
         googleAuthEnabled: true,
         autoModerationEnabled: false,
         maxImagesPerListing: 10,
@@ -1123,9 +1123,9 @@ export class AdminService {
 
     const createData: any = {
       maintenanceMode: dto.maintenanceMode ?? false,
-      siteName: dto.siteName ?? 'Ijarauz',
-      contactEmail: dto.contactEmail ?? 'support@ijarauz.uz',
-      contactPhone: dto.contactPhone ?? '+998 71 200-00-00',
+      siteName: dto.siteName ?? 'AVERON',
+      contactEmail: dto.contactEmail ?? process.env.ADMIN_EMAIL?.trim().toLowerCase() ?? '',
+      contactPhone: dto.contactPhone ?? '',
       googleAuthEnabled: dto.googleAuthEnabled ?? true,
       autoModerationEnabled: dto.autoModerationEnabled ?? false,
       maxImagesPerListing: dto.maxImagesPerListing ?? 10,

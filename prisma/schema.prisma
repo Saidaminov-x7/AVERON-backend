@@ -410,9 +410,9 @@ model SiteSettings {
   maintenanceMode       Boolean @default(false)
   maintenanceMessage    String?
   siteName              String  @default("AVERON")
-  contactEmail          String  @default("support@averon.uz")
-  contactPhone          String  @default("+998 71 200-00-00")
-  googleAuthEnabled     Boolean @default(true)
+  contactEmail          String  @default("")
+  contactPhone          String  @default("")
+  googleAuthEnabled     Boolean @default(false)
   autoModerationEnabled Boolean @default(false)
   maxImagesPerListing   Int     @default(10)
   listingsPerPage       Int     @default(10) // Количество объявлений на странице в админке

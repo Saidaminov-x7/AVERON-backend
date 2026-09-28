@@ -49,7 +49,7 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         maintenanceMessage: null,
         maintenancePasswordEnabled: false,
         siteName: 'AVERON',
-        contactEmail: process.env.ADMIN_EMAIL?.trim().toLowerCase() || 'support@averon.uz',
+        contactEmail: process.env.ADMIN_EMAIL?.trim().toLowerCase() || '',
         contactPhone: '',
         googleAuthEnabled: true,
         autoModerationEnabled: false,
@@ -62,6 +62,19 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         mobilePinchZoomEnabled: true,
       };
     }
+
+    const legacyName = settings.siteName.toLowerCase().includes('ijara');
+    const legacyEmail = settings.contactEmail.toLowerCase().includes('ijarauz');
+    const legacyPhone = settings.contactPhone === '+998 71 200-00-00';
+    settings = {
+      ...settings,
+      siteName: legacyName ? 'AVERON' : settings.siteName,
+      contactEmail: legacyEmail ? '' : settings.contactEmail,
+      contactPhone: legacyPhone ? '' : settings.contactPhone,
+      navLinks: Array.isArray(settings.navLinks)
+        ? settings.navLinks.filter((link: any) => !['/add-listing', '/chat'].includes(String(link?.href || link?.url || '')))
+        : settings.navLinks,
+    };
 
     // 3. Кэшируем в Redis
     await server.redis.set(CACHE_KEY, JSON.stringify(settings), 'EX', CACHE_TTL);

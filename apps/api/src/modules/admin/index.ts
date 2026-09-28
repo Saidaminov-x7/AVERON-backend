@@ -1204,7 +1204,12 @@ export const adminModule: FastifyPluginAsync = async (server) => {
         listing: { select: { id: true, title: true, price: true, city: true } },
       },
     });
-    return reply.send({ messages });
+    const aiSessions = await request.server.prisma.aISession.findMany({
+      where: { userId: id },
+      orderBy: { updatedAt: 'desc' },
+      include: { messages: { orderBy: { timestamp: 'asc' } } },
+    });
+    return reply.send({ messages, aiSessions });
   });
 
   // ─── [ФИЧА: AI-АНАЛИЗАТОР ЖАЛОБЫ И ИСТОРИИ ЧАТОВ] ───────────────────────────

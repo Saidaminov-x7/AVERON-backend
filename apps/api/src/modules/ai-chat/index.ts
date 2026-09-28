@@ -12,6 +12,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
   const publicService = new PublicAIService(server.prisma);
 
   server.post<{ Body: { message: string; history?: Array<{ role: 'user' | 'assistant'; content: string }> } }>('/chat', {
+    preHandler: [authMiddleware],
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, // Строже для AI
   }, async (request, reply) => {
     const message = request.body?.message?.trim();
