@@ -873,9 +873,13 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     }
 
     const memoryUsage = process.memoryUsage();
+    const heapUsagePercent = memoryUsage.heapTotal > 0
+      ? Math.round((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100)
+      : 0;
 
     return {
       status: dbStatus === 'UP' && redisStatus === 'UP' ? 'HEALTHY' : 'DEGRADED',
+      backend: { status: 'UP', latencyMs: Date.now() - startDb },
       uptimeSeconds: Math.floor(process.uptime()),
       database: { status: dbStatus, latencyMs: dbLatencyMs },
       redis: { status: redisStatus, latencyMs: redisLatencyMs },
@@ -883,6 +887,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
         rssMb: Math.round(memoryUsage.rss / 1024 / 1024),
         heapUsedMb: Math.round(memoryUsage.heapUsed / 1024 / 1024),
         heapTotalMb: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+        heapUsagePercent,
       },
       nodeVersion: process.version,
       timestamp: new Date().toISOString(),

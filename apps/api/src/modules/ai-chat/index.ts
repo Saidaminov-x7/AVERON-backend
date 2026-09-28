@@ -10,9 +10,20 @@ import { config } from '../../config';
 export const aiChatModule: FastifyPluginAsync = async (server) => {
   const getService = (req: FastifyRequest) => new AIChatService(req.server.prisma);
   const publicService = new PublicAIService(server.prisma);
+  const phoneUserOnly = async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: request.user.userId },
+      select: { phone: true, isBlocked: true },
+    });
+    if (!user?.phone || user.isBlocked) {
+      return reply.status(403).send({
+        message: 'AVERON AI доступен только активным пользователям, вошедшим по номеру телефона',
+      });
+    }
+  };
 
   server.post<{ Body: { message: string; history?: Array<{ role: 'user' | 'assistant'; content: string }> } }>('/chat', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, // Строже для AI
   }, async (request, reply) => {
     const message = request.body?.message?.trim();
@@ -31,7 +42,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
    * POST /ai-chat/sessions — создать сессию
    */
   server.post<{ Body: CreateSessionDto }>('/sessions', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
   }, async (request, reply) => {
     const dto = createSessionSchema.parse(request.body ?? {});
     const service = getService(request);
@@ -43,7 +54,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
    * GET /ai-chat/sessions — список сессий
    */
   server.get('/sessions', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
   }, async (request: FastifyRequest, _reply: FastifyReply) => {
     const service = getService(request);
     const sessions = await service.getSessions(request.user.userId);
@@ -54,7 +65,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
    * GET /ai-chat/sessions/:sessionId — история сообщений
    */
   server.get<{ Params: { sessionId: string } }>('/sessions/:sessionId', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
   }, async (
     request,
     reply,
@@ -76,7 +87,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
    * DELETE /ai-chat/sessions/:sessionId — удалить сессию
    */
   server.delete<{ Params: { sessionId: string } }>('/sessions/:sessionId', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
   }, async (
     request,
     reply,
@@ -95,7 +106,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
    * POST /ai-chat/message — отправить сообщение (обычный ответ)
    */
   server.post<{ Body: SendMessageDto }>('/message', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const dto = sendMessageSchema.parse(request.body);
@@ -126,7 +137,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
    * POST /ai-chat/stream — стриминг ответа (SSE)
    */
   server.post<{ Body: SendMessageDto }>('/stream', {
-    preHandler: [authMiddleware],
+    preHandler: [authMiddleware, phoneUserOnly],
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const dto = sendMessageSchema.parse(request.body);
