@@ -25,6 +25,22 @@ export const approveImportSchema = z.object({
 
 export const rejectImportSchema = z.object({ reason: z.string().min(3).max(500) });
 
+export const createManualProductSchema = z.object({
+  title: z.string().min(2).max(500),
+  titleUz: z.string().max(500).optional(),
+  titleEn: z.string().max(500).optional(),
+  description: z.string().max(5000).optional(),
+  sourceUrl: z.string().url(),
+  imageUrl: z.string().url().optional(),
+  sourcePriceCny: z.coerce.number().nonnegative(),
+  exchangeRate: z.coerce.number().positive(),
+  salePriceUzs: z.coerce.number().positive(),
+  categoryId: z.string().uuid().optional(),
+  color: z.string().max(80).optional(),
+  size: z.string().max(80).optional(),
+  publish: z.boolean().default(true),
+});
+
 export const customOrderSchema = z.object({
   source: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS']).default('SOURCE_1688'),
   sourceUrl: z.string().url(),
