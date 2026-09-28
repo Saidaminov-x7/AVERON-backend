@@ -16,7 +16,7 @@ export const registerSchema = z.object({
   password: passwordValidation,
   name: z.string().min(2, 'Name must be at least 2 characters').max(100),
   // Запрещаем прямую регистрацию с ролью ADMIN через публичный эндпоинт
-  role: z.enum([Role.USER, Role.LANDLORD]).default(Role.USER),
+  role: z.literal(Role.USER).default(Role.USER),
 });
 
 export type RegisterDto = z.infer<typeof registerSchema>;

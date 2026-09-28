@@ -1054,34 +1054,31 @@ export const adminModule: FastifyPluginAsync = async (server) => {
 
   // ─── [ФИЧА: ГЛОБАЛЬНЫЙ ПОИСК] ───────────────────────────────────────────────
   server.get('/search/quick', { preHandler: supportHandler }, async (request, reply) => {
-    const { q, type } = request.query as { q?: string; type?: 'listings' | 'users' };
+    const { q, type } = request.query as { q?: string; type?: 'products' | 'users' };
     if (!q || q.trim().length < 2) return [];
     const query = q.trim();
 
-    if (type === 'listings') {
-      return request.server.prisma.listing.findMany({
-        where: {
-          OR: [
-            { title: { contains: query, mode: 'insensitive' } },
-            { address: { contains: query, mode: 'insensitive' } },
-            { city: { contains: query, mode: 'insensitive' } },
-          ],
-        },
-        take: 6,
-        select: {
-          id: true,
-          title: true,
-          city: true,
-          price: true,
-          status: true,
-        },
+    if (type === 'products') {
+      const products = await request.server.prisma.commerceProduct.findMany({
+        orderBy: { updatedAt: 'desc' },
+        take: 100,
+        select: { id: true, translations: true, salePriceUzs: true, status: true, slug: true },
       });
+      const needle = query.toLocaleLowerCase();
+      return products.flatMap((product) => {
+        const translations = (product.translations || {}) as Record<string, { title?: string } | string>;
+        const titles = Object.values(translations).map((value) => typeof value === 'string' ? value : value?.title || '');
+        const title = titles.find(Boolean) || product.slug;
+        if (![product.id, product.slug, ...titles].some((value) => value.toLocaleLowerCase().includes(needle))) return [];
+        return [{ id: product.id, title, price: Number(product.salePriceUzs), status: product.status }];
+      }).slice(0, 6);
     }
 
     if (type === 'users') {
       return request.server.prisma.user.findMany({
         where: {
           OR: [
+            { id: { contains: query, mode: 'insensitive' } },
             { name: { contains: query, mode: 'insensitive' } },
             { email: { contains: query, mode: 'insensitive' } },
             { phone: { contains: query, mode: 'insensitive' } },
@@ -1092,6 +1089,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
           id: true,
           name: true,
           email: true,
+          phone: true,
           role: true,
         },
       });

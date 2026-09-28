@@ -13,7 +13,8 @@ const password = z.string().min(8).max(100);
 const registrationSchema = z.object({ name: z.string().min(2).max(100), phone, password });
 const loginSchema = z.object({ phone, password: z.string().min(1).max(100) });
 const verifySchema = z.object({ phone, code: z.string().regex(/^\d{6}$/) });
-const pendingKey = (kind: 'register' | 'login', normalizedPhone: string) => `phone-password:${kind}:${normalizedPhone}`;
+const resetSchema = verifySchema.extend({ password });
+const pendingKey = (kind: 'register' | 'login' | 'reset', normalizedPhone: string) => `phone-password:${kind}:${normalizedPhone}`;
 
 type Pending = { codeHash: string; attempts: number; userId?: string; name?: string; passwordHash?: string };
 const hashCode = (code: string) => crypto.createHash('sha256').update(code).digest('hex');
@@ -83,4 +84,23 @@ export async function verifyPhonePasswordLogin(request: FastifyRequest, reply: F
   const user = await request.server.prisma.user.findUnique({ where: { id: pending.userId! } });
   if (!user || user.isBlocked) return reply.status(403).send({ message: 'Вход недоступен.' });
   return completeLogin(request, reply, user);
+}
+
+export async function requestPhonePasswordReset(request: FastifyRequest, reply: FastifyReply) {
+  const data = z.object({ phone }).parse(request.body);
+  const user = await request.server.prisma.user.findUnique({ where: { phone: data.phone } });
+  if (!user || user.isBlocked) return reply.send({ ok: true, expiresIn: 300 });
+  return issueCode(request, reply, pendingKey('reset', data.phone), { userId: user.id }, 'восстановления пароля');
+}
+
+export async function verifyPhonePasswordReset(request: FastifyRequest, reply: FastifyReply) {
+  const data = resetSchema.parse(request.body);
+  const pending = await readVerified(request, reply, pendingKey('reset', data.phone), data.code);
+  if (!pending) return;
+  await request.server.prisma.$transaction([
+    request.server.prisma.user.update({ where: { id: pending.userId! }, data: { passwordHash: await argon2.hash(data.password), refreshTokenHash: null } }),
+    request.server.prisma.authSession.updateMany({ where: { userId: pending.userId!, revokedAt: null }, data: { revokedAt: new Date() } }),
+  ]);
+  await request.server.prisma.auditLog.create({ data: { userId: pending.userId!, action: 'PASSWORD_RESET_BY_PHONE', resource: 'User', resourceId: pending.userId! } });
+  return reply.send({ success: true });
 }

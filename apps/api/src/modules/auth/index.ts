@@ -7,19 +7,20 @@ import { verify2faHandler, resend2faHandler } from './verify-2fa';
 import { refreshHandler } from './refresh';
 import { logoutHandler } from './logout';
 import { meHandler } from './me';
-import { googleAuthHandler } from './google';
 import { forgotPasswordHandler, resetPasswordHandler } from './forgot-password';
 import { exportUserDataHandler } from './export';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { requestPhoneOtp, verifyPhoneOtp } from './phone-otp';
 import { listMySessions, revokeMySession, revokeOtherSessions } from './sessions';
-import { requestPhonePasswordLogin, requestPhoneRegistration, verifyPhonePasswordLogin, verifyPhoneRegistration } from './phone-password';
+import { requestPhonePasswordLogin, requestPhonePasswordReset, requestPhoneRegistration, verifyPhonePasswordLogin, verifyPhonePasswordReset, verifyPhoneRegistration } from './phone-password';
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.post('/register/phone/request-code', { config: { rateLimit: { max: 3, timeWindow: '15 minutes' } } }, requestPhoneRegistration);
   server.post('/register/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhoneRegistration);
   server.post('/login/phone/request-code', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, requestPhonePasswordLogin);
   server.post('/login/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhonePasswordLogin);
+  server.post('/password/phone/request-code', { config: { rateLimit: { max: 3, timeWindow: '15 minutes' } } }, requestPhonePasswordReset);
+  server.post('/password/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhonePasswordReset);
   server.post('/phone/request-code', {
     config: { rateLimit: { max: 3, timeWindow: '10 minutes', keyGenerator: (req) => `${req.ip}:${(req.body as any)?.phone || 'unknown'}` } },
   }, requestPhoneOtp);
@@ -61,10 +62,6 @@ export const authModule: FastifyPluginAsync = async (server) => {
   }, registerHandler);
 
   // Google OAuth — sign in or sign up with phone verification
-  server.post('/google', {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
-  }, googleAuthHandler);
-
   // Вход / получение токенов (защита от брутфорса: 20 попыток за 15 минут)
   server.post('/login', {
     config: {
