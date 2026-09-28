@@ -4,15 +4,18 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { User, AdminRole } from '@prisma/client';
 import { FastifyRequest } from 'fastify';
+import crypto from 'crypto';
 
 export interface JwtPayload {
   userId: string;
   role: string;
   adminRole?: AdminRole | null;
+  sessionId?: string;
 }
 
 export interface RefreshPayload {
   userId: string;
+  sessionId?: string;
 }
 
 /**
@@ -20,20 +23,22 @@ export interface RefreshPayload {
  * Access token подписывается JWT_SECRET (60 минут),
  * Refresh token подписывается REFRESH_SECRET (7 дней).
  */
-export const generateTokens = (user: User, request: FastifyRequest) => {
+export const generateTokens = (user: User, request: FastifyRequest, requestedSessionId?: string) => {
+  const sessionId = requestedSessionId || crypto.randomUUID();
   const accessToken = request.server.jwt.sign(
     {
       userId: user.id,
       role: user.role,
       adminRole: user.adminRole ?? null,
+      sessionId,
     } satisfies JwtPayload,
     { expiresIn: '60m' },
   );
 
   // Refresh token — долгоживущий, отдельный секрет
-  const refreshToken = signRefreshToken({ userId: user.id });
+  const refreshToken = signRefreshToken({ userId: user.id, sessionId });
 
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, sessionId };
 };
 
 /**

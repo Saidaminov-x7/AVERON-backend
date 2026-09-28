@@ -4,6 +4,7 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import argon2 from 'argon2';
 import { generateTokens, verifyRefreshToken } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
+import { saveAuthSession } from './sessions';
 
 export const refreshHandler = async (
   request: FastifyRequest,
@@ -37,17 +38,22 @@ export const refreshHandler = async (
       return reply.status(403).send({ message: 'User account is blocked' });
     }
 
-    // Soft reuse check: reject stolen tokens, but do not wipe the session
-    // on a race between two legitimate parallel refresh calls.
-    if (user.refreshTokenHash) {
-      const isCurrentToken = await argon2.verify(user.refreshTokenHash, refreshToken);
+    const session = decoded.sessionId ? await request.server.prisma.authSession.findFirst({
+      where: { id: decoded.sessionId, userId: user.id, revokedAt: null, expiresAt: { gt: new Date() } },
+    }) : null;
+
+    // Existing cookies remain valid during rollout; every new login uses the
+    // per-device session record and no longer logs other devices out.
+    const expectedHash = session?.refreshTokenHash || user.refreshTokenHash;
+    if (expectedHash) {
+      const isCurrentToken = await argon2.verify(expectedHash, refreshToken);
       if (!isCurrentToken) {
         request.log.warn({ userId: user.id }, 'Refresh token does not match stored hash');
         return reply.status(401).send({ message: 'Invalid refresh token' });
       }
     }
 
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens(user, request);
+    const { accessToken, refreshToken: newRefreshToken, sessionId } = generateTokens(user, request, decoded.sessionId);
 
     await request.server.redis.set(`bl:${refreshToken}`, '1', 'EX', 7 * 24 * 60 * 60);
 
@@ -56,6 +62,7 @@ export const refreshHandler = async (
       where: { id: user.id },
       data: { refreshTokenHash: newRefreshTokenHash, lastLoginAt: user.lastLoginAt },
     });
+    await saveAuthSession(request, user.id, sessionId, newRefreshToken);
 
     reply.setCookie('refreshToken', newRefreshToken, refreshCookieOptions());
 

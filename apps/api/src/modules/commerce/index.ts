@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { approveImportSchema, createImportSchema, customOrderSchema, rejectImportSchema } from './schemas';
 import { assertHumanApproval, slugifyProduct } from './rules';
+import { publishProductToTelegram } from './telegram-publisher';
 
 const localizedTitle = (translations: unknown, fallback: string): string => {
   if (!translations || typeof translations !== 'object') return fallback;
@@ -96,6 +97,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
       return product;
     });
+    if (input.publish) {
+      const payload = imported.normalizedPayload as Record<string, any> | null;
+      const imageUrl = payload?.images?.[0]?.url || payload?.images?.[0];
+      publishProductToTelegram(result, typeof imageUrl === 'string' ? imageUrl : undefined).catch((error) => app.log.error({ error, productId: result.id }, 'Telegram product publication failed'));
+    }
     return result;
   });
 

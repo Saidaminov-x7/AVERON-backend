@@ -11,11 +11,13 @@ declare module '@fastify/jwt' {
       userId: string;
       role: string;
       adminRole?: AdminRole | null;
+      sessionId?: string;
     };
     user: {
       userId: string;
       role: string;
       adminRole?: AdminRole | null;
+      sessionId?: string;
     };
   }
 }

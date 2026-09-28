@@ -2,6 +2,7 @@
 
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { refreshCookieOptions } from '../../lib/cookies';
+import { verifyRefreshToken } from '../../lib/jwt';
 
 export const logoutHandler = async (
   request: FastifyRequest,
@@ -13,6 +14,15 @@ export const logoutHandler = async (
 
   if (refreshToken) {
     await request.server.redis.set(`bl:${refreshToken}`, '1', 'EX', 7 * 24 * 60 * 60);
+    try {
+      const decoded = verifyRefreshToken(refreshToken);
+      if (decoded.sessionId) {
+        await request.server.prisma.authSession.updateMany({
+          where: { id: decoded.sessionId, userId: decoded.userId },
+          data: { revokedAt: new Date() },
+        });
+      }
+    } catch {}
   }
 
   const opts = refreshCookieOptions();

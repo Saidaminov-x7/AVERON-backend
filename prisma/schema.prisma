@@ -160,6 +160,7 @@ model User {
   reviewsWritten       Review[]            @relation("ReviewAuthor")
   reviewsReceived      Review[]            @relation("LandlordReviews")
   promoCodeUsages      PromoCodeUsage[]
+  authSessions         AuthSession[]
 
   @@index([email])
   @@index([phone])
@@ -167,6 +168,22 @@ model User {
   @@index([adminRole])
   @@index([isBlocked])
   @@index([isDeleted])
+}
+
+model AuthSession {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String
+  userAgent        String?
+  ipAddress        String?
+  createdAt        DateTime @default(now())
+  lastSeenAt       DateTime @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
 }
 
 model Listing {

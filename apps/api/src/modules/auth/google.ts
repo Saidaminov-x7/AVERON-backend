@@ -7,6 +7,7 @@ import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
 import { config } from '../../config';
 import crypto from 'crypto';
+import { saveAuthSession } from './sessions';
 
 const googleAuthSchema = z.object({
   idToken: z.string().min(20),
@@ -121,7 +122,7 @@ export const googleAuthHandler = async (
     return reply.status(403).send({ message: 'User account is blocked' });
   }
 
-  const { accessToken, refreshToken } = generateTokens(user, request);
+  const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
 
   const argon2 = await import('argon2');
   const refreshTokenHash = await argon2.hash(refreshToken);
@@ -133,6 +134,7 @@ export const googleAuthHandler = async (
       ...(avatar && !user.avatar ? { avatar } : {}),
     },
   });
+  await saveAuthSession(request, user.id, sessionId, refreshToken);
 
   reply.setCookie('refreshToken', refreshToken, refreshCookieOptions());
 

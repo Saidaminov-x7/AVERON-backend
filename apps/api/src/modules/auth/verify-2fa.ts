@@ -8,6 +8,7 @@ import { Verify2faDto, verify2faSchema, Resend2faDto, resend2faSchema } from './
 import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
 import { sendTelegram2FACode } from '../../lib/telegram';
+import { saveAuthSession } from './sessions';
 
 export const verify2faHandler = async (
   request: FastifyRequest<{ Body: Verify2faDto }>,
@@ -70,7 +71,7 @@ export const verify2faHandler = async (
   }
 
   // Генерируем токены доступа
-  const { accessToken, refreshToken } = generateTokens(user, request);
+  const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
 
   // Сохраняем хэш refreshToken и обновляем lastLoginAt
   try {
@@ -82,6 +83,7 @@ export const verify2faHandler = async (
         lastLoginAt: new Date(),
       },
     });
+    await saveAuthSession(request, user.id, sessionId, refreshToken);
   } catch (err) {
     request.log.error({ err }, 'Failed to hash and save refresh token or update lastLoginAt');
   }

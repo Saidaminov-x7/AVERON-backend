@@ -29,6 +29,7 @@ import { siteSettingsPublicModule } from './modules/site-settings';
 import { errorReportsModule } from './modules/error-reports';
 import { commerceModule } from './modules/commerce';
 import { aiChatModule } from './modules/ai-chat';
+import { analyticsModule } from './modules/analytics';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -219,6 +220,7 @@ server.register(themeModule, { prefix: '/admin' });
 server.register(notificationsModule, { prefix: '/admin/notifications' });
 server.register(commerceModule, { prefix: '/api/v1' });
 server.register(aiChatModule, { prefix: '/ai-chat' });
+server.register(analyticsModule, { prefix: '/analytics' });
 
 // ─── Публичные эндпоинты (без авторизации) ───────────────────────────────────
 server.register(siteSettingsPublicModule, { prefix: '/site-settings' });
@@ -347,7 +349,8 @@ server.get('/health/ready', {
 
 // B1: Запись в AuditLog при 401/403 (security events)
 server.addHook('onResponse', async (request, reply) => {
-  if (reply.statusCode === 401 || reply.statusCode === 403) {
+  const routineAuthProbe = request.url.startsWith('/auth/refresh') || request.url.startsWith('/auth/me') || request.url.startsWith('/admin/theme');
+  if ((reply.statusCode === 401 || reply.statusCode === 403) && !routineAuthProbe) {
     prisma.auditLog.create({
       data: {
         userId: (request as any).user?.userId ?? null,

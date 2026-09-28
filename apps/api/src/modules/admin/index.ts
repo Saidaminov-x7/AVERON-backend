@@ -230,23 +230,6 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   });
 
   /**
-   * POST /admin/users/purge-except-superadmin — удалить всех пользователей кроме супер-администратора
-   */
-  server.post('/users/purge-except-superadmin', { preHandler: settingsHandler }, async (request, reply) => {
-    const deleted = await request.server.prisma.user.deleteMany({
-      where: {
-        email: { not: 'vosilhojasaidaminov@gmail.com' },
-      },
-    });
-
-    return reply.send({
-      success: true,
-      message: `Удалено пользователей: ${deleted.count}`,
-      count: deleted.count,
-    });
-  });
-
-  /**
    * GET /admin/users/:id/activity — логи активности конкретного пользователя
    */
   server.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string; action?: string } }>(
@@ -281,6 +264,24 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     },
   );
 
+  server.get<{ Params: { id: string } }>('/users/:id/sessions', { preHandler: supportHandler }, async (request, reply) => {
+    const items = await request.server.prisma.authSession.findMany({
+      where: { userId: request.params.id, revokedAt: null, expiresAt: { gt: new Date() } },
+      orderBy: { lastSeenAt: 'desc' },
+      select: { id: true, userAgent: true, ipAddress: true, createdAt: true, lastSeenAt: true, expiresAt: true },
+    });
+    return reply.send(items);
+  });
+
+  server.delete<{ Params: { id: string; sessionId: string } }>('/users/:id/sessions/:sessionId', { preHandler: settingsHandler }, async (request, reply) => {
+    const result = await request.server.prisma.authSession.updateMany({
+      where: { id: request.params.sessionId, userId: request.params.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (!result.count) return reply.status(404).send({ message: 'Сессия не найдена' });
+    return reply.send({ success: true });
+  });
+
   // ─── АУДИТ-ЛОГИ ───────────────────────────────────────────────────────────────
 
   /**
@@ -290,6 +291,11 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     const { userId } = request.query as { userId?: string };
     const service = getService(request);
     return service.getAuditLogs(userId);
+  });
+
+  server.delete('/audit-logs', { preHandler: settingsHandler }, async (request, reply) => {
+    const deleted = await request.server.prisma.auditLog.deleteMany({});
+    return reply.send({ success: true, count: deleted.count });
   });
 
   // ─── СТАТИСТИКА ───────────────────────────────────────────────────────────────

@@ -12,8 +12,14 @@ import { forgotPasswordHandler, resetPasswordHandler } from './forgot-password';
 import { exportUserDataHandler } from './export';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { requestPhoneOtp, verifyPhoneOtp } from './phone-otp';
+import { listMySessions, revokeMySession, revokeOtherSessions } from './sessions';
+import { requestPhonePasswordLogin, requestPhoneRegistration, verifyPhonePasswordLogin, verifyPhoneRegistration } from './phone-password';
 
 export const authModule: FastifyPluginAsync = async (server) => {
+  server.post('/register/phone/request-code', { config: { rateLimit: { max: 3, timeWindow: '15 minutes' } } }, requestPhoneRegistration);
+  server.post('/register/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhoneRegistration);
+  server.post('/login/phone/request-code', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, requestPhonePasswordLogin);
+  server.post('/login/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhonePasswordLogin);
   server.post('/phone/request-code', {
     config: { rateLimit: { max: 3, timeWindow: '10 minutes', keyGenerator: (req) => `${req.ip}:${(req.body as any)?.phone || 'unknown'}` } },
   }, requestPhoneOtp);
@@ -96,6 +102,9 @@ export const authModule: FastifyPluginAsync = async (server) => {
 
   // Текущий пользователь (требует auth)
   server.get('/me', { preHandler: [authMiddleware] }, meHandler);
+  server.get('/sessions', { preHandler: [authMiddleware] }, listMySessions);
+  server.delete<{ Params: { id: string } }>('/sessions/:id', { preHandler: [authMiddleware] }, revokeMySession);
+  server.delete('/sessions', { preHandler: [authMiddleware] }, revokeOtherSessions);
 
   // GDPR: Экспорт персональных данных пользователя
   server.get('/me/export', { preHandler: [authMiddleware] }, exportUserDataHandler);

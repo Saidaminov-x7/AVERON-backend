@@ -6,6 +6,7 @@ import { AuthService } from './service';
 import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
 import { sendTelegram2FACode } from '../../lib/telegram';
+import { saveAuthSession } from './sessions';
 
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
@@ -89,7 +90,7 @@ export const loginHandler = async (
     }
 
     // Для пользователей — стандартная генерация токенов
-    const { accessToken, refreshToken } = generateTokens(user, request);
+    const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
 
     // Сохраняем хэш refreshToken и обновляем lastLoginAt
     try {
@@ -101,6 +102,7 @@ export const loginHandler = async (
           lastLoginAt: new Date(),
         },
       });
+      await saveAuthSession(request, user.id, sessionId, refreshToken);
     } catch (err) {
       request.log.error({ err }, 'Failed to hash and save refresh token or update lastLoginAt');
     }

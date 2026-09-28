@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
+import { saveAuthSession } from './sessions';
 
 const phoneSchema = z.string().transform((value) => value.replace(/\D/g, '')).refine(
   (value) => /^998\d{9}$/.test(value),
@@ -15,7 +16,7 @@ const verifySchema = z.object({ phone: phoneSchema, code: z.string().regex(/^\d{
 
 const otpKey = (phone: string) => `phone-otp:${phone}`;
 
-async function sendSms(phone: string, code: string) {
+export async function sendSms(phone: string, code: string, action = 'входа') {
   const endpoint = process.env.SMS_API_URL?.trim();
   const token = process.env.SMS_API_TOKEN?.trim();
   const sender = process.env.SMS_SENDER?.trim() || 'AVERON';
@@ -24,7 +25,7 @@ async function sendSms(phone: string, code: string) {
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ mobile_phone: phone, message: `AVERON: код входа ${code}`, from: sender }),
+    body: JSON.stringify({ mobile_phone: phone, message: `AVERON: код ${action} ${code}`, from: sender }),
     signal: AbortSignal.timeout(10_000),
   });
   return response.ok;
@@ -91,11 +92,12 @@ export async function verifyPhoneOtp(
   }
   if (user.isBlocked) return reply.status(403).send({ message: 'Аккаунт заблокирован.' });
 
-  const { accessToken, refreshToken } = generateTokens(user, request);
+  const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
   await request.server.prisma.user.update({
     where: { id: user.id },
     data: { refreshTokenHash: await argon2.hash(refreshToken), lastLoginAt: new Date(), verified: true },
   });
+  await saveAuthSession(request, user.id, sessionId, refreshToken);
   reply.setCookie('refreshToken', refreshToken, refreshCookieOptions());
   return reply.send({
     accessToken,
