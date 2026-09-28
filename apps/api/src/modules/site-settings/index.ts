@@ -136,7 +136,7 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
       backgroundColor: theme?.backgroundColor ?? '#f9fafb',
       textColor: theme?.textColor ?? '#111827',
       borderRadius: theme?.borderRadius ?? '0.75rem',
-      fontFamily: theme?.fontFamily ?? 'Inter, sans-serif',
+      fontFamily: 'Calibri, "Segoe UI", Arial, sans-serif',
     };
 
     // 3. Кэшируем

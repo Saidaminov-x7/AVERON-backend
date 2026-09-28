@@ -36,9 +36,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
   });
 
-  app.get('/products/:slug', async (request, reply) => {
-    const { slug } = request.params as { slug: string };
-    const product = await app.prisma.commerceProduct.findFirst({ where: { slug, status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
+  app.get('/products/:identifier', async (request, reply) => {
+    const { identifier } = request.params as { identifier: string };
+    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
     return product ?? reply.status(404).send({ message: 'Товар не найден' });
   });
 
