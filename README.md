@@ -1,19 +1,32 @@
-# Ijarauz Backend
+# AVERON Backend API
 
-Backend для платформы аренды недвижимости.
+Бэкенд-сервис для маркетплейса одежды и товаров из Китая **AVERON**.
 
-## Требования
-- Docker
-- Docker Compose
-- Node.js 20+
-- pnpm
+## Стек технологий
+- **Node.js 20+**, **TypeScript**, **Fastify**
+- **Prisma ORM** + **PostgreSQL**
+- **Redis** (кэширование, rate limiting, сессии)
+- **Fastify JWT / Argon2** (аутентификация)
+- **Zod** (валидация входных данных)
 
-## Установка
+## Основные модули
+
+- `/api/v1` (`commerceModule`):
+  - Каталог товаров (`/products`, `/products/:identifier`)
+  - Заказы и заявки клиентов (`POST /custom-orders`, `GET /orders/me`)
+  - Импорт товаров и очередь модерации (`/admin/imports`, `/admin/products`)
+  - Панель статистики и финансов (`/admin/dashboard`, `/admin/orders`)
+- `/auth` (`authModule`): Регистрация, логин, refresh токенов, сессии, Google OAuth
+- `/ai-chat` (`aiChatModule`): Интеграция с локальной AI моделью (Ollama) и ассистентом покупателя
+- `/admin` (`adminModule`): Управление пользователями, аудит-лог, системные настройки, страницы сайта
+- `/site-settings` (`siteSettingsPublicModule`): Публичные настройки витрины
+
+## Установка и запуск
 
 1. Клонируйте репозиторий:
    ```bash
    git clone <repository-url>
-   cd ijarauz_backend
+   cd AVERON_backend
    ```
 
 2. Установите зависимости:
@@ -21,49 +34,26 @@ Backend для платформы аренды недвижимости.
    pnpm install
    ```
 
-3. Создайте файл `.env` в `apps/api/` на основе `.env.example`:
+3. Настройте файл окружения в `apps/api/.env`:
    ```bash
    cp apps/api/.env.example apps/api/.env
    ```
 
-4. Запустите инфраструктуру:
+4. Запустите инфраструктуру в Docker:
    ```bash
-   docker-compose up -d postgres redis ollama
+   docker-compose up -d postgres redis
    ```
 
-5. Выполните миграции:
+5. Примените миграции базы данных:
    ```bash
    pnpm prisma:migrate
    ```
 
-6. Заполните БД тестовыми данными:
+6. Запустите сервер разработки:
    ```bash
-   pnpm prisma:seed
+   pnpm dev
    ```
 
-7. Запустите сервисы:
-   ```bash
-   docker-compose up -d
-   ```
-
-## Документация API
-Доступна по адресу: [http://localhost:3000/docs](http://localhost:3000/docs)
-
-## Конфигурация
-Настройте переменные окружения в `apps/api/.env`:
-
-```env
-NODE_ENV=development
-PORT=3000
-DATABASE_URL="postgresql://postgres:postgres@postgres:5432/ijarauz?connection_limit=10&pool_timeout=20"
-REDIS_URL=redis://redis:6379
-JWT_SECRET=your_jwt_secret_min_32_characters_long_super_secure
-REFRESH_SECRET=your_refresh_secret_min_32_characters_long_secure
-CORS_ORIGINS=http://localhost:3000,http://localhost:8080
-OLLAMA_BASE_URL=http://ollama:11434
-AI_SERVICE_URL=http://ai-service:8000
-```
-
-### Настройка пула подключений (Railway)
-Для предотвращения исчерпания пула соединений PostgreSQL на Railway в `DATABASE_URL` добавьте параметры:
-`?connection_limit=10&pool_timeout=20` (или `&connection_limit=10&pool_timeout=20` если уже есть параметры).
+## Документация API (Swagger)
+При запущенном сервере документация Swagger UI доступна по адресу:
+`http://localhost:3000/docs`
