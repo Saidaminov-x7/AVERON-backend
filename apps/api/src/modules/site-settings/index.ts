@@ -64,8 +64,11 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
     }
 
     const legacyName = settings.siteName.toLowerCase().includes('ijara');
-    const legacyEmail = settings.contactEmail.toLowerCase().includes('ijarauz');
-    const legacyPhone = settings.contactPhone === '+998 71 200-00-00';
+    const normalizedEmail = settings.contactEmail.trim().toLowerCase();
+    const demoEmails = new Set(['admin@gmail.com', 'test@example.com', 'admin@example.com']);
+    const legacyEmail = normalizedEmail.includes('ijarauz') || demoEmails.has(normalizedEmail);
+    const normalizedPhone = settings.contactPhone.replace(/\D/g, '');
+    const legacyPhone = ['998712000000', '998900000000'].includes(normalizedPhone);
     settings = {
       ...settings,
       siteName: legacyName ? 'AVERON' : settings.siteName,

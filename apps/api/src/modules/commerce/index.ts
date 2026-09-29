@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { adminMiddleware } from '../../lib/adminMiddleware';
+import { authMiddleware } from '../../lib/authMiddleware';
 import { approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, rejectImportSchema } from './schemas';
 import { assertHumanApproval, slugifyProduct } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
@@ -48,6 +49,25 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const input = customOrderSchema.parse(request.body);
     const item = await app.prisma.customOrderRequest.create({ data: { ...input, contact: input.contact as any, selectedVariant: input.selectedVariant as any } });
     return reply.status(201).send(item);
+  });
+
+  app.get('/orders/me', { preHandler: authMiddleware }, async (request) => {
+    return app.prisma.commerceOrder.findMany({
+      where: { userId: request.user.userId },
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        currency: true,
+        totalRevenue: true,
+        createdAt: true,
+        updatedAt: true,
+        items: { select: { id: true, title: true, quantity: true, unitPrice: true, totalPrice: true, productId: true } },
+        statusHistory: { orderBy: { createdAt: 'desc' }, take: 10 },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
   });
 
   app.get('/admin/dashboard', { preHandler: adminMiddleware }, async () => {
