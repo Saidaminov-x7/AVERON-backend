@@ -26,10 +26,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     if (query.audience) where.attributes = { path: ['audience'], equals: query.audience };
     if (query.size || query.color) where.variants = { some: { active: true, ...(query.size ? { size: query.size } : {}), ...(query.color ? { color: { equals: query.color, mode: 'insensitive' } } : {}) } };
     if (query.minPrice || query.maxPrice) where.salePriceUzs = { ...(query.minPrice ? { gte: query.minPrice } : {}), ...(query.maxPrice ? { lte: query.maxPrice } : {}) };
-    if (query.q) where.OR = [
-      { slug: { contains: query.q, mode: 'insensitive' } },
-      { material: { contains: query.q, mode: 'insensitive' } },
-    ];
+    if (query.q?.trim()) {
+      const q = query.q.trim();
+      where.OR = [
+        { id: { equals: q } },
+        { slug: { contains: q, mode: 'insensitive' } },
+        { material: { contains: q, mode: 'insensitive' } },
+      ];
+    }
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: query.sort === 'price_asc' ? { salePriceUzs: 'asc' } : query.sort === 'price_desc' ? { salePriceUzs: 'desc' } : { publishedAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),

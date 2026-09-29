@@ -892,7 +892,7 @@ export class AdminService {
     const logs = await this.prisma.auditLog.findMany({
       where,
       orderBy: { timestamp: 'desc' },
-      take: 50,
+      take: 500,
       include: {
         user: { select: { id: true, name: true, email: true } },
       },

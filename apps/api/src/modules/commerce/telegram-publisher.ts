@@ -17,6 +17,17 @@ export async function publishProductToTelegram(product: PublishedProduct, imageU
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
   });
-  if (!response.ok) throw new Error(`Telegram publish failed: ${response.status}`);
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[TELEGRAM_PUBLISH_ERROR]', {
+      status: response.status,
+      statusText: response.statusText,
+      errorBody: errorText,
+      payload: body,
+      channel,
+      method,
+    });
+    throw new Error(`Telegram publish failed [${response.status}]: ${errorText}`);
+  }
   return { skipped: false };
 }
