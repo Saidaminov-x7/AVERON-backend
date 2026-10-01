@@ -36,6 +36,12 @@
   `pnpm --filter api prisma:deploy` и запускает `node apps/api/dist/server.js`
   только после успешного применения миграций. Ошибка миграции останавливает
   startup; не заменяйте этот путь прямым запуском `node dist/server.js`.
+- Если production PostgreSQL уже содержит схему, но ещё не имеет
+  `_prisma_migrations`, Prisma вернёт `P3005`. Entrypoint в этом случае только
+  фиксирует существующую начальную миграцию `20260821201059_init` как baseline,
+  затем применяет остальные committed migrations через `migrate deploy`.
+  Baseline не исполняет SQL начальной миграции и не изменяет пользовательские
+  таблицы или данные. Любая иная ошибка baseline/deploy блокирует запуск API.
 
 Для production admin TOTP задайте `TOTP_ENCRYPTION_KEY` только в backend secret
 store. Это случайный ключ ровно из 64 hex-символов (32 байта), например
