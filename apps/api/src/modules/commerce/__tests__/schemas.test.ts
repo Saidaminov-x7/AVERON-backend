@@ -30,6 +30,8 @@ describe('commerce product country validation', () => {
     expect(approveImportSchema.safeParse({ ...approval, country: 'CN' }).success).toBe(true);
     expect(approveImportSchema.safeParse(approval).success).toBe(false);
     expect(approveImportSchema.safeParse({ ...approval, country: 'FR' }).success).toBe(false);
+    expect(approveImportSchema.parse({ ...approval, country: 'CN', slug: 'parser-slug' }))
+      .not.toHaveProperty('slug');
   });
 
   it('accepts supported country filters and rejects invalid country query values', () => {

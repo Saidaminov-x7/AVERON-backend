@@ -37,7 +37,6 @@ export const createImportSchema = z.object({
 });
 
 export const approveImportSchema = z.object({
-  slug: z.string().min(2).max(180).optional(),
   translations: z.record(z.string(), z.unknown()).optional(),
   country: productCountrySchema,
   salePriceUzs: z.coerce.number().positive(),

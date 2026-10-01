@@ -1,10 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { ProductPublicationStatus } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { adminProductListQuerySchema, approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateProductCountrySchema } from './schemas';
-import { assertHumanApproval, slugifyProduct } from './rules';
+import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
@@ -144,18 +145,26 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/admin/products', { preHandler: adminMiddleware }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
-    const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const product = await app.prisma.commerceProduct.create({ data: {
-      slug: `${slugifyProduct(input.title)}-${suffix}`.slice(0, 190),
-      country: input.country,
-      translations: { ru: { title: input.title }, uz: { title: input.titleUz || input.title }, en: { title: input.titleEn || input.title } },
-      description: input.description ? { ru: input.description } : undefined,
-      attributes: { audience: 'everyone' }, source: 'MANUAL', sourceProductId: suffix, sourceUrl: input.sourceUrl,
-      originalPriceCny: input.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,
-      categoryId: input.categoryId, approvedById: request.user.userId, approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
-      images: input.imageUrl ? { create: [{ url: input.imageUrl, alt: { ru: input.title } }] } : undefined,
-      variants: input.color || input.size ? { create: [{ sku: `MANUAL-${suffix}`, color: input.color, size: input.size, sourcePriceCny: input.sourcePriceCny, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
-    }, include: { images: true, variants: true } });
+    const sourceProductId = randomUUID();
+    let product;
+    try {
+      product = await createProductWithUniqueSlug(input.title, (slug) => app.prisma.commerceProduct.create({ data: {
+        slug,
+        country: input.country,
+        translations: { ru: { title: input.title }, uz: { title: input.titleUz || input.title }, en: { title: input.titleEn || input.title } },
+        description: input.description ? { ru: input.description } : undefined,
+        attributes: { audience: 'everyone' }, source: 'MANUAL', sourceProductId, sourceUrl: input.sourceUrl,
+        originalPriceCny: input.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,
+        categoryId: input.categoryId, approvedById: request.user.userId, approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
+        images: input.imageUrl ? { create: [{ url: input.imageUrl, alt: { ru: input.title } }] } : undefined,
+        variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: input.sourcePriceCny, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
+      }, include: { images: true, variants: true } }));
+    } catch (error) {
+      if (error instanceof ProductSlugCollisionError) {
+        return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
+      }
+      throw error;
+    }
     await app.prisma.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: product.id, meta: { published: input.publish } } });
     if (input.publish) publishProductToTelegram(product, input.imageUrl).catch((error) => app.log.error({ error, productId: product.id }, 'Telegram product publication failed'));
     return reply.status(201).send(product);
@@ -202,21 +211,28 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     if (!imported) return reply.status(404).send({ message: 'Импорт не найден' });
     assertHumanApproval(imported.status, request.user.userId);
     const title = localizedTitle(input.translations ?? imported.aiPayload, imported.originalTitle);
-    const baseSlug = input.slug ?? slugifyProduct(title);
-    const result = await app.prisma.$transaction(async (tx) => {
-      const product = await tx.commerceProduct.create({ data: {
-        slug: `${baseSlug}-${imported.sourceProductId}`.slice(0, 190),
-        country: input.country,
-        translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as any,
-        source: imported.source, sourceProductId: imported.sourceProductId, sourceUrl: imported.sourceUrl,
-        originalPriceCny: imported.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,
-        categoryId: imported.categoryId, importedFromId: imported.id, approvedById: request.user.userId,
-        approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
-      } });
-      await tx.importedProduct.update({ where: { id }, data: { status: 'APPROVED', reviewedById: request.user.userId, reviewedAt: new Date() } });
-      await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
-      return product;
-    });
+    let result;
+    try {
+      result = await createProductWithUniqueSlug(title, (slug) => app.prisma.$transaction(async (tx) => {
+        const product = await tx.commerceProduct.create({ data: {
+          slug,
+          country: input.country,
+          translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as any,
+          source: imported.source, sourceProductId: imported.sourceProductId, sourceUrl: imported.sourceUrl,
+          originalPriceCny: imported.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,
+          categoryId: imported.categoryId, importedFromId: imported.id, approvedById: request.user.userId,
+          approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
+        } });
+        await tx.importedProduct.update({ where: { id }, data: { status: 'APPROVED', reviewedById: request.user.userId, reviewedAt: new Date() } });
+        await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
+        return product;
+      }));
+    } catch (error) {
+      if (error instanceof ProductSlugCollisionError) {
+        return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
+      }
+      throw error;
+    }
     if (input.publish) {
       const payload = imported.normalizedPayload as Record<string, any> | null;
       const imageUrl = payload?.images?.[0]?.url || payload?.images?.[0];
