@@ -12,11 +12,19 @@ export function registerErrorHandler(server: FastifyInstance) {
       });
     }
 
-    const statusCode = (error as any).statusCode ?? 500;
+    const statusCode = error.statusCode ?? 500;
     if (statusCode >= 500) {
-      request.log.error({ err: error }, 'Unhandled error');
+      const diagnosticStage = (error as FastifyError & { diagnosticStage?: string }).diagnosticStage;
+      request.log.error({
+        err: error,
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url,
+        ...(diagnosticStage ? { stage: diagnosticStage } : {}),
+      }, 'Unhandled request error');
       return reply.status(statusCode).send({
         message: 'Внутренняя ошибка сервера',
+        requestId: request.id,
       });
     }
 

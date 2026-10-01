@@ -51,6 +51,17 @@ function productOrderBy(sort?: string): Prisma.CommerceProductOrderByWithRelatio
   return { publishedAt: 'desc' };
 }
 
+async function withDiagnosticStage<T>(stage: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof Error) {
+      Object.assign(error, { diagnosticStage: stage });
+    }
+    throw error;
+  }
+}
+
 const localizedTitle = (translations: unknown, fallback: string): string => {
   if (!translations || typeof translations !== 'object') return fallback;
   const data = translations as Record<string, unknown>;
@@ -266,25 +277,28 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.post('/admin/products', { preHandler: adminMiddleware }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
     const mediaIds = input.images.map((image) => image.mediaId).filter((id): id is string => Boolean(id));
-    const settings = await app.prisma.siteSettings.findUnique({
-      where: { id: 'singleton' },
-      select: { maxProductPhotos: true, maxProductPhotoSizeMb: true },
-    });
+    const settings = await withDiagnosticStage('manual_product_settings_lookup', () =>
+      app.prisma.siteSettings.findUnique({
+        where: { id: 'singleton' },
+        select: { maxProductPhotos: true, maxProductPhotoSizeMb: true },
+      }));
     const maxPhotos = Math.min(15, settings?.maxProductPhotos ?? 15);
     const maxPhotoBytes = Math.min(25, settings?.maxProductPhotoSizeMb ?? 10) * 1024 * 1024;
     if (input.images.length > maxPhotos) {
       return reply.status(400).send({ message: `A product can have at most ${maxPhotos} photos` });
     }
     if (input.categoryId) {
-      const category = await app.prisma.commerceCategory.findUnique({
-        where: { id: input.categoryId },
-        select: { id: true, active: true },
-      });
+      const category = await withDiagnosticStage('manual_product_category_lookup', () =>
+        app.prisma.commerceCategory.findUnique({
+          where: { id: input.categoryId },
+          select: { id: true, active: true },
+        }));
       if (!category?.active) {
         return reply.status(400).send({ message: 'The selected category is not active' });
       }
     }
-    const media = await app.prisma.media.findMany({ where: { id: { in: mediaIds } } });
+    const media = await withDiagnosticStage('manual_product_media_lookup', () =>
+      app.prisma.media.findMany({ where: { id: { in: mediaIds } } }));
     if (media.length !== mediaIds.length || media.some((image) => image.size > maxPhotoBytes)) {
       return reply.status(400).send({ message: 'One or more product photos are missing or exceed the configured file size limit' });
     }
@@ -297,7 +311,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const sourceProductId = randomUUID();
     let product;
     try {
-      product = await createProductWithUniqueSlug(input.title, (slug) => app.prisma.$transaction(async (tx) => {
+      product = await withDiagnosticStage('manual_product_transaction', () =>
+        createProductWithUniqueSlug(input.title, (slug) => app.prisma.$transaction(async (tx) => {
         const created = await tx.commerceProduct.create({ data: {
           slug,
           country: input.country,
@@ -326,12 +341,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
-      }));
+        })));
     } catch (error) {
       if (error instanceof ProductSlugCollisionError) {
         return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
       }
-      request.log.error({ err: error, stage: 'manual_product_create', userId: request.user.userId }, 'Manual product creation failed');
       throw error;
     }
     if (input.publish) publishProductToTelegram(product, product.images[0]?.url).catch((error) => app.log.error({ error, productId: product.id }, 'Telegram product publication failed'));
