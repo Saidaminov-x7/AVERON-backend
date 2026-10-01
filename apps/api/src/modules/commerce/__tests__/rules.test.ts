@@ -36,6 +36,17 @@ describe('AVERON commerce invariants', () => {
     expect(slugifyProduct('ъь')).toBe('product');
   });
 
+  it.each([
+    ['Caffè Italiano', 'caffe-italiano'],
+    ['Çocuk Giyim', 'cocuk-giyim'],
+    ['Şık Elbise', 'sik-elbise'],
+    ['İstanbul', 'istanbul'],
+    ['Ürün', 'urun'],
+    ['男士夹克', 'product'],
+  ])('normalizes international product title %s to %s', (title, expected) => {
+    expect(slugifyProduct(title)).toBe(expected);
+  });
+
   it('adds a numeric suffix of at least six digits and uses the fallback base', () => {
     const slug = createProductSlug('Тест', '583921');
     expect(slug).toBe('test-583921');

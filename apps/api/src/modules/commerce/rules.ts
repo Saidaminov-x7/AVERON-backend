@@ -45,6 +45,18 @@ const cyrillicTransliteration: Record<string, string> = {
   ҳ: 'h',
 };
 
+const latinTransliteration: Record<string, string> = {
+  æ: 'ae',
+  ð: 'd',
+  đ: 'd',
+  ı: 'i',
+  ł: 'l',
+  ø: 'o',
+  œ: 'oe',
+  ß: 'ss',
+  þ: 'th',
+};
+
 export function assertHumanApproval(current: ReviewState, actorId?: string): void {
   if (current !== 'PENDING_REVIEW') throw new Error('IMPORT_NOT_PENDING_REVIEW');
   if (!actorId) throw new Error('HUMAN_APPROVAL_REQUIRED');
@@ -65,7 +77,7 @@ export function calculateNetProfit(input: {
 
 export function slugifyProduct(value: string): string {
   const transliterated = Array.from(value.toLowerCase(), (character) => (
-    cyrillicTransliteration[character] ?? character
+    cyrillicTransliteration[character] ?? latinTransliteration[character] ?? character
   )).join('');
   const normalized = transliterated
     .normalize('NFKD')

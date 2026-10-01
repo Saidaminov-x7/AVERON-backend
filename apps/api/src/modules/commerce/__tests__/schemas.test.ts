@@ -44,7 +44,7 @@ describe('commerce product country validation', () => {
 
   it.each(['CN', 'US', 'TR', 'IT', 'GB'])('builds a database filter for %s with other list params intact', (country) => {
     const query = productListQuerySchema.parse({ country, page: '2', limit: '15', q: 'coat' });
-    const where = buildProductWhere(query);
+    const where = buildProductWhere(query, 'PUBLISHED');
 
     expect(where).toMatchObject({
       country,
@@ -61,6 +61,14 @@ describe('commerce product country validation', () => {
 
   it('does not add a country condition when no country was selected', () => {
     expect(buildProductWhere(productListQuerySchema.parse({}))).not.toHaveProperty('country');
+  });
+
+  it('does not restrict admin products to published status unless a status is selected', () => {
+    const allStatuses = buildProductWhere(productListQuerySchema.parse({}));
+    const publishedOnly = buildProductWhere(productListQuerySchema.parse({}), 'PUBLISHED');
+
+    expect(allStatuses).not.toHaveProperty('status');
+    expect(publishedOnly.status).toBe('PUBLISHED');
   });
 
   it('validates product country updates', () => {

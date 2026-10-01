@@ -12,9 +12,10 @@ type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
 export function buildProductWhere(
   query: ProductListQuery,
-  status: ProductPublicationStatus = ProductPublicationStatus.PUBLISHED,
+  status?: ProductPublicationStatus,
 ): Prisma.CommerceProductWhereInput {
-  const where: Prisma.CommerceProductWhereInput = { status };
+  const where: Prisma.CommerceProductWhereInput = {};
+  if (status) where.status = status;
   if (query.country) where.country = query.country;
   if (query.category) where.category = { slug: query.category };
   if (query.audience) where.attributes = { path: ['audience'], equals: query.audience };
@@ -66,7 +67,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where = buildProductWhere(query);
+    const where = buildProductWhere(query, ProductPublicationStatus.PUBLISHED);
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),
@@ -124,7 +125,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const query = adminProductListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where = buildProductWhere(query, query.status ?? ProductPublicationStatus.PUBLISHED);
+    const where = buildProductWhere(query, query.status);
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({
         where,
