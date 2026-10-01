@@ -15,9 +15,8 @@ fi
 
 echo "▶ [AVERON Entrypoint] Applying Prisma database migrations (deploy)..."
 cd /app && ./node_modules/.bin/prisma migrate deploy --schema=prisma/schema.prisma || {
-  echo "⚠️ [AVERON Entrypoint] migrate deploy failed; refusing a destructive automatic db push."
+  echo "⚠️ [AVERON Entrypoint] migrate deploy failed. Refusing destructive automatic schema changes."
   exit 1
-  cd /app && ./node_modules/.bin/prisma db push --schema=prisma/schema.prisma --accept-data-loss
 }
 
 echo "▶ [AVERON Entrypoint] Database schema is up to date."
