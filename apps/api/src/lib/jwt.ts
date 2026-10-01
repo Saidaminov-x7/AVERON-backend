@@ -23,7 +23,11 @@ export interface RefreshPayload {
  * Access token подписывается JWT_SECRET (60 минут),
  * Refresh token подписывается REFRESH_SECRET (7 дней).
  */
-export const generateTokens = (user: User, request: FastifyRequest, requestedSessionId?: string) => {
+export const generateTokens = (
+  user: Pick<User, 'id' | 'role' | 'adminRole'>,
+  request: FastifyRequest,
+  requestedSessionId?: string,
+) => {
   const sessionId = requestedSessionId || crypto.randomUUID();
   const accessToken = request.server.jwt.sign(
     {

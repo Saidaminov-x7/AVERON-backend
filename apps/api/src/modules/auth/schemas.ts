@@ -47,6 +47,26 @@ export const resend2faSchema = z.object({
 
 export type Resend2faDto = z.infer<typeof resend2faSchema>;
 
+export const adminTotpCodeSchema = z.object({
+  code: z.string().trim().min(6).max(64),
+});
+
+export type AdminTotpCodeDto = z.infer<typeof adminTotpCodeSchema>;
+
+export const adminTotpLoginSchema = z.object({
+  challengeToken: z.string().min(40).max(128),
+  code: z.string().trim().min(6).max(64),
+});
+
+export type AdminTotpLoginDto = z.infer<typeof adminTotpLoginSchema>;
+
+export const adminTotpSensitiveActionSchema = z.object({
+  currentPassword: z.string().min(1).max(100),
+  code: z.string().trim().min(6).max(64),
+});
+
+export type AdminTotpSensitiveActionDto = z.infer<typeof adminTotpSensitiveActionSchema>;
+
 export const forgotPasswordSchema = z.object({
   email: z.string().email('Invalid email address').max(255),
   locale: z.enum(['ru', 'uz', 'en']).optional().default('ru'),

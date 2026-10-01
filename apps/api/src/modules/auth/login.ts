@@ -7,6 +7,7 @@ import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
 import { sendTelegram2FACode } from '../../lib/telegram';
 import { saveAuthSession } from './sessions';
+import { Role } from '@prisma/client';
 
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
@@ -29,8 +30,20 @@ export const loginHandler = async (
     }
 
     // Проверка блокировки
-    if (user.isBlocked) {
-      return reply.status(403).send({ message: 'Ваш аккаунт заблокирован' });
+    if (user.isBlocked || user.isDeleted) {
+      return reply.status(401).send({ message: 'Неверный email или пароль' });
+    }
+
+    const isAdmin = user.role === Role.ADMIN || !!user.adminRole;
+    if (isAdmin && user.adminTotpEnabled) {
+      const challengeToken = crypto.randomBytes(32).toString('hex');
+      await request.server.redis.set(
+        `admin-totp-login:${challengeToken}`,
+        JSON.stringify({ userId: user.id, attempts: 0 }),
+        'EX',
+        300,
+      );
+      return reply.send({ requireTotp: true, challengeToken, expiresInSeconds: 300 });
     }
 
     // Если включена глобальная 2FA или пользователь является SUPER_ADMIN
@@ -93,26 +106,15 @@ export const loginHandler = async (
     const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
 
     // Сохраняем хэш refreshToken и обновляем lastLoginAt
-    try {
-      const refreshTokenHash = await argon2.hash(refreshToken);
-      await request.server.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          refreshTokenHash,
-          lastLoginAt: new Date(),
-        },
-      });
-      await saveAuthSession(request, user.id, sessionId, refreshToken);
-    } catch (err) {
-      request.log.error({ err }, 'Failed to hash and save refresh token or update lastLoginAt');
-    }
+    const refreshTokenHash = await argon2.hash(refreshToken);
+    await request.server.prisma.user.update({
+      where: { id: user.id },
+      data: { refreshTokenHash, lastLoginAt: new Date() },
+    });
+    await saveAuthSession(request, user.id, sessionId, refreshToken);
 
     // Устанавливаем refreshToken в httpOnly cookie
-    try {
-      reply.setCookie('refreshToken', refreshToken, refreshCookieOptions());
-    } catch (cookieErr) {
-      request.log.warn({ cookieErr }, 'Failed to set refreshToken cookie');
-    }
+    reply.setCookie('refreshToken', refreshToken, refreshCookieOptions());
 
     try {
       const { logUserActivity } = await import('../../lib/activityLogger');
@@ -132,10 +134,10 @@ export const loginHandler = async (
         adminRole: user.adminRole,
       },
     });
-  } catch (error: any) {
-    request.log.error({ error }, 'Critical error in loginHandler');
+  } catch (error) {
+    request.log.error({ err: error, requestId: request.id }, 'Authentication attempt failed');
     return reply.status(500).send({
-      message: error?.message || 'Ошибка авторизации на сервере',
+      message: 'Ошибка авторизации на сервере',
     });
   }
 };

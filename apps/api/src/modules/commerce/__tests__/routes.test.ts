@@ -217,7 +217,7 @@ describe('commerce admin routes', () => {
     expect(prisma.commerceProduct.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
         status: 'PUBLISHED',
-        category: { slug: 'outerwear' },
+        category: { slug: 'outerwear', active: true },
       }),
       skip: 24,
     }));

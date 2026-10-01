@@ -13,8 +13,10 @@ import { authMiddleware } from '../../lib/authMiddleware';
 import { requestPhoneOtp, verifyPhoneOtp } from './phone-otp';
 import { listMySessions, revokeMySession, revokeOtherSessions } from './sessions';
 import { requestPhonePasswordLogin, requestPhonePasswordReset, requestPhoneRegistration, verifyPhonePasswordLogin, verifyPhonePasswordReset, verifyPhoneRegistration } from './phone-password';
+import { adminTotpModule } from './admin-totp';
 
 export const authModule: FastifyPluginAsync = async (server) => {
+  await server.register(adminTotpModule);
   server.post('/register/phone/request-code', { config: { rateLimit: { max: 3, timeWindow: '15 minutes' } } }, requestPhoneRegistration);
   server.post('/register/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhoneRegistration);
   server.post('/login/phone/request-code', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, requestPhonePasswordLogin);

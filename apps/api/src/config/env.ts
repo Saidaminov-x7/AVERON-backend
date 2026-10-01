@@ -17,6 +17,7 @@ const envSchema = z.object({
   // JWT
   JWT_SECRET: z.string().min(32, 'JWT_SECRET должен быть минимум 32 символа'),
   REFRESH_SECRET: z.string().min(32, 'REFRESH_SECRET must be at least 32 characters'),
+  TOTP_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'TOTP_ENCRYPTION_KEY must be 64 hex characters').optional(),
   GOOGLE_CLIENT_ID: z.string().optional(),
 
   // Telegram 2FA & Notification Bot

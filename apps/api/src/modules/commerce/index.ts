@@ -17,7 +17,7 @@ export function buildProductWhere(
   const where: Prisma.CommerceProductWhereInput = {};
   if (status) where.status = status;
   if (query.country) where.country = query.country;
-  if (query.category) where.category = { slug: query.category };
+  if (query.category) where.category = { slug: query.category, active: true };
   if (query.audience) where.attributes = { path: ['audience'], equals: query.audience };
   if (query.size || query.color) {
     where.variants = {

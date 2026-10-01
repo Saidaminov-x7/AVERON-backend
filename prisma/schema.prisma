@@ -136,6 +136,9 @@ model User {
   refreshTokenHash String?
   twoFactorSecret  String? // TOTP / 2FA секрет
   twoFactorEnabled Boolean    @default(false) // Включен ли 2FA
+  adminTotpSecret String?
+  adminTotpEnabled Boolean @default(false)
+  adminTotpLastCounter BigInt?
   isDeleted        Boolean    @default(false) // Soft-delete флаг
   deletedAt        DateTime? // Дата мягкого удаления
   createdAt        DateTime   @default(now())
@@ -161,6 +164,7 @@ model User {
   reviewsReceived      Review[]            @relation("LandlordReviews")
   promoCodeUsages      PromoCodeUsage[]
   authSessions         AuthSession[]
+  adminRecoveryCodes   AdminRecoveryCode[]
 
   @@index([email])
   @@index([phone])
@@ -184,6 +188,17 @@ model AuthSession {
 
   @@index([userId, revokedAt])
   @@index([expiresAt])
+}
+
+model AdminRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, usedAt])
 }
 
 model Listing {

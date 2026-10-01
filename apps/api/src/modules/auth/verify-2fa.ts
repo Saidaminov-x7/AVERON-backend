@@ -63,30 +63,23 @@ export const verify2faHandler = async (
   });
 
   if (!user) {
-    return reply.status(404).send({ message: 'Пользователь не найден' });
+    return reply.status(401).send({ message: 'Сессия подтверждения недействительна' });
   }
 
   if (user.isBlocked) {
-    return reply.status(403).send({ message: 'Аккаунт пользователя заблокирован' });
+    return reply.status(401).send({ message: 'Сессия подтверждения недействительна' });
   }
 
   // Генерируем токены доступа
   const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
 
   // Сохраняем хэш refreshToken и обновляем lastLoginAt
-  try {
-    const refreshTokenHash = await argon2.hash(refreshToken);
-    await request.server.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        refreshTokenHash,
-        lastLoginAt: new Date(),
-      },
-    });
-    await saveAuthSession(request, user.id, sessionId, refreshToken);
-  } catch (err) {
-    request.log.error({ err }, 'Failed to hash and save refresh token or update lastLoginAt');
-  }
+  const refreshTokenHash = await argon2.hash(refreshToken);
+  await request.server.prisma.user.update({
+    where: { id: user.id },
+    data: { refreshTokenHash, lastLoginAt: new Date() },
+  });
+  await saveAuthSession(request, user.id, sessionId, refreshToken);
 
   // Устанавливаем refreshToken в httpOnly cookie
   reply.setCookie('refreshToken', refreshToken, refreshCookieOptions());
