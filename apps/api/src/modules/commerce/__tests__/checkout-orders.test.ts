@@ -12,6 +12,7 @@ const ADMIN = '00000000-0000-4000-8000-000000000003';
 const PRODUCT = '00000000-0000-4000-8000-000000000004';
 const SECOND_PRODUCT = '00000000-0000-4000-8000-000000000008';
 const CART = '00000000-0000-4000-8000-000000000005';
+const CART_B = '00000000-0000-4000-8000-000000000009';
 const ORDER_ID = '00000000-0000-4000-8000-000000000006';
 const VARIANT = '00000000-0000-4000-8000-000000000007';
 const JWT_SECRET = 'checkout-orders-test-secret-that-is-at-least-32-characters';
@@ -49,6 +50,7 @@ function createTestApp(options: {
   const carts = new Map<string, { id: string; userId: string }>();
   const cartItems = options.cartItems ?? [];
   if (cartItems.length > 0) carts.set(USER_A, { id: CART, userId: USER_A });
+  if (cartItems.some((item) => item.cartId === CART_B)) carts.set(USER_B, { id: CART_B, userId: USER_B });
   const idempotency = new Map<string, Record<string, any>>();
   const orders = options.initialOrders ?? [];
   const statusHistory: Array<Record<string, unknown>> = [];
@@ -59,7 +61,7 @@ function createTestApp(options: {
     upsert: vi.fn(async ({ where, create }: any) => {
       const existing = carts.get(where.userId);
       if (existing) return existing;
-      const cart = { id: CART, userId: create.userId };
+      const cart = { id: create.userId === USER_A ? CART : CART_B, userId: create.userId };
       carts.set(create.userId, cart);
       return cart;
     }),
@@ -239,6 +241,79 @@ describe('commerce cart and checkout API', () => {
     await app.close();
   });
 
+  it('does not expose or mutate another customer cart items', async () => {
+    const item = {
+      id: 'customer-b-item',
+      cartId: CART_B,
+      itemKey: `${PRODUCT}:none`,
+      productId: PRODUCT,
+      variantId: null,
+      quantity: 2,
+    };
+    const { app, prisma, cartItems } = createTestApp({ cartItems: [item] });
+    const tokenA = await tokenFor(app, USER_A);
+    const tokenB = await tokenFor(app, USER_B);
+    const customerACart = await app.inject({
+      method: 'GET',
+      url: '/api/v1/cart',
+      headers: { authorization: `Bearer ${tokenA}` },
+    });
+    const customerBCart = await app.inject({
+      method: 'GET',
+      url: '/api/v1/cart',
+      headers: { authorization: `Bearer ${tokenB}` },
+    });
+    const update = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/cart/items/customer-b-item',
+      headers: { authorization: `Bearer ${tokenA}` },
+      payload: { quantity: 1 },
+    });
+    const remove = await app.inject({
+      method: 'DELETE',
+      url: '/api/v1/cart/items/customer-b-item',
+      headers: { authorization: `Bearer ${tokenA}` },
+    });
+
+    expect(customerACart.statusCode).toBe(200);
+    expect(customerACart.json().items).toEqual([]);
+    expect(customerBCart.json().items).toEqual([expect.objectContaining({ id: item.id, quantity: 2 })]);
+    expect(update.statusCode).toBe(404);
+    expect(remove.statusCode).toBe(404);
+    expect(prisma.commerceCartItem.updateMany).not.toHaveBeenCalled();
+    expect(cartItems).toEqual([item]);
+    await app.close();
+  });
+
+  it('does not check out another customer cart', async () => {
+    const item = {
+      id: 'customer-a-item',
+      cartId: CART,
+      itemKey: `${PRODUCT}:none`,
+      productId: PRODUCT,
+      variantId: null,
+      quantity: 1,
+    };
+    const { app, prisma, cartItems, orders } = createTestApp({ cartItems: [item] });
+    const tokenB = await tokenFor(app, USER_B);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: `Bearer ${tokenB}`, 'idempotency-key': 'foreign-cart-key-123' },
+      payload: {
+        contact: { name: 'Buyer B', phone: '+998901234568' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 2' },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().code).toBe('CART_EMPTY');
+    expect(prisma.commerceOrder.create).not.toHaveBeenCalled();
+    expect(cartItems).toEqual([item]);
+    expect(orders).toHaveLength(0);
+    await app.close();
+  });
+
   it('rejects unpublished products and malformed quantities', async () => {
     const { app, prisma } = createTestApp({ products: { [PRODUCT]: makeProduct({ status: 'DRAFT' }) } });
     const token = await tokenFor(app, USER_A);
@@ -248,17 +323,18 @@ describe('commerce cart and checkout API', () => {
       headers: { authorization: `Bearer ${token}` },
       payload: { productId: PRODUCT, quantity: 1 },
     });
-    const invalidQuantity = await app.inject({
-      method: 'POST',
-      url: '/api/v1/cart/items',
-      headers: { authorization: `Bearer ${token}` },
-      payload: { productId: PRODUCT, quantity: 1.5 },
-    });
-
     expect(hidden.statusCode).toBe(400);
     expect(hidden.json().code).toBe('PRODUCT_NOT_AVAILABLE');
-    expect(invalidQuantity.statusCode).toBe(400);
-    expect(invalidQuantity.json().code).toBe('INVALID_CART_ITEM');
+    for (const quantity of [0, -1, 1.5, 100, Number.NaN, '2', null]) {
+      const invalidQuantity = await app.inject({
+        method: 'POST',
+        url: '/api/v1/cart/items',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { productId: PRODUCT, quantity },
+      });
+      expect(invalidQuantity.statusCode, `quantity ${String(quantity)}`).toBe(400);
+      expect(invalidQuantity.json().code).toBe('INVALID_CART_ITEM');
+    }
     expect(prisma.commerceCartItem.upsert).not.toHaveBeenCalled();
     await app.close();
   });
