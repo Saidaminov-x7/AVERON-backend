@@ -23,8 +23,10 @@ const checkoutSchema = z.object({
     district: z.string().trim().max(100).optional(),
     apartment: z.string().trim().max(100).optional(),
     entrance: z.string().trim().max(50).optional(),
+    floor: z.string().trim().max(50).optional(),
     postalCode: z.string().trim().max(30).optional(),
     deliveryInstructions: z.string().trim().max(500).optional(),
+    comment: z.string().trim().max(500).optional(),
   }).strict(),
 }).strict();
 
@@ -48,6 +50,12 @@ type ProductForCart = {
   }>;
 };
 
+class CheckoutFailure extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
 const productSelect = {
   id: true,
   status: true,
@@ -64,7 +72,7 @@ function moneyToCents(value: Prisma.Decimal | number | string): number {
   const amount = Number(value);
   const cents = Math.round(amount * 100);
   if (!Number.isFinite(amount) || !Number.isSafeInteger(cents) || cents < 0) {
-    throw new Error('INVALID_PRICE');
+    throw new CheckoutFailure('INVALID_PRICE');
   }
   return cents;
 }
@@ -143,6 +151,12 @@ async function ensureCart(prisma: PrismaClient | Prisma.TransactionClient, userI
     update: {},
     select: { id: true },
   });
+}
+
+async function lockCart(tx: Prisma.TransactionClient, userId: string) {
+  const cart = await ensureCart(tx, userId);
+  await tx.$queryRaw`SELECT "id" FROM "CommerceCart" WHERE "id" = ${cart.id} FOR UPDATE`;
+  return cart;
 }
 
 async function getCartDto(prisma: PrismaClient | Prisma.TransactionClient, userId: string) {
@@ -254,7 +268,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       return await getCartDto(app.prisma, request.user.userId);
     } catch (error) {
       request.log.error({ error }, 'Unable to load cart');
-      return reply.status(500).send({ message: 'Unable to load cart' });
+      return reply.status(500).send({ code: 'CART_LOAD_FAILED', message: 'Unable to load cart' });
     }
   });
 
@@ -263,15 +277,15 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const parsed = cartItemSchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ message: 'Invalid cart item' });
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_CART_ITEM', message: 'Invalid cart item' });
     const { productId, variantId, quantity } = parsed.data;
     try {
       const result = await app.prisma.$transaction(async (tx) => {
-        const cart = await ensureCart(tx, request.user.userId);
+        const cart = await lockCart(tx, request.user.userId);
         const product = await tx.commerceProduct.findUnique({ where: { id: productId }, select: productSelect }) as ProductForCart | null;
-        if (!product || product.status !== 'PUBLISHED') return { error: 'PRODUCT_UNAVAILABLE' as const };
+        if (!product || product.status !== 'PUBLISHED') return { error: 'PRODUCT_NOT_AVAILABLE' as const };
         const variant = selectVariant(product, variantId);
-        if ((variantId && !variant) || (!variantId && variant === undefined)) return { error: 'VARIANT_REQUIRED' as const };
+        if ((variantId && !variant) || (!variantId && variant === undefined)) return { error: 'VARIANT_NOT_AVAILABLE' as const };
         const stock = variant?.stock ?? product.stock;
         const unitPriceCents = moneyToCents(variant?.salePriceUzs ?? product.salePriceUzs);
         const itemKey = `${productId}:${variantId ?? 'none'}`;
@@ -290,13 +304,13 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       });
       if ('error' in result) {
         const conflict = result.error === 'INSUFFICIENT_STOCK' || result.error === 'QUANTITY_LIMIT';
-        return reply.status(conflict ? 409 : 400).send({ message: result.error });
+        return reply.status(conflict ? 409 : 400).send({ code: result.error, message: result.error });
       }
       return reply.status(201).send(await getCartDto(app.prisma, request.user.userId));
     } catch (error) {
-      if (errorCode(error) === 'P2004') return reply.status(409).send({ message: 'Cart quantity or stock limit exceeded' });
+      if (errorCode(error) === 'P2004') return reply.status(409).send({ code: 'INVALID_QUANTITY', message: 'Cart quantity or stock limit exceeded' });
       request.log.error({ error }, 'Unable to update cart');
-      return reply.status(500).send({ message: 'Unable to update cart' });
+      return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to update cart' });
     }
   });
 
@@ -305,27 +319,34 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const parsed = updateCartItemSchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ message: 'Invalid quantity' });
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_QUANTITY', message: 'Invalid quantity' });
     try {
-      const cart = await ensureCart(app.prisma, request.user.userId);
-      const item = await app.prisma.commerceCartItem.findFirst({
-        where: { id: request.params.itemId, cartId: cart.id },
-        include: { product: { select: productSelect }, variant: true },
+      const result = await app.prisma.$transaction(async (tx) => {
+        const cart = await lockCart(tx, request.user.userId);
+        const item = await tx.commerceCartItem.findFirst({
+          where: { id: request.params.itemId, cartId: cart.id },
+          include: { product: { select: productSelect }, variant: true },
+        });
+        if (!item) return { error: 'CART_ITEM_NOT_FOUND' as const };
+        const product = item.product as ProductForCart;
+        if (product.status !== 'PUBLISHED') return { error: 'PRODUCT_NOT_AVAILABLE' as const };
+        const pricing = cartPrice(product, item.variantId ?? undefined);
+        if (!pricing) return { error: 'VARIANT_NOT_AVAILABLE' as const };
+        if (parsed.data.quantity > pricing.stock) return { error: 'INSUFFICIENT_STOCK' as const };
+        await tx.commerceCartItem.updateMany({
+          where: { id: item.id, cartId: cart.id },
+          data: { quantity: parsed.data.quantity },
+        });
+        return { ok: true as const };
       });
-      if (!item) return reply.status(404).send({ message: 'Cart item not found' });
-      const product = item.product as ProductForCart;
-      if (product.status !== 'PUBLISHED') return reply.status(409).send({ message: 'Product is unavailable' });
-      const pricing = cartPrice(product, item.variantId ?? undefined);
-      if (!pricing) return reply.status(409).send({ message: 'Product variant is unavailable' });
-      if (parsed.data.quantity > pricing.stock) return reply.status(409).send({ message: 'Insufficient stock' });
-      await app.prisma.commerceCartItem.updateMany({
-        where: { id: item.id, cartId: cart.id },
-        data: { quantity: parsed.data.quantity },
-      });
+      if ('error' in result) {
+        const status = result.error === 'CART_ITEM_NOT_FOUND' ? 404 : result.error === 'PRODUCT_NOT_AVAILABLE' ? 409 : 409;
+        return reply.status(status).send({ code: result.error, message: result.error });
+      }
       return await getCartDto(app.prisma, request.user.userId);
     } catch (error) {
       request.log.error({ error }, 'Unable to update cart item');
-      return reply.status(500).send({ message: 'Unable to update cart item' });
+      return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to update cart item' });
     }
   });
 
@@ -334,15 +355,17 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     try {
-      const cart = await ensureCart(app.prisma, request.user.userId);
-      const result = await app.prisma.commerceCartItem.deleteMany({
-        where: { id: request.params.itemId, cartId: cart.id },
+      const result = await app.prisma.$transaction(async (tx) => {
+        const cart = await lockCart(tx, request.user.userId);
+        return tx.commerceCartItem.deleteMany({
+          where: { id: request.params.itemId, cartId: cart.id },
+        });
       });
-      if (result.count === 0) return reply.status(404).send({ message: 'Cart item not found' });
+      if (result.count === 0) return reply.status(404).send({ code: 'CART_ITEM_NOT_FOUND', message: 'Cart item not found' });
       return await getCartDto(app.prisma, request.user.userId);
     } catch (error) {
       request.log.error({ error }, 'Unable to remove cart item');
-      return reply.status(500).send({ message: 'Unable to remove cart item' });
+      return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to remove cart item' });
     }
   });
 
@@ -351,12 +374,14 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     try {
-      const cart = await ensureCart(app.prisma, request.user.userId);
-      await app.prisma.commerceCartItem.deleteMany({ where: { cartId: cart.id } });
+      await app.prisma.$transaction(async (tx) => {
+        const cart = await lockCart(tx, request.user.userId);
+        await tx.commerceCartItem.deleteMany({ where: { cartId: cart.id } });
+      });
       return { items: [], subtotalUzs: '0.00', currency: 'UZS' as const };
     } catch (error) {
       request.log.error({ error }, 'Unable to clear cart');
-      return reply.status(500).send({ message: 'Unable to clear cart' });
+      return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to clear cart' });
     }
   });
 
@@ -365,11 +390,11 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const parsed = checkoutSchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ message: 'Invalid checkout details' });
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_CHECKOUT_DETAILS', message: 'Invalid checkout details' });
     const rawKey = request.headers['idempotency-key'];
     const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
     if (!key || key.length > 128 || !/^[\x21-\x7e]+$/.test(key)) {
-      return reply.status(400).send({ message: 'A valid Idempotency-Key header is required' });
+      return reply.status(400).send({ code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A valid Idempotency-Key header is required' });
     }
     const input = parsed.data;
     const requestHash = checkoutHash(input);
@@ -381,12 +406,12 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
         select: { requestHash: true, orderId: true },
       });
       if (existing) {
-        if (existing.requestHash !== requestHash) return reply.status(409).send({ message: 'Idempotency key was already used with different details' });
+        if (existing.requestHash !== requestHash) return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with different details' });
         const order = await app.prisma.commerceOrder.findUnique({
           where: { id: existing.orderId },
           select: orderSelect(),
         });
-        if (!order) return reply.status(409).send({ message: 'Idempotent order is no longer available' });
+        if (!order) return reply.status(409).send({ code: 'CHECKOUT_CONFLICT', message: 'Idempotent order is no longer available' });
         return reply.status(200).send(safeOrder(order));
       }
 
@@ -408,7 +433,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             },
           },
         });
-        if (!cart || cart.items.length === 0) return { error: 'CART_EMPTY' as const };
+        if (!cart || cart.items.length === 0) throw new CheckoutFailure('CART_EMPTY');
 
         let subtotalCents = 0;
         const snapshots: Array<{
@@ -426,20 +451,20 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             where: { id: cartItem.productId },
             select: productSelect,
           }) as ProductForCart | null;
-          if (!product || product.status !== 'PUBLISHED') return { error: 'PRODUCT_UNAVAILABLE' as const };
+          if (!product || product.status !== 'PUBLISHED') throw new CheckoutFailure('PRODUCT_NOT_AVAILABLE');
           const variant = selectVariant(product, cartItem.variantId ?? undefined);
           if ((cartItem.variantId && !variant) || (!cartItem.variantId && variant === undefined)) {
-            return { error: 'VARIANT_UNAVAILABLE' as const };
+            throw new CheckoutFailure('VARIANT_NOT_AVAILABLE');
           }
           const availableStock = variant?.stock ?? product.stock;
           if (cartItem.quantity < 1 || cartItem.quantity > 99 || cartItem.quantity > availableStock) {
-            return { error: 'INSUFFICIENT_STOCK' as const };
+            throw new CheckoutFailure('INSUFFICIENT_STOCK');
           }
           const unitPriceCents = moneyToCents(variant?.salePriceUzs ?? product.salePriceUzs);
           const lineTotalCents = unitPriceCents * cartItem.quantity;
-          if (!Number.isSafeInteger(lineTotalCents)) return { error: 'INVALID_PRICE' as const };
+          if (!Number.isSafeInteger(lineTotalCents)) throw new CheckoutFailure('INVALID_PRICE');
           subtotalCents += lineTotalCents;
-          if (!Number.isSafeInteger(subtotalCents)) return { error: 'INVALID_PRICE' as const };
+          if (!Number.isSafeInteger(subtotalCents)) throw new CheckoutFailure('INVALID_PRICE');
           snapshots.push({
             productId: product.id,
             variantId: variant?.id ?? null,
@@ -464,7 +489,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
               where: { id: product.id, status: 'PUBLISHED', stock: { gte: cartItem.quantity } },
               data: { stock: { decrement: cartItem.quantity } },
             });
-          if (claim.count !== 1) return { error: 'INSUFFICIENT_STOCK' as const };
+          if (claim.count !== 1) throw new CheckoutFailure('INSUFFICIENT_STOCK');
         }
 
         const orderNumber = `AV-${Date.now().toString(36).toUpperCase()}-${randomBytes(4).toString('hex').toUpperCase()}`;
@@ -473,6 +498,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             orderNumber,
             userId,
             status: 'CREATED',
+            inventoryCommitted: true,
             currency: 'UZS',
             subtotal: centsToNumber(subtotalCents),
             discount: 0,
@@ -492,34 +518,20 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
         return { orderId: order.id, requestHash, replayed: false };
       });
 
-      if ('error' in result) {
-        const concurrent = await app.prisma.commerceCheckoutIdempotency.findUnique({
-          where: { userId_key: { userId, key } },
-          select: { requestHash: true, orderId: true },
-        });
-        if (concurrent) {
-          if (concurrent.requestHash !== requestHash) {
-            return reply.status(409).send({ message: 'Idempotency key was already used with different details' });
-          }
-          const replayedOrder = await app.prisma.commerceOrder.findUnique({
-            where: { id: concurrent.orderId },
-            select: orderSelect(),
-          });
-          if (replayedOrder) return reply.status(200).send(safeOrder(replayedOrder));
-        }
-        const status = result.error === 'CART_EMPTY' ? 400 : 409;
-        return reply.status(status).send({ message: result.error });
-      }
       if (result.requestHash !== requestHash) {
-        return reply.status(409).send({ message: 'Idempotency key was already used with different details' });
+        return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with different details' });
       }
       const order = await app.prisma.commerceOrder.findUnique({
         where: { id: result.orderId },
         select: orderSelect(),
       });
-      if (!order) return reply.status(500).send({ message: 'Unable to load created order' });
+      if (!order) return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load created order' });
       return reply.status(result.replayed ? 200 : 201).send(safeOrder(order));
     } catch (error) {
+      if (error instanceof CheckoutFailure) {
+        const status = error.code === 'CART_EMPTY' ? 400 : error.code === 'INVALID_PRICE' ? 409 : 409;
+        return reply.status(status).send({ code: error.code, message: error.code });
+      }
       if (errorCode(error) === 'P2002') {
         try {
           const concurrent = await app.prisma.commerceCheckoutIdempotency.findUnique({
@@ -528,7 +540,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
           });
           if (concurrent) {
             if (concurrent.requestHash !== requestHash) {
-              return reply.status(409).send({ message: 'Idempotency key was already used with different details' });
+              return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with different details' });
             }
             const order = await app.prisma.commerceOrder.findUnique({
               where: { id: concurrent.orderId },
@@ -539,10 +551,10 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
         } catch (lookupError) {
           request.log.error({ error: lookupError }, 'Unable to resolve concurrent checkout');
         }
-        return reply.status(409).send({ message: 'Checkout conflict; retry with the same idempotency key' });
+        return reply.status(409).send({ code: 'CHECKOUT_CONFLICT', message: 'Checkout conflict; retry with the same idempotency key' });
       }
       request.log.error({ error }, 'Checkout failed');
-      return reply.status(500).send({ message: 'Unable to complete checkout' });
+      return reply.status(500).send({ code: 'CHECKOUT_FAILED', message: 'Unable to complete checkout' });
     }
   });
 };

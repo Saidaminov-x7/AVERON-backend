@@ -975,6 +975,7 @@ model CommerceOrder {
   orderNumber     String                       @unique
   userId          String
   status          AveronOrderStatus            @default(CREATED)
+  inventoryCommitted Boolean                   @default(false)
   currency        String                       @default("UZS")
   subtotal        Decimal                      @db.Decimal(16, 2)
   discount        Decimal                      @default(0) @db.Decimal(16, 2)

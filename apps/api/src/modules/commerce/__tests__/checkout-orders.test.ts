@@ -10,24 +10,27 @@ const USER_A = '00000000-0000-4000-8000-000000000001';
 const USER_B = '00000000-0000-4000-8000-000000000002';
 const ADMIN = '00000000-0000-4000-8000-000000000003';
 const PRODUCT = '00000000-0000-4000-8000-000000000004';
+const SECOND_PRODUCT = '00000000-0000-4000-8000-000000000008';
 const CART = '00000000-0000-4000-8000-000000000005';
 const ORDER_ID = '00000000-0000-4000-8000-000000000006';
 const VARIANT = '00000000-0000-4000-8000-000000000007';
 const JWT_SECRET = 'checkout-orders-test-secret-that-is-at-least-32-characters';
 
 function makeProduct({
+  id = PRODUCT,
   status = 'PUBLISHED',
   stock = 5,
   price = '12500.00',
   variants = [],
 }: {
+  id?: string;
   status?: string;
   stock?: number;
   price?: string;
   variants?: Array<Record<string, unknown>>;
 } = {}) {
   return {
-    id: PRODUCT,
+    id,
     status,
     stock,
     salePriceUzs: price,
@@ -103,7 +106,12 @@ function createTestApp(options: {
     findUnique: vi.fn(async ({ where }: any) => products.get(where.id) ?? null),
     updateMany: vi.fn(async ({ where, data }: any) => {
       const product = products.get(where.id);
-      if (!product || product.status !== where.status || product.stock < where.stock.gte) return { count: 0 };
+      if (!product) return { count: 0 };
+      if (data.stock.increment !== undefined) {
+        product.stock += data.stock.increment;
+        return { count: 1 };
+      }
+      if (product.status !== where.status || product.stock < where.stock.gte) return { count: 0 };
       product.stock -= data.stock.decrement;
       return { count: 1 };
     }),
@@ -112,8 +120,14 @@ function createTestApp(options: {
     updateMany: vi.fn(async ({ where, data }: any) => {
       const product = products.get(where.productId);
       const variant = product?.variants?.find((candidate: any) =>
-        candidate.id === where.id && candidate.productId === where.productId && candidate.active);
-      if (!variant || variant.stock < where.stock.gte) return { count: 0 };
+        candidate.id === where.id && candidate.productId === where.productId
+        && (where.active === undefined || candidate.active));
+      if (!variant) return { count: 0 };
+      if (data.stock.increment !== undefined) {
+        variant.stock += data.stock.increment;
+        return { count: 1 };
+      }
+      if (variant.stock < where.stock.gte) return { count: 0 };
       variant.stock -= data.stock.decrement;
       return { count: 1 };
     }),
@@ -177,7 +191,25 @@ function createTestApp(options: {
         isDeleted: false,
       })),
     },
-    $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => {
+      const productSnapshot = structuredClone([...products.entries()]);
+      const cartItemsSnapshot = structuredClone(cartItems);
+      const ordersSnapshot = structuredClone(orders);
+      const idempotencySnapshot = structuredClone([...idempotency.entries()]);
+      const historySnapshot = structuredClone(statusHistory);
+      try {
+        return await callback(tx);
+      } catch (error) {
+        products.clear();
+        for (const [productId, product] of productSnapshot) products.set(productId, product);
+        cartItems.splice(0, cartItems.length, ...cartItemsSnapshot);
+        orders.splice(0, orders.length, ...ordersSnapshot);
+        idempotency.clear();
+        for (const [idempotencyKey, row] of idempotencySnapshot) idempotency.set(idempotencyKey, row);
+        statusHistory.splice(0, statusHistory.length, ...historySnapshot);
+        throw error;
+      }
+    }),
   };
   const app = Fastify();
   app.register(fastifyJwt, { secret: JWT_SECRET });
@@ -224,7 +256,9 @@ describe('commerce cart and checkout API', () => {
     });
 
     expect(hidden.statusCode).toBe(400);
+    expect(hidden.json().code).toBe('PRODUCT_NOT_AVAILABLE');
     expect(invalidQuantity.statusCode).toBe(400);
+    expect(invalidQuantity.json().code).toBe('INVALID_CART_ITEM');
     expect(prisma.commerceCartItem.upsert).not.toHaveBeenCalled();
     await app.close();
   });
@@ -299,7 +333,7 @@ describe('commerce cart and checkout API', () => {
     const token = await tokenFor(app, USER_A);
     const payload = {
       contact: { name: 'Buyer', phone: '+998901234567' },
-      deliveryAddress: { city: 'Tashkent', address: 'Main street 1' },
+      deliveryAddress: { city: 'Tashkent', address: 'Main street 1', floor: '2', comment: 'Call on arrival' },
     };
     const headers = { authorization: `Bearer ${token}`, 'idempotency-key': 'order-submit-123' };
     const first = await app.inject({ method: 'POST', url: '/api/v1/checkout', headers, payload });
@@ -322,6 +356,12 @@ describe('commerce cart and checkout API', () => {
     expect(first.json()).not.toHaveProperty('contact');
     expect(first.json()).not.toHaveProperty('deliveryAddress');
     expect(first.json()).not.toHaveProperty('purchaseCost');
+    expect(prisma.commerceOrder.create.mock.calls[0][0].data.deliveryAddress).toEqual({
+      city: 'Tashkent',
+      address: 'Main street 1',
+      floor: '2',
+      comment: 'Call on arrival',
+    });
     expect(second.statusCode).toBe(200);
     expect(second.json().orderNumber).toBe(first.json().orderNumber);
     expect(orders).toHaveLength(1);
@@ -418,6 +458,50 @@ describe('commerce cart and checkout API', () => {
     expect(cartItems).toHaveLength(1);
     await app.close();
   });
+
+  it('rolls back earlier stock claims when a later cart line cannot be fulfilled', async () => {
+    const firstItem = {
+      id: 'cart-item-1',
+      cartId: CART,
+      itemKey: `${PRODUCT}:none`,
+      productId: PRODUCT,
+      variantId: null,
+      quantity: 1,
+    };
+    const secondItem = {
+      id: 'cart-item-2',
+      cartId: CART,
+      itemKey: `${SECOND_PRODUCT}:none`,
+      productId: SECOND_PRODUCT,
+      variantId: null,
+      quantity: 1,
+    };
+    const { app, prisma, products, cartItems, orders } = createTestApp({
+      products: {
+        [PRODUCT]: makeProduct({ stock: 5 }),
+        [SECOND_PRODUCT]: makeProduct({ id: SECOND_PRODUCT, stock: 0 }),
+      },
+      cartItems: [firstItem, secondItem],
+    });
+    const token = await tokenFor(app, USER_A);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'partial-stock-claim-123' },
+      payload: {
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('INSUFFICIENT_STOCK');
+    expect(products.get(PRODUCT).stock).toBe(5);
+    expect(cartItems).toHaveLength(2);
+    expect(orders).toHaveLength(0);
+    expect(prisma.commerceOrder.create).not.toHaveBeenCalled();
+    await app.close();
+  });
 });
 
 describe('commerce order ownership and admin workflow', () => {
@@ -429,6 +513,9 @@ describe('commerce order ownership and admin workflow', () => {
         userId: USER_A,
         status: 'CREATED',
         currency: 'UZS',
+        subtotal: '100.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
         totalRevenue: '100.00',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -445,6 +532,7 @@ describe('commerce order ownership and admin workflow', () => {
     });
     expect(ownerList.statusCode).toBe(200);
     expect(ownerList.json()[0]).toMatchObject({ orderNumber: 'AV-OTHER-1' });
+    expect(ownerList.json()[0]).toMatchObject({ subtotal: 100, discount: 0, deliveryCost: 0 });
     expect(ownerList.json()[0]).not.toHaveProperty('id');
     expect(ownerList.json()[0].items[0] ?? {}).not.toHaveProperty('id');
     const response = await app.inject({
@@ -487,7 +575,7 @@ describe('commerce order ownership and admin workflow', () => {
     expect(denied.statusCode).toBe(403);
     expect(prisma.$transaction).not.toHaveBeenCalled();
 
-    const adminToken = app.jwt.sign({ userId: ADMIN, role: 'ADMIN' });
+    const adminToken = await tokenFor(app, ADMIN);
     const changed = await app.inject({
       method: 'PATCH',
       url: '/api/v1/admin/orders/AV-TEST-1/status',
@@ -517,6 +605,50 @@ describe('commerce order ownership and admin workflow', () => {
     expect(prisma.commerceOrderStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: 'CONFIRMED', actorId: ADMIN }),
     }));
+    await app.close();
+  });
+
+  it('restores inventory in the same transaction when an unfulfilled order is cancelled', async () => {
+    const { app, products, orders } = createTestApp({
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-CANCEL-1',
+        userId: USER_A,
+        status: 'CREATED',
+        inventoryCommitted: true,
+        currency: 'UZS',
+        subtotal: '25000.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '25000.00',
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        items: [{
+          id: 'order-item-1',
+          productId: PRODUCT,
+          variantId: null,
+          variantSnapshot: null,
+          quantity: 2,
+          title: 'Куртка',
+          unitPrice: '12500.00',
+          totalPrice: '25000.00',
+        }],
+      }],
+    });
+    const adminToken = await tokenFor(app, ADMIN);
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-CANCEL-1/status',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { status: 'CANCELLED' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().status).toBe('CANCELLED');
+    expect(products.get(PRODUCT).stock).toBe(7);
+    expect(orders[0].inventoryCommitted).toBe(true);
     await app.close();
   });
 });

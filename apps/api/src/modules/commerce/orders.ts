@@ -12,6 +12,9 @@ const customerOrderSelect = {
   orderNumber: true,
   status: true,
   currency: true,
+  subtotal: true,
+  discount: true,
+  deliveryCost: true,
   totalRevenue: true,
   createdAt: true,
   items: {
@@ -68,6 +71,9 @@ function customerOrderDto(order: CustomerOrderSource) {
     orderNumber: order.orderNumber,
     status: order.status,
     currency: order.currency,
+    subtotal: amount(order.subtotal),
+    discount: amount(order.discount),
+    deliveryCost: amount(order.deliveryCost),
     totalRevenue: amount(order.totalRevenue),
     createdAt: order.createdAt,
     items: order.items.map((item) => ({
@@ -123,6 +129,12 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+class OrderTransitionFailure extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
 export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
   app.get('/orders/me', { preHandler: authMiddleware }, async (request, reply) => {
     try {
@@ -135,7 +147,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       return orders.map((order) => customerOrderDto(order));
     } catch (error) {
       request.log.error({ error }, 'Unable to list customer orders');
-      return reply.status(500).send({ message: 'Unable to load orders' });
+      return reply.status(500).send({ code: 'ORDER_LIST_FAILED', message: 'Unable to load orders' });
     }
   });
 
@@ -144,11 +156,11 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
   }, async (request, reply) => {
     try {
       const order = await findOrderForDto(app, request.params.orderNumber, request.user.userId);
-      if (!order) return reply.status(404).send({ message: 'Order not found' });
+      if (!order) return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       return customerOrderDto(order);
     } catch (error) {
       request.log.error({ error }, 'Unable to load customer order');
-      return reply.status(500).send({ message: 'Unable to load order' });
+      return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load order' });
     }
   });
 
@@ -162,7 +174,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       return orders.map(adminOrderDto);
     } catch (error) {
       request.log.error({ error }, 'Unable to list admin orders');
-      return reply.status(500).send({ message: 'Unable to load orders' });
+      return reply.status(500).send({ code: 'ORDER_LIST_FAILED', message: 'Unable to load orders' });
     }
   });
 
@@ -174,11 +186,11 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
         where: { orderNumber: request.params.orderNumber },
         select: adminOrderSelect,
       });
-      if (!order) return reply.status(404).send({ message: 'Order not found' });
+      if (!order) return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       return adminOrderDto(order);
     } catch (error) {
       request.log.error({ error }, 'Unable to load admin order');
-      return reply.status(500).send({ message: 'Unable to load order' });
+      return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load order' });
     }
   });
 
@@ -186,20 +198,49 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
     preHandler: adminMiddleware,
   }, async (request, reply) => {
     const parsed = statusSchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ message: 'Invalid order status' });
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ORDER_STATUS', message: 'Invalid order status' });
     try {
       const result = await app.prisma.$transaction(async (tx) => {
         const current = await tx.commerceOrder.findUnique({
           where: { orderNumber: request.params.orderNumber },
-          select: { id: true, status: true },
+          select: {
+            id: true,
+            status: true,
+            inventoryCommitted: true,
+            items: {
+              select: {
+                productId: true,
+                variantId: true,
+                variantSnapshot: true,
+                quantity: true,
+              },
+            },
+          },
         });
         if (!current) return { error: 'ORDER_NOT_FOUND' as const };
-        if (current.status !== 'CREATED') return { error: 'INVALID_STATUS_TRANSITION' as const };
+        if (current.status !== 'CREATED') return { error: 'INVALID_ORDER_STATUS_TRANSITION' as const };
+        if (parsed.data.status === 'CANCELLED' && current.inventoryCommitted) {
+          if (current.items.some((item) => item.variantSnapshot !== null && item.variantId === null)) {
+            return { error: 'CANCELLATION_STOCK_UNAVAILABLE' as const };
+          }
+          for (const item of current.items) {
+            const restored = item.variantId
+              ? await tx.commerceProductVariant.updateMany({
+                where: { id: item.variantId, productId: item.productId },
+                data: { stock: { increment: item.quantity } },
+              })
+              : await tx.commerceProduct.updateMany({
+                where: { id: item.productId },
+                data: { stock: { increment: item.quantity } },
+              });
+            if (restored.count !== 1) throw new OrderTransitionFailure('CANCELLATION_STOCK_UNAVAILABLE');
+          }
+        }
         const changed = await tx.commerceOrder.updateMany({
           where: { id: current.id, status: 'CREATED' },
           data: { status: parsed.data.status },
         });
-        if (changed.count !== 1) return { error: 'INVALID_STATUS_TRANSITION' as const };
+        if (changed.count !== 1) throw new OrderTransitionFailure('INVALID_ORDER_STATUS_TRANSITION');
         await tx.commerceOrderStatusHistory.create({
           data: {
             orderId: current.id,
@@ -214,15 +255,21 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
         return { order: updated };
       });
       if ('error' in result) {
-        if (result.error === 'ORDER_NOT_FOUND') return reply.status(404).send({ message: 'Order not found' });
-        return reply.status(409).send({ message: 'Invalid order status transition' });
+        if (result.error === 'ORDER_NOT_FOUND') return reply.status(404).send({ code: result.error, message: 'Order not found' });
+        if (result.error === 'CANCELLATION_STOCK_UNAVAILABLE') {
+          return reply.status(409).send({ code: result.error, message: 'Inventory could not be safely restored' });
+        }
+        return reply.status(409).send({ code: result.error, message: 'Invalid order status transition' });
       }
-      if (!result.order) return reply.status(500).send({ message: 'Unable to load updated order' });
+      if (!result.order) return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load updated order' });
       return adminOrderDto(result.order);
     } catch (error) {
-      if (errorCode(error) === 'P2025') return reply.status(404).send({ message: 'Order not found' });
+      if (error instanceof OrderTransitionFailure) {
+        return reply.status(409).send({ code: error.code, message: 'Order status transition could not be completed' });
+      }
+      if (errorCode(error) === 'P2025') return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       request.log.error({ error }, 'Unable to update order status');
-      return reply.status(500).send({ message: 'Unable to update order status' });
+      return reply.status(500).send({ code: 'ORDER_STATUS_UPDATE_FAILED', message: 'Unable to update order status' });
     }
   });
 };
