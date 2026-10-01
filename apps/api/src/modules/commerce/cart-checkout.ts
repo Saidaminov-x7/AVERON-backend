@@ -13,6 +13,7 @@ const cartItemSchema = z.object({
 }).strict();
 const updateCartItemSchema = z.object({ quantity: quantitySchema }).strict();
 const checkoutSchema = z.object({
+  deliveryMethod: z.enum(['COURIER', 'PICKUP']).default('COURIER'),
   contact: z.object({
     name: z.string().trim().min(1).max(100),
     phone: z.string().trim().min(7).max(32).regex(/^[+0-9 ()-]+$/),
@@ -37,6 +38,10 @@ type ProductForCart = {
   translations: Prisma.JsonValue;
   salePriceUzs: Prisma.Decimal;
   stock: number;
+  preorderEnabled: boolean;
+  preorderLimit: number;
+  preorderReserved: number;
+  preorderEstimatedAt: Date | null;
   images: Array<{ url: string }>;
   variants: Array<{
     id: string;
@@ -62,6 +67,10 @@ const productSelect = {
   translations: true,
   salePriceUzs: true,
   stock: true,
+  preorderEnabled: true,
+  preorderLimit: true,
+  preorderReserved: true,
+  preorderEstimatedAt: true,
   images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { url: true } },
   variants: {
     select: { id: true, productId: true, color: true, size: true, sku: true, salePriceUzs: true, stock: true, active: true },
@@ -123,9 +132,12 @@ function selectVariant(product: ProductForCart, variantId?: string) {
 function productIsAvailable(product: ProductForCart, variantId?: string): boolean {
   if (product.status !== 'PUBLISHED') return false;
   const variant = selectVariant(product, variantId);
-  if (variantId) return Boolean(variant && variant.stock > 0);
+  const preorderAvailable = product.preorderEnabled
+    ? Math.max(0, product.preorderLimit - product.preorderReserved)
+    : 0;
+  if (variantId) return Boolean(variant && (variant.stock > 0 || preorderAvailable > 0));
   if (variant === undefined) return false;
-  return product.stock > 0;
+  return product.stock > 0 || preorderAvailable > 0;
 }
 
 function itemTitle(product: ProductForCart, variant?: ProductForCart['variants'][number] | null): string {
@@ -141,6 +153,11 @@ function cartPrice(product: ProductForCart, variantId?: string) {
     title: itemTitle(product, variant),
     unitPriceCents: moneyToCents(variant?.salePriceUzs ?? product.salePriceUzs),
     stock: variant?.stock ?? product.stock,
+    preorderAvailable: product.preorderEnabled
+      ? Math.max(0, product.preorderLimit - product.preorderReserved)
+      : 0,
+    preorderEnabled: product.preorderEnabled,
+    preorderEstimatedAt: product.preorderEstimatedAt,
   };
 }
 
@@ -173,11 +190,13 @@ async function getCartDto(prisma: PrismaClient | Prisma.TransactionClient, userI
   const items = (stored?.items ?? []).map((item) => {
     const product = item.product as ProductForCart;
     const pricing = product.status === 'PUBLISHED' ? cartPrice(product, item.variantId ?? undefined) : null;
-    const available = Boolean(
-      pricing
+    const fulfillsFromStock = Boolean(pricing && item.quantity <= pricing.stock);
+    const fulfillsAsPreorder = Boolean(pricing
+      && pricing.preorderEnabled
+      && item.quantity <= pricing.preorderAvailable);
+    const available = Boolean(pricing
       && productIsAvailable(product, item.variantId ?? undefined)
-      && item.quantity <= pricing.stock,
-    );
+      && (fulfillsFromStock || fulfillsAsPreorder));
     return {
       id: item.id,
       productId: item.productId,
@@ -191,6 +210,10 @@ async function getCartDto(prisma: PrismaClient | Prisma.TransactionClient, userI
       } : null,
       quantity: item.quantity,
       stock: pricing?.stock ?? 0,
+      preorderEligible: Boolean(pricing?.preorderEnabled && pricing.preorderAvailable > 0),
+      preorderAvailable: pricing?.preorderAvailable ?? 0,
+      estimatedAvailableAt: pricing?.preorderEstimatedAt ?? null,
+      fulfillmentType: fulfillsFromStock ? 'STOCK' as const : fulfillsAsPreorder ? 'PREORDER' as const : null,
       available,
       ...(available ? {} : {
         availabilityCode: product.status !== 'PUBLISHED'
@@ -198,7 +221,9 @@ async function getCartDto(prisma: PrismaClient | Prisma.TransactionClient, userI
           : !pricing
             ? 'VARIANT_UNAVAILABLE'
             : pricing.stock === 0
-              ? 'OUT_OF_STOCK'
+              ? pricing.preorderEnabled && item.quantity > pricing.preorderAvailable
+                ? 'PREORDER_LIMIT_REACHED'
+                : 'OUT_OF_STOCK'
               : 'QUANTITY_EXCEEDS_STOCK',
       }),
       unitPriceUzs: centsToMoney(pricing?.unitPriceCents ?? moneyToCents(product.salePriceUzs)),
@@ -219,6 +244,24 @@ function orderSelect() {
     deliveryCost: true,
     totalRevenue: true,
     createdAt: true,
+    delivery: {
+      select: {
+        method: true,
+        recipient: true,
+        phone: true,
+        destination: true,
+        status: true,
+        trackingNumber: true,
+        provider: true,
+        estimatedDeliveryAt: true,
+        shippedAt: true,
+        deliveredAt: true,
+        history: {
+          orderBy: { createdAt: 'asc' },
+          select: { status: true, createdAt: true },
+        },
+      },
+    },
     items: {
       select: {
         title: true,
@@ -226,6 +269,8 @@ function orderSelect() {
         quantity: true,
         unitPrice: true,
         totalPrice: true,
+        isPreorder: true,
+        preorderEstimatedAt: true,
       },
     },
   } satisfies Prisma.CommerceOrderSelect;
@@ -243,12 +288,27 @@ function safeOrder(order: SafeOrderSource) {
     deliveryCost: Number(order.deliveryCost),
     totalRevenue: Number(order.totalRevenue),
     createdAt: order.createdAt,
+    delivery: order.delivery ? {
+      method: order.delivery.method,
+      recipient: order.delivery.recipient,
+      phone: order.delivery.phone,
+      destination: order.delivery.destination,
+      status: order.delivery.status,
+      trackingNumber: order.delivery.trackingNumber,
+      provider: order.delivery.provider,
+      estimatedDeliveryAt: order.delivery.estimatedDeliveryAt,
+      shippedAt: order.delivery.shippedAt,
+      deliveredAt: order.delivery.deliveredAt,
+      history: order.delivery.history,
+    } : null,
     items: (order.items ?? []).map((item) => ({
       title: item.title,
       ...(item.variantSnapshot ? { variantSnapshot: item.variantSnapshot } : {}),
       quantity: item.quantity,
       unitPrice: Number(item.unitPrice),
       totalPrice: Number(item.totalPrice),
+      isPreorder: item.isPreorder,
+      ...(item.isPreorder ? { estimatedAvailableAt: item.preorderEstimatedAt } : {}),
     })),
   };
 }
@@ -294,7 +354,13 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
           select: { quantity: true },
         });
         if ((existing?.quantity ?? 0) + quantity > 99) return { error: 'QUANTITY_LIMIT' as const };
-        if ((existing?.quantity ?? 0) + quantity > stock) return { error: 'INSUFFICIENT_STOCK' as const };
+        const preorderAvailable = product.preorderEnabled
+          ? Math.max(0, product.preorderLimit - product.preorderReserved)
+          : 0;
+        const nextQuantity = (existing?.quantity ?? 0) + quantity;
+        if (nextQuantity > stock && nextQuantity > preorderAvailable) {
+          return { error: 'INSUFFICIENT_STOCK' as const };
+        }
         await tx.commerceCartItem.upsert({
           where: { cartId_itemKey: { cartId: cart.id, itemKey } },
           create: { cartId: cart.id, itemKey, productId, variantId, quantity },
@@ -332,7 +398,9 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
         if (product.status !== 'PUBLISHED') return { error: 'PRODUCT_NOT_AVAILABLE' as const };
         const pricing = cartPrice(product, item.variantId ?? undefined);
         if (!pricing) return { error: 'VARIANT_NOT_AVAILABLE' as const };
-        if (parsed.data.quantity > pricing.stock) return { error: 'INSUFFICIENT_STOCK' as const };
+        if (parsed.data.quantity > pricing.stock && parsed.data.quantity > pricing.preorderAvailable) {
+          return { error: 'INSUFFICIENT_STOCK' as const };
+        }
         await tx.commerceCartItem.updateMany({
           where: { id: item.id, cartId: cart.id },
           data: { quantity: parsed.data.quantity },
@@ -416,14 +484,16 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       }
 
       const result = await app.prisma.$transaction(async (tx) => {
+        // Serialize different idempotency keys for the same cart so one cart cannot be checked out twice.
+        await tx.$queryRaw`SELECT "id" FROM "CommerceCart" WHERE "userId" = ${userId} FOR UPDATE`;
+        // Recheck after acquiring the cart lock: a concurrent request with the same key may
+        // have committed while this transaction was waiting for the lock.
         const race = await tx.commerceCheckoutIdempotency.findUnique({
           where: { userId_key: { userId, key } },
           select: { requestHash: true, orderId: true },
         });
         if (race) return { orderId: race.orderId, requestHash: race.requestHash, replayed: true };
 
-        // Serialize different idempotency keys for the same cart so one cart cannot be checked out twice.
-        await tx.$queryRaw`SELECT "id" FROM "CommerceCart" WHERE "userId" = ${userId} FOR UPDATE`;
         const cart = await tx.commerceCart.findUnique({
           where: { userId },
           include: {
@@ -444,6 +514,8 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
           quantity: number;
           unitPrice: number;
           totalPrice: number;
+          isPreorder: boolean;
+          preorderEstimatedAt: Date | null;
         }> = [];
 
         for (const cartItem of cart.items) {
@@ -456,8 +528,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
           if ((cartItem.variantId && !variant) || (!cartItem.variantId && variant === undefined)) {
             throw new CheckoutFailure('VARIANT_NOT_AVAILABLE');
           }
-          const availableStock = variant?.stock ?? product.stock;
-          if (cartItem.quantity < 1 || cartItem.quantity > 99 || cartItem.quantity > availableStock) {
+          if (cartItem.quantity < 1 || cartItem.quantity > 99) {
             throw new CheckoutFailure('INSUFFICIENT_STOCK');
           }
           const unitPriceCents = moneyToCents(variant?.salePriceUzs ?? product.salePriceUzs);
@@ -479,6 +550,8 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             quantity: cartItem.quantity,
             unitPrice: centsToNumber(unitPriceCents),
             totalPrice: centsToNumber(lineTotalCents),
+            isPreorder: false,
+            preorderEstimatedAt: null,
           });
           const claim = variant
             ? await tx.commerceProductVariant.updateMany({
@@ -489,7 +562,27 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
               where: { id: product.id, status: 'PUBLISHED', stock: { gte: cartItem.quantity } },
               data: { stock: { decrement: cartItem.quantity } },
             });
-          if (claim.count !== 1) throw new CheckoutFailure('INSUFFICIENT_STOCK');
+          if (claim.count !== 1) {
+            const preorderAvailable = product.preorderEnabled
+              ? Math.max(0, product.preorderLimit - product.preorderReserved)
+              : 0;
+            if (!product.preorderEnabled || cartItem.quantity > preorderAvailable) {
+              throw new CheckoutFailure('INSUFFICIENT_STOCK');
+            }
+            const preorderClaim = await tx.commerceProduct.updateMany({
+              where: {
+                id: product.id,
+                status: 'PUBLISHED',
+                preorderEnabled: true,
+                preorderReserved: { equals: product.preorderReserved },
+                preorderLimit: { gte: product.preorderReserved + cartItem.quantity },
+              },
+              data: { preorderReserved: { increment: cartItem.quantity } },
+            });
+            if (preorderClaim.count !== 1) throw new CheckoutFailure('INSUFFICIENT_STOCK');
+            snapshots[snapshots.length - 1].isPreorder = true;
+            snapshots[snapshots.length - 1].preorderEstimatedAt = product.preorderEstimatedAt;
+          }
         }
 
         const orderNumber = `AV-${Date.now().toString(36).toUpperCase()}-${randomBytes(4).toString('hex').toUpperCase()}`;
@@ -508,6 +601,16 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             deliveryAddress: input.deliveryAddress as Prisma.InputJsonObject,
             items: { create: snapshots },
             statusHistory: { create: { status: 'CREATED', actorId: userId } },
+            delivery: {
+              create: {
+                method: input.deliveryMethod,
+                recipient: input.contact.name,
+                phone: input.contact.phone,
+                destination: input.deliveryAddress as Prisma.InputJsonObject,
+                status: 'PENDING',
+                history: { create: { status: 'PENDING', changedBy: userId } },
+              },
+            },
           },
           select: { id: true },
         });

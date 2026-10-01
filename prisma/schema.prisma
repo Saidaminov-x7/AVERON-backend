@@ -778,6 +778,21 @@ enum AveronOrderStatus {
   REFUNDED
 }
 
+enum CommerceDeliveryMethod {
+  COURIER
+  PICKUP
+}
+
+enum CommerceDeliveryStatus {
+  PENDING
+  PREPARING
+  SHIPPED
+  IN_TRANSIT
+  READY_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
 enum PaymentState {
   PENDING
   PAID
@@ -854,6 +869,10 @@ model CommerceProduct {
   salePriceUzs      Decimal                  @db.Decimal(16, 2)
   compareAtPriceUzs Decimal?                 @db.Decimal(16, 2)
   status            ProductPublicationStatus @default(DRAFT)
+  preorderEnabled   Boolean                  @default(false)
+  preorderLimit     Int                      @default(0)
+  preorderReserved  Int                      @default(0)
+  preorderEstimatedAt DateTime?
   approvedById      String?
   approvedAt        DateTime?
   publishedAt       DateTime?
@@ -995,6 +1014,7 @@ model CommerceOrder {
   payments        CommercePayment[]
   purchases       SupplierPurchase[]
   expenses        CommerceExpense[]
+  delivery        CommerceDelivery?
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
   checkoutIdempotency CommerceCheckoutIdempotency?
@@ -1056,6 +1076,8 @@ model CommerceOrderItem {
   quantity   Int
   unitPrice  Decimal                 @db.Decimal(16, 2)
   totalPrice Decimal                 @db.Decimal(16, 2)
+  isPreorder Boolean                 @default(false)
+  preorderEstimatedAt DateTime?
 
   @@index([orderId])
   @@index([productId])
@@ -1071,6 +1093,40 @@ model CommerceOrderStatusHistory {
   createdAt DateTime          @default(now())
 
   @@index([orderId, createdAt])
+}
+
+model CommerceDelivery {
+  id                   String                  @id @default(uuid())
+  orderId              String                  @unique
+  order                CommerceOrder           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method               CommerceDeliveryMethod  @default(COURIER)
+  recipient            String
+  phone                String
+  destination          Json
+  status               CommerceDeliveryStatus  @default(PENDING)
+  trackingNumber       String?                 @unique
+  provider             String?
+  estimatedDeliveryAt  DateTime?
+  shippedAt            DateTime?
+  deliveredAt          DateTime?
+  providerMetadata     Json?
+  history              CommerceDeliveryStatusHistory[]
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+
+  @@index([status, estimatedDeliveryAt])
+}
+
+model CommerceDeliveryStatusHistory {
+  id         String                 @id @default(uuid())
+  deliveryId String
+  delivery   CommerceDelivery      @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  status     CommerceDeliveryStatus
+  note       String?
+  changedBy  String?
+  createdAt  DateTime               @default(now())
+
+  @@index([deliveryId, createdAt])
 }
 
 model CommercePayment {

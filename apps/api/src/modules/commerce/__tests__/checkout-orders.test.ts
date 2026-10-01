@@ -22,18 +22,30 @@ function makeProduct({
   status = 'PUBLISHED',
   stock = 5,
   price = '12500.00',
+  preorderEnabled = false,
+  preorderLimit = 0,
+  preorderReserved = 0,
+  preorderEstimatedAt = null,
   variants = [],
 }: {
   id?: string;
   status?: string;
   stock?: number;
   price?: string;
+  preorderEnabled?: boolean;
+  preorderLimit?: number;
+  preorderReserved?: number;
+  preorderEstimatedAt?: Date | null;
   variants?: Array<Record<string, unknown>>;
 } = {}) {
   return {
     id,
     status,
     stock,
+    preorderEnabled,
+    preorderLimit,
+    preorderReserved,
+    preorderEstimatedAt,
     salePriceUzs: price,
     translations: { ru: { title: 'Куртка' }, en: { title: 'Jacket' } },
     images: [{ url: 'https://cdn.example/jacket.jpg' }],
@@ -109,6 +121,19 @@ function createTestApp(options: {
     updateMany: vi.fn(async ({ where, data }: any) => {
       const product = products.get(where.id);
       if (!product) return { count: 0 };
+      if (data.preorderReserved?.increment !== undefined) {
+        if (product.status !== where.status
+          || product.preorderEnabled !== where.preorderEnabled
+          || product.preorderReserved !== where.preorderReserved.equals
+          || product.preorderLimit < where.preorderLimit.gte) return { count: 0 };
+        product.preorderReserved += data.preorderReserved.increment;
+        return { count: 1 };
+      }
+      if (data.preorderReserved?.decrement !== undefined) {
+        if (product.preorderReserved < where.preorderReserved.gte) return { count: 0 };
+        product.preorderReserved -= data.preorderReserved.decrement;
+        return { count: 1 };
+      }
       if (data.stock.increment !== undefined) {
         product.stock += data.stock.increment;
         return { count: 1 };
@@ -167,6 +192,34 @@ function createTestApp(options: {
       return { count: 1 };
     }),
   };
+  const commerceDelivery = {
+    create: vi.fn(async ({ data }: any) => {
+      const order = orders.find((candidate) => candidate.id === data.orderId);
+      if (!order) throw new Error('Order missing');
+      const history = [{ ...data.history.create, createdAt: new Date('2026-10-01T10:00:00Z') }];
+      const delivery = { ...data, id: id(), status: 'PENDING', history };
+      delete delivery.history;
+      order.delivery = { ...delivery, history };
+      return order.delivery;
+    }),
+    updateMany: vi.fn(async ({ where, data }: any) => {
+      const delivery = orders.map((order) => order.delivery).find((candidate) => candidate?.id === where.id);
+      if (!delivery || delivery.status !== where.status) return { count: 0 };
+      Object.assign(delivery, data);
+      return { count: 1 };
+    }),
+  };
+  const commerceDeliveryStatusHistory = {
+    create: vi.fn(async ({ data }: any) => {
+      const entry = { ...data, createdAt: new Date('2026-10-01T10:00:00Z') };
+      const delivery = orders.map((order) => order.delivery).find((candidate) => candidate?.id === data.deliveryId);
+      if (delivery) {
+        delivery.history ??= [];
+        delivery.history.push(entry);
+      }
+      return entry;
+    }),
+  };
   const tx = {
     $queryRaw: vi.fn(async () => []),
     commerceCart,
@@ -175,13 +228,22 @@ function createTestApp(options: {
     commerceProductVariant,
     commerceCheckoutIdempotency,
     commerceOrder,
+    commerceDelivery,
+    commerceDeliveryStatusHistory,
     commerceOrderStatusHistory: {
       create: vi.fn(async ({ data }: any) => {
-        statusHistory.push(data);
-        return data;
+        const entry = { ...data, createdAt: new Date('2026-10-01T10:00:00Z') };
+        statusHistory.push(entry);
+        const order = orders.find((candidate) => candidate.id === data.orderId);
+        if (order) {
+          order.statusHistory ??= [];
+          order.statusHistory.unshift(entry);
+        }
+        return entry;
       }),
     },
   };
+  let transactionTail: Promise<void> = Promise.resolve();
   const prisma = {
     ...tx,
     user: {
@@ -194,6 +256,12 @@ function createTestApp(options: {
       })),
     },
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => {
+      const previousTransaction = transactionTail;
+      let releaseTransaction!: () => void;
+      transactionTail = new Promise<void>((resolve) => {
+        releaseTransaction = resolve;
+      });
+      await previousTransaction;
       const productSnapshot = structuredClone([...products.entries()]);
       const cartItemsSnapshot = structuredClone(cartItems);
       const ordersSnapshot = structuredClone(orders);
@@ -210,6 +278,8 @@ function createTestApp(options: {
         for (const [idempotencyKey, row] of idempotencySnapshot) idempotency.set(idempotencyKey, row);
         statusHistory.splice(0, statusHistory.length, ...historySnapshot);
         throw error;
+      } finally {
+        releaseTransaction();
       }
     }),
   };
@@ -218,7 +288,7 @@ function createTestApp(options: {
   app.decorate('prisma', prisma as never);
   app.register(cartCheckoutModule, { prefix: '/api/v1' });
   app.register(commerceOrdersModule, { prefix: '/api/v1' });
-  return { app, prisma, products, cartItems, carts, orders, statusHistory };
+  return { app, prisma, products, cartItems, carts, orders, statusHistory, idempotency };
 }
 
 async function tokenFor(app: ReturnType<typeof Fastify>, userId: string) {
@@ -384,6 +454,113 @@ describe('commerce cart and checkout API', () => {
     await app.close();
   });
 
+  it('keeps preorder disabled for zero-stock products unless explicitly configured', async () => {
+    const { app, prisma } = createTestApp({ products: { [PRODUCT]: makeProduct({ stock: 0 }) } });
+    const token = await tokenFor(app, USER_A);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/cart/items',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { productId: PRODUCT, quantity: 1 },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('INSUFFICIENT_STOCK');
+    expect(prisma.commerceCartItem.upsert).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('claims bounded preorder capacity at checkout and snapshots its estimated date', async () => {
+    const estimatedAt = new Date('2031-02-03T00:00:00.000Z');
+    const { app, prisma, products } = createTestApp({
+      products: {
+        [PRODUCT]: makeProduct({
+          stock: 0,
+          preorderEnabled: true,
+          preorderLimit: 3,
+          preorderEstimatedAt: estimatedAt,
+        }),
+      },
+      cartItems: [{
+        id: 'cart-item',
+        cartId: CART,
+        itemKey: `${PRODUCT}:none`,
+        productId: PRODUCT,
+        variantId: null,
+        quantity: 2,
+      }],
+    });
+    const token = await tokenFor(app, USER_A);
+    const cart = await app.inject({
+      method: 'GET',
+      url: '/api/v1/cart',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(cart.json().items[0]).toMatchObject({
+      available: true,
+      preorderEligible: true,
+      preorderAvailable: 3,
+      fulfillmentType: 'PREORDER',
+      estimatedAvailableAt: estimatedAt.toISOString(),
+    });
+    expect(products.get(PRODUCT).preorderReserved).toBe(0);
+
+    const checkout = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'preorder-checkout-123' },
+      payload: {
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+      },
+    });
+    expect(checkout.statusCode, checkout.body).toBe(201);
+    expect(checkout.json().items[0]).toMatchObject({
+      isPreorder: true,
+      estimatedAvailableAt: estimatedAt.toISOString(),
+      quantity: 2,
+    });
+    expect(prisma.commerceOrder.create.mock.calls[0][0].data.items.create[0]).toMatchObject({
+      isPreorder: true,
+      preorderEstimatedAt: estimatedAt,
+    });
+    expect(products.get(PRODUCT).stock).toBe(0);
+    expect(products.get(PRODUCT).preorderReserved).toBe(2);
+    await app.close();
+  });
+
+  it('enforces the preorder cap under concurrent checkout requests', async () => {
+    const { app, orders, products } = createTestApp({
+      products: {
+        [PRODUCT]: makeProduct({ stock: 0, preorderEnabled: true, preorderLimit: 1 }),
+      },
+      cartItems: [
+        { id: 'cart-item-a', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 },
+        { id: 'cart-item-b', cartId: CART_B, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 },
+      ],
+    });
+    const tokenA = await tokenFor(app, USER_A);
+    const tokenB = app.jwt.sign({ userId: USER_B, role: 'USER' });
+    const makeRequest = (token: string, key: string) => app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': key },
+      payload: {
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+      },
+    });
+    const [responseA, responseB] = await Promise.all([
+      makeRequest(tokenA, 'preorder-cap-user-a'),
+      makeRequest(tokenB, 'preorder-cap-user-b'),
+    ]);
+
+    expect([responseA.statusCode, responseB.statusCode].sort()).toEqual([201, 409]);
+    expect(orders).toHaveLength(1);
+    expect(products.get(PRODUCT).preorderReserved).toBe(1);
+    await app.close();
+  });
+
   it('rejects client-supplied prices rather than accepting a tampered checkout', async () => {
     const { app, prisma } = createTestApp();
     const token = await tokenFor(app, USER_A);
@@ -438,6 +615,13 @@ describe('commerce cart and checkout API', () => {
       floor: '2',
       comment: 'Call on arrival',
     });
+    expect(prisma.commerceOrder.create.mock.calls[0][0].data.delivery.create).toMatchObject({
+      method: 'COURIER',
+      recipient: 'Buyer',
+      phone: '+998901234567',
+      status: 'PENDING',
+      history: { create: { status: 'PENDING', changedBy: USER_A } },
+    });
     expect(second.statusCode).toBe(200);
     expect(second.json().orderNumber).toBe(first.json().orderNumber);
     expect(orders).toHaveLength(1);
@@ -446,6 +630,8 @@ describe('commerce cart and checkout API', () => {
     expect(prisma.commerceOrder.create.mock.calls[0][0].data.items.create[0].variantSnapshot).toBeUndefined();
     expect(prisma.commerceOrder.create).toHaveBeenCalledTimes(1);
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw.mock.invocationCallOrder[0])
+      .toBeLessThan(prisma.commerceCheckoutIdempotency.findUnique.mock.invocationCallOrder[1]);
     await app.close();
   });
 
@@ -465,6 +651,37 @@ describe('commerce cart and checkout API', () => {
     });
     expect(first.statusCode, first.body).toBe(201);
     expect(second.statusCode).toBe(409);
+    await app.close();
+  });
+
+  it('replays a same-key checkout committed while the request waits for the cart lock', async () => {
+    const { app, prisma, idempotency, orders, cartItems, products } = createTestApp({
+      cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 }],
+    });
+    const token = await tokenFor(app, USER_A);
+    const key = 'concurrent-checkout-123';
+    const headers = { authorization: `Bearer ${token}`, 'idempotency-key': key };
+    const payload = {
+      contact: { name: 'Buyer', phone: '+998901234567' },
+      deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+    };
+    const first = await app.inject({ method: 'POST', url: '/api/v1/checkout', headers, payload });
+    expect(first.statusCode).toBe(201);
+
+    const winner = idempotency.get(`${USER_A}:${key}`);
+    expect(winner).toBeDefined();
+    idempotency.delete(`${USER_A}:${key}`);
+    prisma.$queryRaw.mockImplementationOnce(async () => {
+      idempotency.set(`${USER_A}:${key}`, winner!);
+      return [];
+    });
+
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/checkout', headers, payload });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().orderNumber).toBe(first.json().orderNumber);
+    expect(orders).toHaveLength(1);
+    expect(cartItems).toHaveLength(0);
+    expect(products.get(PRODUCT).stock).toBe(4);
     await app.close();
   });
 
@@ -581,6 +798,276 @@ describe('commerce cart and checkout API', () => {
 });
 
 describe('commerce order ownership and admin workflow', () => {
+  it('allows an admin to advance internal delivery status and keeps provider metadata private', async () => {
+    const delivery = {
+      id: 'delivery-1',
+      method: 'COURIER',
+      recipient: 'Buyer',
+      phone: '+998901234567',
+      destination: { city: 'Tashkent', address: 'Street 1' },
+      status: 'PENDING',
+      trackingNumber: null,
+      provider: null,
+      estimatedDeliveryAt: null,
+      shippedAt: null,
+      deliveredAt: null,
+      providerMetadata: { credential: 'must-not-leak' },
+      history: [{ status: 'PENDING', createdAt: new Date('2026-10-01T10:00:00Z') }],
+    };
+    const { app, prisma, orders } = createTestApp({
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-DELIVERY-1',
+        userId: USER_A,
+        status: 'CONFIRMED',
+        currency: 'UZS',
+        subtotal: '12500.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '12500.00',
+        createdAt: new Date('2026-10-01T10:00:00Z'),
+        updatedAt: new Date('2026-10-01T10:00:00Z'),
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+        items: [],
+        statusHistory: [],
+        purchases: [],
+        delivery,
+      }],
+    });
+    const adminToken = await tokenFor(app, ADMIN);
+    const customerToken = await tokenFor(app, USER_A);
+    const updated = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-DELIVERY-1/shipping',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        status: 'PREPARING',
+        provider: 'Internal courier',
+        trackingNumber: 'TRK-100',
+        estimatedDeliveryAt: '2026-10-08T12:00:00.000Z',
+        note: 'Packed for dispatch',
+      },
+    });
+
+    expect(updated.statusCode, updated.body).toBe(200);
+    expect(updated.json().delivery).toMatchObject({
+      status: 'PREPARING',
+      provider: 'Internal courier',
+      trackingNumber: 'TRK-100',
+    });
+    expect(updated.body).not.toContain('must-not-leak');
+    expect(orders[0].delivery.status).toBe('PREPARING');
+    expect(prisma.commerceDeliveryStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'PREPARING', note: 'Packed for dispatch', changedBy: ADMIN }),
+    }));
+
+    const forbidden = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-DELIVERY-1/shipping',
+      headers: { authorization: ['Bearer', customerToken].join(' ') },
+      payload: { status: 'SHIPPED' },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('rejects invalid internal shipping transitions without changing delivery data', async () => {
+    const { app, prisma, orders } = createTestApp({
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-INVALID-DELIVERY-1',
+        userId: USER_A,
+        status: 'CONFIRMED',
+        currency: 'UZS',
+        subtotal: '100.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '100.00',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        items: [],
+        statusHistory: [],
+        purchases: [],
+        delivery: { id: 'delivery-2', status: 'PENDING', history: [], shippedAt: null },
+      }],
+    });
+    const adminToken = await tokenFor(app, ADMIN);
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-INVALID-DELIVERY-1/shipping',
+      headers: { authorization: ['Bearer', adminToken].join(' ') },
+      payload: { status: 'IN_TRANSIT' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().code).toBe('INVALID_SHIPPING_TRANSITION');
+    expect(orders[0].delivery.status).toBe('PENDING');
+    expect(prisma.commerceDelivery.updateMany).not.toHaveBeenCalled();
+    expect(prisma.commerceDeliveryStatusHistory.create).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('initializes internal delivery from the saved order snapshot for legacy orders', async () => {
+    const { app, prisma, orders } = createTestApp({
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-LEGACY-DELIVERY-1',
+        userId: USER_A,
+        status: 'CONFIRMED',
+        currency: 'UZS',
+        subtotal: '100.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '100.00',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+        items: [],
+        statusHistory: [],
+        purchases: [],
+      }],
+    });
+    const adminToken = await tokenFor(app, ADMIN);
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-LEGACY-DELIVERY-1/shipping',
+      headers: { authorization: ['Bearer', adminToken].join(' ') },
+      payload: { status: 'PREPARING' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(orders[0].delivery).toMatchObject({
+      status: 'PREPARING',
+      recipient: 'Buyer',
+      phone: '+998901234567',
+      destination: { city: 'Tashkent', address: 'Street 1' },
+    });
+    expect(prisma.commerceDelivery.create).toHaveBeenCalledTimes(1);
+    expect(prisma.commerceDeliveryStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'PREPARING', changedBy: ADMIN }),
+    }));
+    await app.close();
+  });
+
+  it('allows customers to cancel only their own unconfirmed orders and restores committed stock', async () => {
+    const { app, products, prisma, orders } = createTestApp({
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-CUSTOMER-CANCEL-1',
+        userId: USER_A,
+        status: 'CREATED',
+        inventoryCommitted: true,
+        currency: 'UZS',
+        subtotal: '25000.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '25000.00',
+        createdAt: new Date('2026-10-01T10:00:00Z'),
+        updatedAt: new Date('2026-10-01T10:00:00Z'),
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+        delivery: {
+          id: 'customer-cancel-delivery',
+          method: 'COURIER',
+          recipient: 'Buyer',
+          phone: '+998901234567',
+          destination: { city: 'Tashkent', address: 'Street 1' },
+          status: 'PENDING',
+          trackingNumber: null,
+          provider: null,
+          estimatedDeliveryAt: null,
+          shippedAt: null,
+          deliveredAt: null,
+          history: [{ status: 'PENDING', createdAt: new Date('2026-10-01T10:00:00Z') }],
+        },
+        items: [{
+          id: 'customer-cancel-item',
+          productId: PRODUCT,
+          variantId: null,
+          variantSnapshot: null,
+          quantity: 2,
+          title: 'Куртка',
+          unitPrice: '12500.00',
+          totalPrice: '25000.00',
+          isPreorder: false,
+        }],
+        statusHistory: [{ status: 'CREATED', createdAt: new Date('2026-10-01T10:00:00Z') }],
+        purchases: [],
+      }],
+    });
+    const ownerToken = await tokenFor(app, USER_A);
+    const otherToken = app.jwt.sign({ userId: USER_B, role: 'USER' });
+    const otherCustomer = await app.inject({
+      method: 'POST',
+      url: '/api/v1/orders/me/AV-CUSTOMER-CANCEL-1/cancel',
+      headers: { authorization: `Bearer ${otherToken}` },
+    });
+    expect(otherCustomer.statusCode).toBe(404);
+    expect(products.get(PRODUCT).stock).toBe(5);
+
+    const cancelled = await app.inject({
+      method: 'POST',
+      url: '/api/v1/orders/me/AV-CUSTOMER-CANCEL-1/cancel',
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect(cancelled.json()).toMatchObject({
+      orderNumber: 'AV-CUSTOMER-CANCEL-1',
+      status: 'CANCELLED',
+    });
+    expect(products.get(PRODUCT).stock).toBe(7);
+    expect(orders[0].status).toBe('CANCELLED');
+    expect(orders[0].delivery.status).toBe('CANCELLED');
+    expect(prisma.commerceDeliveryStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'CANCELLED', changedBy: USER_A }),
+    }));
+    expect(prisma.commerceOrderStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'CANCELLED', actorId: USER_A }),
+    }));
+    const repeated = await app.inject({
+      method: 'POST',
+      url: '/api/v1/orders/me/AV-CUSTOMER-CANCEL-1/cancel',
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    expect(repeated.statusCode).toBe(409);
+    expect(products.get(PRODUCT).stock).toBe(7);
+    await app.close();
+  });
+
+  it('does not allow customer cancellation after order confirmation', async () => {
+    const { app, products } = createTestApp({
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-NO-CANCEL-AFTER-CONFIRM',
+        userId: USER_A,
+        status: 'CONFIRMED',
+        inventoryCommitted: true,
+        currency: 'UZS',
+        subtotal: '12500.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '12500.00',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        items: [{ productId: PRODUCT, variantId: null, variantSnapshot: null, quantity: 1, isPreorder: false }],
+        statusHistory: [],
+        purchases: [],
+      }],
+    });
+    const ownerToken = await tokenFor(app, USER_A);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/orders/me/AV-NO-CANCEL-AFTER-CONFIRM/cancel',
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(products.get(PRODUCT).stock).toBe(5);
+    await app.close();
+  });
+
   it('does not return another customer order', async () => {
     const { app, prisma } = createTestApp({
       initialOrders: [{
@@ -597,6 +1084,17 @@ describe('commerce order ownership and admin workflow', () => {
         updatedAt: new Date(),
         items: [],
         statusHistory: [],
+        purchases: [{
+          shipments: [{
+            shipment: {
+              provider: 'IPOST',
+              trackingNumber: 'TRACK-ORDER-1',
+              status: 'IN_TRANSIT_CHINA',
+              sentAt: new Date('2026-10-01T10:00:00Z'),
+              arrivedAt: null,
+            },
+          }],
+        }],
       }],
     });
     const token = await tokenFor(app, USER_B);
@@ -609,6 +1107,11 @@ describe('commerce order ownership and admin workflow', () => {
     expect(ownerList.statusCode).toBe(200);
     expect(ownerList.json()[0]).toMatchObject({ orderNumber: 'AV-OTHER-1' });
     expect(ownerList.json()[0]).toMatchObject({ subtotal: 100, discount: 0, deliveryCost: 0 });
+    expect(ownerList.json()[0].shipments).toEqual([expect.objectContaining({
+      provider: 'IPOST',
+      trackingNumber: 'TRACK-ORDER-1',
+      status: 'IN_TRANSIT_CHINA',
+    })]);
     expect(ownerList.json()[0]).not.toHaveProperty('id');
     expect(ownerList.json()[0].items[0] ?? {}).not.toHaveProperty('id');
     const response = await app.inject({
@@ -623,7 +1126,7 @@ describe('commerce order ownership and admin workflow', () => {
     await app.close();
   });
 
-  it('requires admin authorization and permits only CREATED to CONFIRMED or CANCELLED', async () => {
+  it('requires admin authorization and prevents invalid order status transitions', async () => {
     const order = {
       id: ORDER_ID,
       orderNumber: 'AV-TEST-1',
@@ -674,13 +1177,88 @@ describe('commerce order ownership and admin workflow', () => {
       method: 'PATCH',
       url: '/api/v1/admin/orders/AV-TEST-1/status',
       headers: { authorization: `Bearer ${adminToken}` },
-      payload: { status: 'PAID' },
+      payload: { status: 'REFUNDED' },
     });
     expect(invalid.statusCode).toBe(400);
     expect(orders[0].status).toBe('CONFIRMED');
     expect(prisma.commerceOrderStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: 'CONFIRMED', actorId: ADMIN }),
     }));
+    await app.close();
+  });
+
+  it('accepts adjacent fulfillment and shipping transitions and rejects skipped stages', async () => {
+    const order = {
+      id: ORDER_ID,
+      orderNumber: 'AV-SHIPPING-1',
+      userId: USER_A,
+      status: 'CREATED',
+      currency: 'UZS',
+      subtotal: '20000.00',
+      discount: '0.00',
+      deliveryCost: '0.00',
+      totalRevenue: '20000.00',
+      contact: { name: 'Buyer', phone: '+998901234567' },
+      deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      statusHistory: [],
+      items: [],
+    };
+    const { app, prisma } = createTestApp({ initialOrders: [order] });
+    const adminToken = await tokenFor(app, ADMIN);
+    const headers = { authorization: `Bearer ${adminToken}` };
+
+    const skipped = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-SHIPPING-1/status',
+      headers,
+      payload: { status: 'IN_TRANSIT_CHINA' },
+    });
+    expect(skipped.statusCode).toBe(409);
+
+    for (const status of [
+      'CONFIRMED',
+      'PAID',
+      'ORDERED_FROM_SUPPLIER',
+      'SUPPLIER_CONFIRMED',
+      'IN_TRANSIT_CHINA',
+      'CARGO_WAREHOUSE',
+      'INTERNATIONAL_TRANSIT',
+      'ARRIVED_UZBEKISTAN',
+      'OUT_FOR_DELIVERY',
+      'DELIVERED',
+      'COMPLETED',
+    ]) {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/admin/orders/AV-SHIPPING-1/status',
+        headers,
+        payload: { status, note: status === 'IN_TRANSIT_CHINA' ? 'Carrier handoff complete' : undefined },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().status).toBe(status);
+    }
+
+    expect(prisma.commerceOrderStatusHistory.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'IN_TRANSIT_CHINA', note: 'Carrier handoff complete', actorId: ADMIN }),
+    }));
+    const customerToken = await tokenFor(app, USER_A);
+    const customerOrder = await app.inject({
+      method: 'GET',
+      url: '/api/v1/orders/me/AV-SHIPPING-1',
+      headers: { authorization: `Bearer ${customerToken}` },
+    });
+    expect(customerOrder.statusCode).toBe(200);
+    expect(customerOrder.json().status).toBe('COMPLETED');
+    const customerHistoryEntry = customerOrder.json().statusHistory.find(
+      (entry: { status: string }) => entry.status === 'IN_TRANSIT_CHINA',
+    );
+    expect(customerHistoryEntry).toMatchObject({
+      status: 'IN_TRANSIT_CHINA',
+      createdAt: expect.any(String),
+    });
+    expect(customerHistoryEntry).not.toHaveProperty('note');
     await app.close();
   });
 
@@ -725,6 +1303,59 @@ describe('commerce order ownership and admin workflow', () => {
     expect(response.json().status).toBe('CANCELLED');
     expect(products.get(PRODUCT).stock).toBe(7);
     expect(orders[0].inventoryCommitted).toBe(true);
+    await app.close();
+  });
+
+  it('releases preorder reservations instead of physical stock on safe cancellation', async () => {
+    const { app, products } = createTestApp({
+      products: {
+        [PRODUCT]: makeProduct({
+          stock: 4,
+          preorderEnabled: true,
+          preorderLimit: 5,
+          preorderReserved: 2,
+        }),
+      },
+      initialOrders: [{
+        id: ORDER_ID,
+        orderNumber: 'AV-PREORDER-CANCEL-1',
+        userId: USER_A,
+        status: 'CREATED',
+        inventoryCommitted: true,
+        currency: 'UZS',
+        subtotal: '25000.00',
+        discount: '0.00',
+        deliveryCost: '0.00',
+        totalRevenue: '25000.00',
+        contact: { name: 'Buyer', phone: '+998901234567' },
+        deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        items: [{
+          id: 'preorder-item-1',
+          productId: PRODUCT,
+          variantId: null,
+          variantSnapshot: null,
+          quantity: 2,
+          title: 'Куртка',
+          unitPrice: '12500.00',
+          totalPrice: '25000.00',
+          isPreorder: true,
+          preorderEstimatedAt: null,
+        }],
+      }],
+    });
+    const adminToken = await tokenFor(app, ADMIN);
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-PREORDER-CANCEL-1/status',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { status: 'CANCELLED' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(products.get(PRODUCT).stock).toBe(4);
+    expect(products.get(PRODUCT).preorderReserved).toBe(0);
     await app.close();
   });
 });

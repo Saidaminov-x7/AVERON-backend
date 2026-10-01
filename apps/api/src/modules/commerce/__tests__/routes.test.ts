@@ -19,11 +19,15 @@ function createTestApp({
   maxProductPhotoSizeMb = 5,
   mediaSize = 100,
   categoryActive = true,
+  publicProduct = null,
+  manualProduct = null,
 }: {
   maxProductPhotos?: number;
   maxProductPhotoSizeMb?: number;
   mediaSize?: number;
   categoryActive?: boolean;
+  publicProduct?: Record<string, any> | null;
+  manualProduct?: Record<string, any> | null;
 } = {}) {
   const category = {
     id: categoryId,
@@ -39,7 +43,11 @@ function createTestApp({
     variants: [],
   };
   const tx = {
-    commerceProduct: { create: vi.fn(async () => createdProduct) },
+    commerceProduct: {
+      create: vi.fn(async () => createdProduct),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
+        manualProduct ? Object.assign(manualProduct, data) : { ...createdProduct, ...data }),
+    },
     importedProduct: {
       updateMany: vi.fn(async () => ({ count: 1 })),
       findUnique: vi.fn(async () => null),
@@ -52,7 +60,9 @@ function createTestApp({
   };
   const prisma = {
     commerceProduct: {
-      findMany: vi.fn(async () => []),
+      findMany: vi.fn(async () => publicProduct ? [publicProduct] : []),
+      findFirst: vi.fn(async () => publicProduct),
+      findUnique: vi.fn(async () => manualProduct),
       count: vi.fn(async () => 0),
     },
     commerceCategory: {
@@ -115,10 +125,138 @@ describe('commerce admin routes', () => {
         sourceUrl: null,
         originalPriceCny: null,
         exchangeRate: null,
+        preorderEnabled: false,
+        preorderLimit: 0,
+        preorderReserved: 0,
+        preorderEstimatedAt: null,
         images: { create: [expect.objectContaining({ mediaId, sortOrder: 0 })] },
       }),
     }));
     expect(tx.auditLog.create).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it('allows authorized product controls to enable and bound preorders', async () => {
+    const estimatedAt = '2031-02-03T00:00:00.000Z';
+    const { app, tx } = createTestApp();
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/products',
+      payload: {
+        title: 'Test jacket',
+        titleUz: 'Sinov kurtkasi',
+        titleEn: 'Test jacket',
+        country: 'CN',
+        salePriceUzs: 180000,
+        images: [{ mediaId }],
+        publish: false,
+        preorderEnabled: true,
+        preorderLimit: 12,
+        preorderEstimatedAt: estimatedAt,
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(tx.commerceProduct.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        preorderEnabled: true,
+        preorderLimit: 12,
+        preorderReserved: 0,
+        preorderEstimatedAt: new Date(estimatedAt),
+      }),
+    }));
+    await app.close();
+  });
+
+  it('rejects a product preorder limit below already reserved quantity', async () => {
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL',
+      categoryId: null,
+      preorderEnabled: true,
+      preorderLimit: 5,
+      preorderReserved: 3,
+      translations: { ru: { title: 'Jacket' } },
+      description: null,
+      images: [],
+      variants: [],
+    };
+    const { app, tx } = createTestApp({ manualProduct });
+    await start(app);
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: { preorderLimit: 2 },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(tx.commerceProduct.update).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('updates preorder eligibility, cap and estimate through the existing product endpoint', async () => {
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL',
+      categoryId: null,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } },
+      description: null,
+      images: [],
+      variants: [],
+      salePriceUzs: 180000,
+    };
+    const { app, tx } = createTestApp({ manualProduct });
+    await start(app);
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: {
+        preorderEnabled: true,
+        preorderLimit: 8,
+        preorderEstimatedAt: '2031-02-03T00:00:00.000Z',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(tx.commerceProduct.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        preorderEnabled: true,
+        preorderLimit: 8,
+        preorderEstimatedAt: new Date('2031-02-03T00:00:00.000Z'),
+      }),
+    }));
+    await app.close();
+  });
+
+  it('exposes authoritative public preorder availability without internal limits', async () => {
+    const { app } = createTestApp({
+      publicProduct: {
+        id: 'product-1',
+        slug: 'jacket',
+        stock: 0,
+        preorderEnabled: true,
+        preorderLimit: 5,
+        preorderReserved: 2,
+        preorderEstimatedAt: new Date('2031-02-03T00:00:00.000Z'),
+        variants: [],
+      },
+    });
+    await start(app);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/products' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0].availability).toEqual({
+      inStock: false,
+      preorderEligible: true,
+      preorderAvailable: 3,
+      estimatedAvailableAt: '2031-02-03T00:00:00.000Z',
+    });
+    expect(response.json().items[0]).not.toHaveProperty('preorderLimit');
+    expect(response.json().items[0]).not.toHaveProperty('preorderReserved');
     await app.close();
   });
 

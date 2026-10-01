@@ -192,10 +192,22 @@ export const createManualProductSchema = z.object({
   exchangeRate: z.coerce.number().finite().positive().optional(),
   salePriceUzs: z.coerce.number().finite().positive(),
   stock: z.number().int().min(0).max(2_147_483_647).default(0),
+  preorderEnabled: z.boolean().default(false),
+  preorderLimit: z.number().int().min(0).max(10_000).default(0),
+  preorderEstimatedAt: z.string().datetime({ offset: true }).nullable().optional()
+    .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().optional(),
   color: z.string().max(80).optional(),
   size: z.string().max(80).optional(),
   publish: z.boolean().default(true),
+}).superRefine((value, context) => {
+  if (value.preorderEnabled && value.preorderLimit < 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['preorderLimit'],
+      message: 'Enabled preorder requires a positive bounded quantity',
+    });
+  }
 });
 
 export const updateManualProductSchema = z.object({
@@ -210,6 +222,10 @@ export const updateManualProductSchema = z.object({
   images: productImagesSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).optional(),
+  preorderEnabled: z.boolean().optional(),
+  preorderLimit: z.number().int().min(0).max(10_000).optional(),
+  preorderEstimatedAt: z.string().datetime({ offset: true }).nullable().optional()
+    .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().nullable().optional(),
   color: z.string().max(80).optional(),
   size: z.string().max(80).optional(),

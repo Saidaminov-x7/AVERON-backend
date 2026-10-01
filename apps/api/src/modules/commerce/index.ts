@@ -54,6 +54,35 @@ function productOrderBy(sort?: string): Prisma.CommerceProductOrderByWithRelatio
   return { publishedAt: 'desc' };
 }
 
+function publicProductDto<T extends {
+  stock: number;
+  preorderEnabled: boolean;
+  preorderLimit: number;
+  preorderReserved: number;
+  preorderEstimatedAt: Date | null;
+  variants?: Array<{ stock: number; active: boolean }>;
+}>(product: T) {
+  const {
+    preorderEnabled,
+    preorderLimit,
+    preorderReserved,
+    preorderEstimatedAt,
+    ...publicProduct
+  } = product;
+  const preorderAvailable = preorderEnabled ? Math.max(0, preorderLimit - preorderReserved) : 0;
+  return {
+    ...publicProduct,
+    availability: {
+      inStock: product.variants
+        ? product.variants.some((variant) => variant.active && variant.stock > 0)
+        : product.stock > 0,
+      preorderEligible: preorderAvailable > 0,
+      preorderAvailable,
+      estimatedAvailableAt: preorderEnabled ? preorderEstimatedAt : null,
+    },
+  };
+}
+
 async function withDiagnosticStage<T>(stage: string, operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
@@ -134,13 +163,13 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),
     ]);
-    return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+    return { items: items.map(publicProductDto), pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
   });
 
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
     const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
-    return product ?? reply.status(404).send({ message: 'Товар не найден' });
+    return product ? publicProductDto(product) : reply.status(404).send({ message: 'Товар не найден' });
   });
 
   app.get('/categories', async () => app.prisma.commerceCategory.findMany({ where: { active: true }, orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }] }));
@@ -336,6 +365,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           exchangeRate: input.exchangeRate ?? null,
           salePriceUzs: input.salePriceUzs,
           stock: input.stock,
+          preorderEnabled: input.preorderEnabled,
+          preorderLimit: input.preorderLimit,
+          preorderReserved: 0,
+          preorderEstimatedAt: input.preorderEstimatedAt ?? null,
           categoryId: input.categoryId,
           approvedById: request.user.userId,
           approvedAt: new Date(),
@@ -372,6 +405,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         id: true,
         source: true,
         categoryId: true,
+        preorderEnabled: true,
+        preorderLimit: true,
+        preorderReserved: true,
         translations: true,
         description: true,
         images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true } },
@@ -382,6 +418,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
     let removedMediaIds: string[] = [];
     const updated = await app.prisma.$transaction(async (tx) => {
+      const preorderEnabled = input.preorderEnabled ?? product.preorderEnabled;
+      const preorderLimit = input.preorderLimit ?? product.preorderLimit;
+      if (preorderEnabled && preorderLimit < 1) {
+        throw Object.assign(new Error('Enabled preorder requires a positive bounded quantity'), { statusCode: 400 });
+      }
+      if (preorderLimit < product.preorderReserved) {
+        throw Object.assign(new Error('Preorder limit cannot be lower than already reserved quantity'), { statusCode: 409 });
+      }
       let resolvedImages: Array<{ id?: string; mediaId: string | null; url: string }> | undefined;
       if (input.images) {
         const settings = await tx.siteSettings.findUnique({
@@ -452,6 +496,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             : {}),
           ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
           ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
+          ...(input.preorderEnabled !== undefined ? { preorderEnabled: input.preorderEnabled } : {}),
+          ...(input.preorderLimit !== undefined ? { preorderLimit: input.preorderLimit } : {}),
+          ...(input.preorderEstimatedAt !== undefined ? { preorderEstimatedAt: input.preorderEstimatedAt } : {}),
           ...(input.stock !== undefined && !hasActiveVariants && input.color === undefined && input.size === undefined
             ? { stock: input.stock }
             : {}),
