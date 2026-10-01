@@ -64,8 +64,8 @@ COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 
 # Entrypoint-скрипт: применяет миграции, затем запускает сервер
-COPY apps/api/entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
+COPY apps/api/entrypoint.sh ./apps/api/entrypoint.sh
+RUN chmod +x ./apps/api/entrypoint.sh
 
 # Создаём директорию для загружаемых файлов
 RUN mkdir -p /tmp/uploads && chown apiuser:nodejs /tmp/uploads
@@ -79,4 +79,4 @@ EXPOSE 8080
 
 # dumb-init для правильного forwarding сигналов в Node.js
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
-CMD ["./entrypoint.sh"]
+CMD ["./apps/api/entrypoint.sh"]

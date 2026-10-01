@@ -32,6 +32,10 @@
   В схеме Prisma эти поля nullable; для production применяйте только
   `pnpm prisma:deploy` (`prisma migrate deploy`). Не используйте `db push` или
   команды reset.
+- Production start проходит через `apps/api/entrypoint.sh`: он выполняет
+  `pnpm --filter api prisma:deploy` и запускает `node apps/api/dist/server.js`
+  только после успешного применения миграций. Ошибка миграции останавливает
+  startup; не заменяйте этот путь прямым запуском `node dist/server.js`.
 
 Для production admin TOTP задайте `TOTP_ENCRYPTION_KEY` только в backend secret
 store. Это случайный ключ ровно из 64 hex-символов (32 байта), например

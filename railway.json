@@ -5,7 +5,6 @@
     "buildCommand": "pnpm --filter api build"
   },
   "deploy": {
-    "preDeployCommand": "pnpm prisma:deploy",
     "startCommand": "pnpm start",
     "healthcheckPath": "/health/live",
     "healthcheckTimeout": 30,
