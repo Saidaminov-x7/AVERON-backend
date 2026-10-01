@@ -5,8 +5,8 @@
     "buildCommand": "pnpm --filter api build"
   },
   "deploy": {
-    "preDeployCommand": "pnpm exec prisma db push --schema=prisma/schema.prisma",
-    "startCommand": "pnpm --filter api start",
+    "preDeployCommand": "pnpm prisma:deploy",
+    "startCommand": "pnpm start",
     "healthcheckPath": "/health/live",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",

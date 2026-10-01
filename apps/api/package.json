@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "prisma generate --schema=../../prisma/schema.prisma && tsc --project tsconfig.json",
-    "start": "prisma db push --schema=../../prisma/schema.prisma && node dist/server.js",
+    "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "prisma:generate": "prisma generate --schema=../../prisma/schema.prisma",
     "prisma:deploy": "prisma migrate deploy --schema=../../prisma/schema.prisma",
