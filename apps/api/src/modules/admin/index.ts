@@ -5,6 +5,7 @@ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { AdminRole } from '@prisma/client';
 import FileType from 'file-type';
 import { adminMiddleware, requireAdminRole } from '../../lib/adminMiddleware';
+import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { updateListingSchema } from '../listings/schemas';
 import { AdminService } from './service';
 import {
@@ -481,18 +482,8 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   server.post('/site-settings/logo', {
     preHandler: settingsHandler,
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const data = await request.file({
-      limits: { fileSize: 10 * 1024 * 1024 },
-    });
-    if (!data) {
-      return reply.status(400).send({ message: 'No file uploaded' });
-    }
-
-    const chunks: Buffer[] = [];
-    for await (const chunk of data.file) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const buffer = Buffer.concat(chunks);
+    const data = await readSingleMultipartFile(request, 'file', 10 * 1024 * 1024);
+    const buffer = data.data;
 
     const detected = await FileType.fromBuffer(buffer);
     const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
@@ -1318,5 +1309,4 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     });
   });
 };
-
 

@@ -3,6 +3,7 @@
 
 import { PrismaClient } from '@prisma/client';
 import crypto from 'crypto';
+import { isSafePublicHttpUrl, type OutboundAddressResolver } from './safeOutboundUrl';
 
 export interface WebhookPayload {
   event: string;
@@ -33,7 +34,12 @@ export async function sendWebhookRequest(
   url: string,
   payload: Record<string, any>,
   secret?: string | null,
+  fetcher: typeof fetch = fetch,
+  resolveAddresses?: OutboundAddressResolver,
 ): Promise<{ success: boolean; statusCode?: number; error?: string }> {
+  if (!await isSafePublicHttpUrl(url, resolveAddresses)) {
+    return { success: false, error: 'Webhook destination is not allowed' };
+  }
   const jsonString = JSON.stringify(payload);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -51,11 +57,12 @@ export async function sendWebhookRequest(
   const timeout = setTimeout(() => controller.abort(), 10000); // 10 секунд таймаут
 
   try {
-    const response = await fetch(url, {
+    const response = await fetcher(url, {
       method: 'POST',
       headers,
       body: jsonString,
       signal: controller.signal,
+      redirect: 'error',
     });
 
     clearTimeout(timeout);
@@ -67,13 +74,15 @@ export async function sendWebhookRequest(
     return {
       success: false,
       statusCode: response.status,
-      error: `HTTP status ${response.status}: ${response.statusText}`,
+      error: `HTTP status ${response.status}`,
     };
   } catch (err: any) {
     clearTimeout(timeout);
     return {
       success: false,
-      error: err.name === 'AbortError' ? 'Delivery timeout after 10000ms' : err.message || 'Unknown network error',
+      error: err instanceof Error && err.name === 'AbortError'
+        ? 'Delivery timeout after 10000ms'
+        : 'Network error',
     };
   }
 }
@@ -86,6 +95,7 @@ export async function dispatchWebhookEvent(
   event: string,
   data: Record<string, any>,
   logger?: any,
+  resolveOutboundAddresses?: OutboundAddressResolver,
 ): Promise<number> {
   try {
     const webhooks = await prisma.systemWebhook.findMany({
@@ -120,7 +130,7 @@ export async function dispatchWebhookEvent(
         },
       });
 
-      const res = await sendWebhookRequest(webhook.url, payload, webhook.secret);
+      const res = await sendWebhookRequest(webhook.url, payload, webhook.secret, fetch, resolveOutboundAddresses);
 
       if (res.success) {
         await prisma.webhookDelivery.update({
@@ -163,6 +173,7 @@ export async function dispatchWebhookEvent(
 export async function retryPendingWebhookDeliveries(
   prisma: PrismaClient,
   logger?: any,
+  resolveOutboundAddresses?: OutboundAddressResolver,
 ): Promise<{ retried: number; succeeded: number; failed: number }> {
   const now = new Date();
   const results = { retried: 0, succeeded: 0, failed: 0 };
@@ -191,7 +202,13 @@ export async function retryPendingWebhookDeliveries(
 
       results.retried++;
       const currentAttempt = delivery.attempts + 1;
-      const res = await sendWebhookRequest(delivery.webhook.url, delivery.payload as any, delivery.webhook.secret);
+      const res = await sendWebhookRequest(
+        delivery.webhook.url,
+        delivery.payload as any,
+        delivery.webhook.secret,
+        fetch,
+        resolveOutboundAddresses,
+      );
 
       if (res.success) {
         await prisma.webhookDelivery.update({

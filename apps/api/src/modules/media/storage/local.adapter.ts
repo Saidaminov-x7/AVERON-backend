@@ -1,11 +1,11 @@
 import { IStorageAdapter, StorageUploadResult } from './storage.interface';
-import sharp from 'sharp';
-import { join, resolve } from 'path';
+import { join, relative, resolve, isAbsolute, sep } from 'path';
 import { writeFile, unlink, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { config } from '../../../config';
 import { FastifyBaseLogger } from 'fastify';
+import { processUploadedImage } from '../image-processing';
 
 /**
  * Локальный файловый адаптер (диск /tmp/uploads или подключенный Railway Volume)
@@ -22,19 +22,7 @@ export class LocalStorageAdapter implements IStorageAdapter {
     data: Buffer;
     hash: string;
   }): Promise<StorageUploadResult> {
-    const sharpInstance = sharp(file.data);
-    const metadata = await sharpInstance.metadata();
-
-    // Оптимизация изображения: макс. 1920x1080, сжатие в WebP с качеством 85%
-    const optimized = await sharpInstance
-      .resize({
-        width: 1920,
-        height: 1080,
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({ quality: 85 })
-      .toBuffer();
+    const { data: optimized, width, height } = await processUploadedImage(file.data);
 
     const fileName = `${randomUUID()}.webp`;
     const yearMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
@@ -56,8 +44,8 @@ export class LocalStorageAdapter implements IStorageAdapter {
       key,
       mimeType: 'image/webp',
       size: optimized.length,
-      width: metadata.width,
-      height: metadata.height,
+      width,
+      height,
     };
   }
 
@@ -69,7 +57,8 @@ export class LocalStorageAdapter implements IStorageAdapter {
       const resolvedStoragePath = resolve(this.storagePath);
       
       // Проверка на path traversal: итоговый путь должен начинаться с storagePath
-      if (!resolvedPath.startsWith(resolvedStoragePath)) {
+      const relativePath = relative(resolvedStoragePath, resolvedPath);
+      if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
         if (this.logger) {
           this.logger.warn({ key }, '[LocalStorageAdapter] Path traversal attempt detected');
         }
@@ -91,4 +80,3 @@ export class LocalStorageAdapter implements IStorageAdapter {
     return publicIdOrUrl;
   }
 }
-

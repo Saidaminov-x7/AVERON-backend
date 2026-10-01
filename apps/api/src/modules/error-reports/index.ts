@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { createErrorReportSchema, errorReportFilterSchema } from './schemas';
+import { sanitizeErrorReportUrl, sanitizeErrorText } from './sanitize';
 
 export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
@@ -22,16 +23,17 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
         return reply.status(400).send({ message: 'Invalid payload', errors: parsed.error.format() });
       }
 
-      const { message, stack, url, userAgent, userId, severity } = parsed.data;
+      const { message: rawMessage, stack: rawStack, url, userAgent, severity } = parsed.data;
+      const message = sanitizeErrorText(rawMessage);
+      const stack = rawStack ? sanitizeErrorText(rawStack) : rawStack;
 
       try {
         const report = await server.prisma.clientErrorReport.create({
           data: {
             message,
             stack: stack || undefined,
-            url,
+            url: sanitizeErrorReportUrl(url),
             userAgent: userAgent || (typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : undefined),
-            userId: userId || undefined,
             severity,
             ip: request.ip,
           },

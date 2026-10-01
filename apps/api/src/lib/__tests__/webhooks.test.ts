@@ -10,6 +10,7 @@ import {
 
 describe('Webhook Delivery System & Retry Logic', () => {
   const originalFetch = global.fetch;
+  const publicResolver = async () => ['93.184.216.34'];
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -37,7 +38,13 @@ describe('Webhook Delivery System & Retry Logic', () => {
     });
 
     const payload = { event: 'FRAUD_DETECTED', data: { listingId: '123' } };
-    const res = await sendWebhookRequest('https://example.com/webhook', payload, 'mysecret');
+    const res = await sendWebhookRequest(
+      'https://example.com/webhook',
+      payload,
+      'mysecret',
+      global.fetch,
+      publicResolver,
+    );
 
     expect(res.success).toBe(true);
     expect(res.statusCode).toBe(200);
@@ -45,6 +52,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
       'https://example.com/webhook',
       expect.objectContaining({
         method: 'POST',
+        redirect: 'error',
         headers: expect.objectContaining({
           'Content-Type': 'application/json',
           'X-Ijarauz-Event': 'FRAUD_DETECTED',
@@ -54,14 +62,63 @@ describe('Webhook Delivery System & Retry Logic', () => {
     );
   });
 
+  it('allows an approved public HTTP endpoint on a custom port', async () => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    const result = await sendWebhookRequest(
+      'http://hooks.example.com:8080/events',
+      { event: 'TEST' },
+      undefined,
+      fetcher as typeof fetch,
+      publicResolver,
+    );
+
+    expect(result.success).toBe(true);
+    expect(fetcher).toHaveBeenCalledWith(
+      'http://hooks.example.com:8080/events',
+      expect.objectContaining({ redirect: 'error' }),
+    );
+  });
+
   it('фиксирует ошибку при сетевом сбое', async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('Connection refused'));
 
     const payload = { event: 'REPORT_CREATED', data: {} };
-    const res = await sendWebhookRequest('https://invalid.domain/hook', payload);
+    const res = await sendWebhookRequest(
+      'https://example.com/hook',
+      payload,
+      undefined,
+      global.fetch,
+      publicResolver,
+    );
 
     expect(res.success).toBe(false);
-    expect(res.error).toContain('Connection refused');
+    expect(res.error).toBe('Network error');
+  });
+
+  it.each([
+    'http://localhost/admin',
+    'http://127.0.0.1/',
+    'http://10.0.0.8/',
+    'http://169.254.169.254/latest/meta-data/',
+    'file:///etc/passwd',
+  ])('blocks unsafe webhook target %s before making a request', async (url) => {
+    global.fetch = vi.fn();
+    const result = await sendWebhookRequest(url, { event: 'TEST' }, undefined, global.fetch, publicResolver);
+    expect(result).toEqual({ success: false, error: 'Webhook destination is not allowed' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('blocks a public-looking hostname that resolves to a private address', async () => {
+    global.fetch = vi.fn();
+    const result = await sendWebhookRequest(
+      'https://example.com/hook',
+      { event: 'TEST' },
+      undefined,
+      global.fetch,
+      async () => ['192.168.1.20'],
+    );
+    expect(result.success).toBe(false);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('создает WebhookDelivery и сохраняет статус SUCCESS при успешной доставке', async () => {
@@ -79,7 +136,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
       },
     };
 
-    const count = await dispatchWebhookEvent(prismaMock, 'FRAUD_DETECTED', { score: 95 });
+    const count = await dispatchWebhookEvent(prismaMock, 'FRAUD_DETECTED', { score: 95 }, undefined, publicResolver);
 
     expect(count).toBe(1);
     expect(prismaMock.webhookDelivery.create).toHaveBeenCalled();
@@ -107,7 +164,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
       },
     };
 
-    const result = await retryPendingWebhookDeliveries(prismaMock);
+    const result = await retryPendingWebhookDeliveries(prismaMock, undefined, publicResolver);
 
     expect(result.retried).toBe(1);
     expect(result.succeeded).toBe(1);

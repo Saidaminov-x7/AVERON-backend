@@ -5,7 +5,6 @@ export const createErrorReportSchema = z.object({
   stack: z.string().max(5000).optional().nullable(),
   url: z.string().max(500),
   userAgent: z.string().max(500).optional().nullable(),
-  userId: z.string().optional().nullable(),
   severity: z.enum(['error', 'warning', 'info']).default('error'),
 });
 

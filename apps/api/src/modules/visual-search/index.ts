@@ -23,7 +23,7 @@ import { featureFlags } from '../features/feature-flags';
 
 const publicSearchQuerySchema = z.object({
   country: productCountrySchema.optional(),
-  category: z.string().trim().min(1).max(160).optional(),
+  category: z.string().trim().min(1).max(160).regex(/^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/).optional(),
   limit: z.coerce.number().int().min(1).max(20).default(20),
 });
 
@@ -35,6 +35,17 @@ const similarQuerySchema = z.object({
 const adminParamsSchema = z.object({
   productId: z.string().uuid(),
 });
+
+const adminAuditQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+
+const visualSearchAuditActions = [
+  'VISUAL_SEARCH',
+  'SIMILAR_PRODUCTS',
+  'IMAGE_EMBEDDING_REINDEX',
+] as const;
 
 export interface VisualSearchFlags {
   isEnabled(flag: 'VISUAL_SEARCH' | 'SIMILAR_PRODUCTS' | 'IMAGE_EMBEDDINGS'): boolean;
@@ -103,6 +114,56 @@ function publicProduct(candidate: VisualSearchCandidate) {
   return candidate.product;
 }
 
+function safeDescriptor(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return value.replace(/[\r\n]/g, '').slice(0, 100);
+}
+
+async function recordVisualSearchAudit(
+  request: FastifyRequest,
+  entry: {
+    action: typeof visualSearchAuditActions[number];
+    operation: string;
+    status: 'success' | 'failed' | 'unavailable';
+    resultCount?: number;
+    durationMs: number;
+    provider?: string;
+    model?: string;
+    failureCode?: string;
+    productId?: string;
+    embeddingStatus?: string;
+  },
+) {
+  const provider = safeDescriptor(entry.provider);
+  const model = safeDescriptor(entry.model);
+  try {
+    await request.server.prisma.auditLog.create({
+      data: {
+        action: entry.action,
+        resource: 'visual_search',
+        ...(entry.productId ? { resourceId: entry.productId } : {}),
+        meta: {
+          operation: entry.operation,
+          status: entry.status,
+          ...(entry.resultCount !== undefined ? { resultCount: entry.resultCount } : {}),
+          durationMs: Math.max(0, Math.floor(entry.durationMs)),
+          ...(provider ? { provider } : {}),
+          ...(model ? { model } : {}),
+          ...(entry.failureCode ? { failureCode: entry.failureCode } : {}),
+          ...(entry.embeddingStatus ? { embeddingStatus: entry.embeddingStatus } : {}),
+        },
+      },
+    });
+  } catch {
+    request.log.error({
+      requestId: request.id,
+      operation: 'visual_search_audit_write',
+      status: 'failed',
+      failureCode: 'AUDIT_WRITE_FAILED',
+    });
+  }
+}
+
 async function readSingleImage(request: FastifyRequest, maxImageBytes: number) {
   let result: { buffer: Buffer; mimeType: string } | undefined;
   try {
@@ -131,11 +192,19 @@ async function readSingleImage(request: FastifyRequest, maxImageBytes: number) {
       typeof error === 'object'
       && error !== null
       && 'code' in error
-      && ['FST_REQ_FILE_TOO_LARGE', 'FST_FILES_LIMIT', 'FST_PARTS_LIMIT'].includes(String(error.code))
+      && String(error.code) === 'FST_REQ_FILE_TOO_LARGE'
     ) {
       const limitError = new Error('Uploaded image exceeds configured limit') as Error & { statusCode: number };
       limitError.statusCode = 413;
       throw limitError;
+    }
+    if (
+      typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && ['FST_FILES_LIMIT', 'FST_FIELDS_LIMIT', 'FST_PARTS_LIMIT'].includes(String(error.code))
+    ) {
+      throw new VisualSearchError('IMAGE_INVALID');
     }
     throw error;
   }
@@ -162,7 +231,18 @@ export function createVisualSearchModule(
     }, async (request, reply) => {
       if (!hasFlag(dependencies, 'VISUAL_SEARCH')) return featureDisabled(reply);
 
+      const startedAt = Date.now();
       if (!dependencies.service.isAvailable()) {
+        await recordVisualSearchAudit(request, {
+          action: 'VISUAL_SEARCH',
+          operation: 'visual_search',
+          status: 'unavailable',
+          resultCount: 0,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          failureCode: 'IMAGE_EMBEDDING_PROVIDER_NOT_CONFIGURED',
+        });
         return reply.status(503).send({ code: 'IMAGE_EMBEDDING_PROVIDER_NOT_CONFIGURED' });
       }
 
@@ -170,21 +250,41 @@ export function createVisualSearchModule(
       let query: z.infer<typeof publicSearchQuerySchema>;
       let uploadedBuffer: Buffer | undefined;
       try {
+        query = publicSearchQuerySchema.parse(request.query);
         const uploaded = await readSingleImage(request, dependencies.maxImageBytes);
         uploadedBuffer = uploaded.buffer;
         if (uploaded.buffer.length === 0 || uploaded.buffer.length > dependencies.maxImageBytes) {
-          return reply.status(uploaded.buffer.length > dependencies.maxImageBytes ? 413 : 400).send({
-            code: uploaded.buffer.length > dependencies.maxImageBytes ? 'IMAGE_TOO_LARGE' : 'IMAGE_INVALID',
-          });
+          if (uploaded.buffer.length > dependencies.maxImageBytes) {
+            const error = new Error('Uploaded image exceeds configured limit') as Error & { statusCode: number };
+            error.statusCode = 413;
+            throw error;
+          }
+          throw new VisualSearchError('IMAGE_INVALID');
         }
-        query = publicSearchQuerySchema.parse(request.query);
         normalized = await normalizeUploadedImage(uploaded.buffer, uploaded.mimeType);
       } catch (error) {
-        if (error instanceof VisualSearchError) return sendServiceError(reply, error);
-        if (error instanceof z.ZodError) return reply.status(400).send({ code: 'INVALID_SEARCH_FILTER' });
         const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
           ? Number(error.statusCode)
-          : 500;
+          : 0;
+        const failureCode = error instanceof VisualSearchError
+          ? error.code
+          : error instanceof z.ZodError
+            ? 'INVALID_SEARCH_FILTER'
+            : statusCode === 413
+              ? 'IMAGE_TOO_LARGE'
+              : 'IMAGE_INVALID';
+        await recordVisualSearchAudit(request, {
+          action: 'VISUAL_SEARCH',
+          operation: 'visual_search',
+          status: 'failed',
+          resultCount: 0,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          failureCode,
+        });
+        if (error instanceof VisualSearchError) return sendServiceError(reply, error);
+        if (error instanceof z.ZodError) return reply.status(400).send({ code: 'INVALID_SEARCH_FILTER' });
         if (statusCode === 413) return reply.status(413).send({ code: 'IMAGE_TOO_LARGE' });
         request.log.warn({ requestId: request.id, operation: 'visual_search', status: 'invalid_upload' });
         return reply.status(400).send({ code: 'IMAGE_INVALID' });
@@ -192,7 +292,6 @@ export function createVisualSearchModule(
         uploadedBuffer?.fill(0);
       }
 
-      const startedAt = Date.now();
       try {
         const candidates = await dependencies.service.searchImage(
           normalized.data,
@@ -213,8 +312,18 @@ export function createVisualSearchModule(
           resultCount: items.length,
           status: 'success',
         });
+        await recordVisualSearchAudit(request, {
+          action: 'VISUAL_SEARCH',
+          operation: 'visual_search',
+          status: 'success',
+          resultCount: items.length,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+        });
         return reply.send({ items, meta: { limit: query.limit } });
       } catch (error) {
+        const failureCode = error instanceof VisualSearchError ? error.code : 'VISUAL_SEARCH_UNAVAILABLE';
         request.log.warn({
           requestId: request.id,
           operation: 'visual_search',
@@ -222,7 +331,17 @@ export function createVisualSearchModule(
           model: dependencies.provider.descriptor()?.model ?? 'unconfigured',
           durationMs: Date.now() - startedAt,
           status: 'failed',
-          failureCode: error instanceof VisualSearchError ? error.code : 'VISUAL_SEARCH_UNAVAILABLE',
+          failureCode,
+        });
+        await recordVisualSearchAudit(request, {
+          action: 'VISUAL_SEARCH',
+          operation: 'visual_search',
+          status: 'failed',
+          resultCount: 0,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          failureCode,
         });
         return sendServiceError(reply, error);
       } finally {
@@ -230,7 +349,15 @@ export function createVisualSearchModule(
       }
     });
 
-    app.get<{ Params: { slug: string } }>('/products/:slug/similar', async (request, reply) => {
+    app.get<{ Params: { slug: string } }>('/products/:slug/similar', {
+      config: {
+        rateLimit: {
+          max: dependencies.rateLimitMax,
+          timeWindow: `${dependencies.rateLimitWindowSeconds} seconds`,
+          skipOnError: false,
+        },
+      },
+    }, async (request, reply) => {
       if (!hasFlag(dependencies, 'SIMILAR_PRODUCTS')) return featureDisabled(reply);
       const query = similarQuerySchema.safeParse(request.query);
       if (!query.success) return reply.status(400).send({ code: 'INVALID_SEARCH_FILTER' });
@@ -252,17 +379,50 @@ export function createVisualSearchModule(
           resultCount: items.length,
           status: 'success',
         });
+        await recordVisualSearchAudit(request, {
+          action: 'SIMILAR_PRODUCTS',
+          operation: 'similar_products',
+          status: 'success',
+          resultCount: items.length,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          productId: request.params.slug,
+        });
         return reply.send({ items, meta: { limit: query.data.limit } });
       } catch (error) {
         if (error instanceof VisualSearchError && error.code === 'EMBEDDING_NOT_AVAILABLE') {
+          await recordVisualSearchAudit(request, {
+            action: 'SIMILAR_PRODUCTS',
+            operation: 'similar_products',
+            status: 'unavailable',
+            resultCount: 0,
+            durationMs: Date.now() - startedAt,
+            provider: dependencies.provider.descriptor()?.provider,
+            model: dependencies.provider.descriptor()?.model,
+            failureCode: error.code,
+            productId: request.params.slug,
+          });
           return reply.send({ items: [], code: 'EMBEDDING_NOT_AVAILABLE', meta: { limit: query.data.limit } });
         }
+        const failureCode = error instanceof VisualSearchError ? error.code : 'VISUAL_SEARCH_UNAVAILABLE';
         request.log.warn({
           requestId: request.id,
           operation: 'similar_products',
           durationMs: Date.now() - startedAt,
           status: 'failed',
-          failureCode: error instanceof VisualSearchError ? error.code : 'VISUAL_SEARCH_UNAVAILABLE',
+          failureCode,
+        });
+        await recordVisualSearchAudit(request, {
+          action: 'SIMILAR_PRODUCTS',
+          operation: 'similar_products',
+          status: 'failed',
+          resultCount: 0,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          failureCode,
+          productId: request.params.slug,
         });
         return sendServiceError(reply, error);
       }
@@ -316,20 +476,104 @@ export function createVisualSearchModule(
           durationMs: Date.now() - startedAt,
           status: status.status,
         });
+        await recordVisualSearchAudit(request, {
+          action: 'IMAGE_EMBEDDING_REINDEX',
+          operation: 'image_embedding_reindex',
+          status: 'success',
+          resultCount: 0,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          productId: params.data.productId,
+          embeddingStatus: status.status,
+        });
         return reply.send(status);
       } catch (error) {
+        const failureCode = error instanceof VisualSearchError ? error.code : 'VISUAL_SEARCH_UNAVAILABLE';
         request.log.warn({
           requestId: request.id,
           operation: 'image_embedding_reindex',
           productId: params.data.productId,
           durationMs: Date.now() - startedAt,
           status: 'failed',
-          failureCode: error instanceof VisualSearchError ? error.code : 'VISUAL_SEARCH_UNAVAILABLE',
+          failureCode,
+        });
+        await recordVisualSearchAudit(request, {
+          action: 'IMAGE_EMBEDDING_REINDEX',
+          operation: 'image_embedding_reindex',
+          status: error instanceof VisualSearchError && error.code === 'EMBEDDING_NOT_AVAILABLE'
+            ? 'unavailable'
+            : 'failed',
+          resultCount: 0,
+          durationMs: Date.now() - startedAt,
+          provider: dependencies.provider.descriptor()?.provider,
+          model: dependencies.provider.descriptor()?.model,
+          failureCode,
+          productId: params.data.productId,
         });
         if (error instanceof VisualSearchError && error.code === 'EMBEDDING_NOT_AVAILABLE') {
           return reply.status(409).send({ code: 'EMBEDDING_NOT_AVAILABLE' });
         }
         return sendServiceError(reply, error);
+      }
+    });
+
+    app.get('/admin/visual-search/audit', {
+      preHandler: [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)],
+      config: {
+        rateLimit: { max: 60, timeWindow: '1 minute', skipOnError: false },
+      },
+    }, async (request, reply) => {
+      const parsed = adminAuditQuerySchema.safeParse(request.query);
+      if (!parsed.success) return reply.status(400).send({ code: 'INVALID_PAGINATION' });
+
+      const { page, limit } = parsed.data;
+      const where = { action: { in: [...visualSearchAuditActions] } };
+      try {
+        const [records, total] = await Promise.all([
+          request.server.prisma.auditLog.findMany({
+            where,
+            orderBy: { timestamp: 'desc' },
+            skip: (page - 1) * limit,
+            take: limit,
+            select: { id: true, action: true, resourceId: true, meta: true, timestamp: true },
+          }),
+          request.server.prisma.auditLog.count({ where }),
+        ]);
+        const items = records.map((record) => {
+          const metadata = typeof record.meta === 'object' && record.meta !== null && !Array.isArray(record.meta)
+            ? record.meta as Record<string, unknown>
+            : {};
+          const stringField = (key: string) => typeof metadata[key] === 'string'
+            ? (metadata[key] as string).slice(0, 100)
+            : undefined;
+          const numberField = (key: string) => typeof metadata[key] === 'number'
+            && Number.isFinite(metadata[key])
+            ? metadata[key] as number
+            : undefined;
+          return {
+            id: record.id,
+            operation: record.action,
+            timestamp: record.timestamp,
+            productId: record.resourceId,
+            status: stringField('status') ?? 'unknown',
+            resultCount: numberField('resultCount'),
+            durationMs: numberField('durationMs'),
+            provider: stringField('provider'),
+            model: stringField('model'),
+            failureCode: stringField('failureCode'),
+            embeddingStatus: stringField('embeddingStatus'),
+          };
+        });
+        return reply.send({ items, page, limit, total });
+      } catch {
+        request.log.error({
+          requestId: request.id,
+          operation: 'visual_search_audit_read',
+          status: 'failed',
+          failureCode: 'AUDIT_READ_FAILED',
+        });
+        return reply.status(503).send({ code: 'VISUAL_SEARCH_AUDIT_UNAVAILABLE' });
       }
     });
   };

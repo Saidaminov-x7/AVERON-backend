@@ -4,6 +4,7 @@ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import FileType from 'file-type';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { adminMiddleware } from '../../lib/adminMiddleware';
+import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { MediaService } from './service';
 import { uploadQuerySchema, mediaListQuerySchema } from './schemas';
 
@@ -48,25 +49,13 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
       : 10 * 1024 * 1024;
 
     // Получаем multipart-файл
-    const data = await request.file({
-      limits: {
-        fileSize: query.purpose === 'productPhoto'
-          ? HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES
-          : maxFileSizeBytes,
-      },
-    });
-
-    if (!data) {
-      return reply.status(400).send({ message: 'No file provided' });
-    }
-
-    // Читаем буфер
-    const chunks: Buffer[] = [];
-    for await (const chunk of data.file) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const buffer = Buffer.concat(chunks);
-    if (data.file.truncated || buffer.length > maxFileSizeBytes) {
+    const data = await readSingleMultipartFile(
+      request,
+      'file',
+      query.purpose === 'productPhoto' ? HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES : maxFileSizeBytes,
+    );
+    const buffer = data.data;
+    if (buffer.length > maxFileSizeBytes) {
       return reply.status(413).send({ message: `File exceeds the ${Math.floor(maxFileSizeBytes / 1024 / 1024)} MB limit` });
     }
 

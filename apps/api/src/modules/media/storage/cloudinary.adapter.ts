@@ -2,9 +2,9 @@
 
 import { IStorageAdapter, StorageUploadResult } from './storage.interface';
 import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
-import sharp from 'sharp';
 import { config } from '../../../config';
 import { FastifyBaseLogger } from 'fastify';
+import { processUploadedImage } from '../image-processing';
 
 /**
  * Облачный адаптер Cloudinary (S3-совместимое медиахранилище для Production)
@@ -36,18 +36,7 @@ export class CloudinaryStorageAdapter implements IStorageAdapter {
     const publicId = file.hash.slice(0, 32);
 
     // 1. Клиентская пред-оптимизация через sharp перед загрузкой в облако
-    const sharpInstance = sharp(file.data);
-    const metadata = await sharpInstance.metadata();
-
-    const optimized = await sharpInstance
-      .resize({
-        width: 1920,
-        height: 1080,
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({ quality: 85 })
-      .toBuffer();
+    const { data: optimized, width, height } = await processUploadedImage(file.data);
 
     // 2. Потоковая загрузка в Cloudinary с логированием
     return new Promise((resolve, reject) => {
@@ -106,8 +95,8 @@ export class CloudinaryStorageAdapter implements IStorageAdapter {
             key: result.public_id,
             mimeType: 'image/webp',
             size: result.bytes || optimized.length,
-            width: result.width || metadata.width,
-            height: result.height || metadata.height,
+            width: result.width || width,
+            height: result.height || height,
           });
         },
       );
