@@ -23,8 +23,11 @@ export const adminProductListQuerySchema = productListQuerySchema.extend({
 
 export const createImportSchema = z.object({
   source: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']),
+  sourceProvider: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']).optional(),
   sourceProductId: z.string().min(1).max(160),
   sourceUrl: z.string().url(),
+  sourceMetadata: z.record(z.string(), z.unknown()).optional(),
+  deduplicationKey: z.string().min(1).max(320).optional(),
   sellerId: z.string().max(160).optional(),
   originalTitle: z.string().min(1).max(500),
   sourcePriceCny: z.coerce.number().nonnegative(),
@@ -34,6 +37,22 @@ export const createImportSchema = z.object({
   suggestedPriceUzs: z.coerce.number().positive().optional(),
   expectedCostUzs: z.coerce.number().nonnegative().optional(),
   categoryId: z.string().uuid().optional(),
+}).superRefine((value, context) => {
+  if (value.sourceProvider && value.sourceProvider !== value.source) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceProvider'],
+      message: 'sourceProvider must match source',
+    });
+  }
+  const expectedDeduplicationKey = `${value.source}:${value.sourceProductId}`;
+  if (value.deduplicationKey && value.deduplicationKey !== expectedDeduplicationKey) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['deduplicationKey'],
+      message: 'deduplicationKey must match the source and source product ID',
+    });
+  }
 });
 
 export const approveImportSchema = z.object({

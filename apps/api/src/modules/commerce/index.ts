@@ -7,6 +7,7 @@ import { authMiddleware } from '../../lib/authMiddleware';
 import { adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
+import { featureFlags } from '../features/feature-flags';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -528,10 +529,39 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/admin/imports', { preHandler: adminMiddleware }, async (request, reply) => {
     const input = createImportSchema.parse(request.body);
+    if (input.source === 'SOURCE_1688' && !featureFlags.isEnabled('PARSER_1688')) {
+      return reply.status(403).send({ code: 'FEATURE_DISABLED', message: 'The 1688 parser is disabled.' });
+    }
+    const {
+      sourceProvider,
+      sourceMetadata,
+      deduplicationKey,
+      ...importData
+    } = input;
+    const persistedSourceMetadata = {
+      ...(sourceMetadata ?? {}),
+      sourceProvider: sourceProvider ?? input.source,
+      deduplicationKey: deduplicationKey ?? `${input.source}:${input.sourceProductId}`,
+    };
     const item = await app.prisma.importedProduct.upsert({
       where: { source_sourceProductId: { source: input.source, sourceProductId: input.sourceProductId } },
-      create: { ...input, status: 'PENDING_REVIEW', normalizedPayload: input.normalizedPayload as any, aiPayload: input.aiPayload as any, aiWarnings: input.aiWarnings as any },
-      update: { sourceUrl: input.sourceUrl, sourcePriceCny: input.sourcePriceCny, normalizedPayload: input.normalizedPayload as any, aiPayload: input.aiPayload as any, aiWarnings: input.aiWarnings as any, status: 'PENDING_REVIEW' },
+      create: {
+        ...importData,
+        sourceMetadata: persistedSourceMetadata,
+        status: 'PENDING_REVIEW',
+        normalizedPayload: importData.normalizedPayload as Prisma.InputJsonValue,
+        aiPayload: importData.aiPayload as Prisma.InputJsonValue | undefined,
+        aiWarnings: importData.aiWarnings as Prisma.InputJsonValue | undefined,
+      },
+      update: {
+        sourceUrl: input.sourceUrl,
+        sourceMetadata: persistedSourceMetadata,
+        sourcePriceCny: input.sourcePriceCny,
+        normalizedPayload: importData.normalizedPayload as Prisma.InputJsonValue,
+        aiPayload: importData.aiPayload as Prisma.InputJsonValue | undefined,
+        aiWarnings: importData.aiWarnings as Prisma.InputJsonValue | undefined,
+        status: 'PENDING_REVIEW',
+      },
     });
     return reply.status(201).send(item);
   });

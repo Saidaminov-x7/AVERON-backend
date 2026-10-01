@@ -42,6 +42,30 @@ const envSchema = z.object({
   OLLAMA_BASE_URL: z.string().url('OLLAMA_BASE_URL must be a valid URL').default('http://localhost:11434'),
   AI_SERVICE_URL: z.string().url('AI_SERVICE_URL must be a valid URL').default('http://localhost:8000'),
   OLLAMA_MODEL: z.string().default('llama3'),
+  AI_PRODUCT_API_URL: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().url().optional(),
+  ),
+  AI_PRODUCT_API_KEY: z.string().optional(),
+  AI_PRODUCT_MODEL: z.string().min(1).default('gpt-4o-mini'),
+
+  // Feature flags are explicit deployment opt-ins; unfinished capabilities default off.
+  FEATURE_AI_PRODUCT_FILL: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_1688_PARSER: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_PINDUODUO_PARSER: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_IPOST: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_N8N: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_TELEGRAM_PRODUCT_PUBLISH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_AUTO_CURRENCY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_SMS_VERIFICATION: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  SMS_API_URL: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().url().optional(),
+  ),
+  SMS_API_TOKEN: z.string().optional(),
+  SMS_SENDER: z.string().optional(),
+  TELEGRAM_ADMIN_BOT: z.string().optional(),
+  TELEGRAM_CHANNEL_ID: z.string().optional(),
 
   // Media storage
   STORAGE_DRIVER: z.enum(['local', 'cloudinary']).default('local'),
@@ -60,6 +84,27 @@ const envSchema = z.object({
   // Rate limiting
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
+}).superRefine((values, context) => {
+  if (values.NODE_ENV !== 'production') return;
+  if (new URL(values.PUBLIC_SITE_URL).protocol !== 'https:') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PUBLIC_SITE_URL'],
+      message: 'PUBLIC_SITE_URL must use HTTPS in production',
+    });
+  }
+  for (const [key, endpoint] of [
+    ['AI_PRODUCT_API_URL', values.AI_PRODUCT_API_URL],
+    ['SMS_API_URL', values.SMS_API_URL],
+  ] as const) {
+    if (endpoint && new URL(endpoint).protocol !== 'https:') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} must use HTTPS in production`,
+      });
+    }
+  }
 });
 
 function parseConfig() {

@@ -34,7 +34,7 @@ export const refreshHandler = async (
       return reply.status(401).send({ message: 'User not found' });
     }
 
-    if (user.isBlocked) {
+    if (user.isBlocked || user.isDeleted) {
       return reply.status(403).send({ message: 'User account is blocked' });
     }
 
@@ -42,15 +42,15 @@ export const refreshHandler = async (
       where: { id: decoded.sessionId, userId: user.id, revokedAt: null, expiresAt: { gt: new Date() } },
     }) : null;
 
-    // Existing cookies remain valid during rollout; every new login uses the
-    // per-device session record and no longer logs other devices out.
-    const expectedHash = session?.refreshTokenHash || user.refreshTokenHash;
-    if (expectedHash) {
-      const isCurrentToken = await argon2.verify(expectedHash, refreshToken);
-      if (!isCurrentToken) {
-        request.log.warn({ userId: user.id }, 'Refresh token does not match stored hash');
-        return reply.status(401).send({ message: 'Invalid refresh token' });
-      }
+    if (decoded.sessionId && !session) {
+      return reply.status(401).send({ message: 'Invalid refresh token' });
+    }
+
+    // Legacy tokens without a session id remain valid only while their global hash exists.
+    const expectedHash = decoded.sessionId ? session?.refreshTokenHash : user.refreshTokenHash;
+    if (!expectedHash || !(await argon2.verify(expectedHash, refreshToken))) {
+      request.log.warn({ userId: user.id }, 'Refresh token does not match stored hash');
+      return reply.status(401).send({ message: 'Invalid refresh token' });
     }
 
     const { accessToken, refreshToken: newRefreshToken, sessionId } = generateTokens(user, request, decoded.sessionId);

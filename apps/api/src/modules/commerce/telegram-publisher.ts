@@ -1,3 +1,6 @@
+import { config } from '../../config';
+import { featureFlags } from '../features/feature-flags';
+
 type PublishedProduct = { slug: string; salePriceUzs: unknown; translations: unknown };
 
 function productTitle(translations: unknown) {
@@ -7,10 +10,11 @@ function productTitle(translations: unknown) {
 }
 
 export async function publishProductToTelegram(product: PublishedProduct, imageUrl?: string) {
-  const token = process.env.TELEGRAM_ADMIN_BOT?.trim();
-  const channel = process.env.TELEGRAM_CHANNEL_ID?.trim() || '@averon_fashion';
+  if (!featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH')) return { skipped: true };
+  const token = config.TELEGRAM_ADMIN_BOT?.trim();
+  const channel = config.TELEGRAM_CHANNEL_ID?.trim() || '@averon_fashion';
   if (!token || !channel) return { skipped: true };
-  const site = (process.env.PUBLIC_SITE_URL || 'https://averon-frontend-three.vercel.app').replace(/\/$/, '');
+  const site = config.PUBLIC_SITE_URL.replace(/\/$/, '');
   const caption = `${productTitle(product.translations)}\n\n${Number(product.salePriceUzs).toLocaleString('ru-RU')} сум\n${site}/ru/catalog/${product.slug}`;
   const method = imageUrl ? 'sendPhoto' : 'sendMessage';
   const body = imageUrl ? { chat_id: channel, photo: imageUrl, caption } : { chat_id: channel, text: caption };
@@ -18,16 +22,12 @@ export async function publishProductToTelegram(product: PublishedProduct, imageU
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) {
-    const errorText = await response.text();
     console.error('[TELEGRAM_PUBLISH_ERROR]', {
       status: response.status,
       statusText: response.statusText,
-      errorBody: errorText,
-      payload: body,
-      channel,
       method,
     });
-    throw new Error(`Telegram publish failed [${response.status}]: ${errorText}`);
+    throw new Error(`Telegram publish failed [${response.status}]`);
   }
   return { skipped: false };
 }

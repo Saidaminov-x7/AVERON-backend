@@ -9,6 +9,8 @@ import { saveAuthSession } from './sessions';
 import { passwordValidation } from './schemas';
 import { uzbekPhoneSchema } from './phone';
 import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
+import { config } from '../../config';
+import { featureFlags } from '../features/feature-flags';
 
 const phone = uzbekPhoneSchema;
 const password = passwordValidation;
@@ -21,7 +23,14 @@ const pendingKey = (kind: 'register' | 'login' | 'reset', normalizedPhone: strin
 type Pending = { codeHash: string; attempts: number; userId?: string; name?: string; passwordHash?: string };
 const hashCode = (code: string) => crypto.createHash('sha256').update(code).digest('hex');
 
+function smsFeatureDisabled(reply: FastifyReply) {
+  if (featureFlags.isEnabled('SMS_VERIFICATION')) return false;
+  reply.status(403).send({ code: 'FEATURE_DISABLED', message: 'SMS verification is disabled.' });
+  return true;
+}
+
 async function issueCode(request: FastifyRequest, reply: FastifyReply, key: string, payload: Omit<Pending, 'codeHash' | 'attempts'>, action: string) {
+  if (smsFeatureDisabled(reply)) return;
   const normalizedPhone = key.slice(key.lastIndexOf(':') + 1);
   const cooldownKey = `phone-password-cooldown:${normalizedPhone}`;
   if (await request.server.redis.exists(cooldownKey)) {
@@ -30,13 +39,16 @@ async function issueCode(request: FastifyRequest, reply: FastifyReply, key: stri
   const code = crypto.randomInt(100000, 1_000_000).toString();
   await request.server.redis.set(cooldownKey, '1', 'EX', 60);
   await request.server.redis.set(key, JSON.stringify({ ...payload, codeHash: hashCode(code), attempts: 0 }), 'EX', 300);
-  const sent = await sendSms(normalizedPhone.replace(/\D/g, ''), code, action).catch(() => false);
-  if (!sent && process.env.NODE_ENV === 'production') {
+  const sent = await sendSms(normalizedPhone.replace(/\D/g, ''), code, action).catch((error) => {
+    request.log.error({ errorName: error instanceof Error ? error.name : 'unknown' }, 'SMS provider request failed');
+    return false;
+  });
+  if (!sent && config.NODE_ENV === 'production') {
     await request.server.redis.del(key);
     await request.server.redis.del(cooldownKey);
-    return reply.status(503).send({ message: 'SMS-сервис не настроен. Добавьте SMS_API_URL и SMS_API_TOKEN.' });
+    return reply.status(503).send({ code: 'SMS_PROVIDER_NOT_CONFIGURED', message: 'SMS verification is not configured.' });
   }
-  return reply.send({ ok: true, expiresIn: 300, ...(process.env.NODE_ENV !== 'production' ? { devCode: code } : {}) });
+  return reply.send({ ok: true, expiresIn: 300, ...(config.NODE_ENV !== 'production' ? { devCode: code } : {}) });
 }
 
 async function readVerified(request: FastifyRequest, reply: FastifyReply, key: string, code: string) {
@@ -63,12 +75,14 @@ async function completeLogin(request: FastifyRequest, reply: FastifyReply, user:
 }
 
 export async function requestPhoneRegistration(request: FastifyRequest, reply: FastifyReply) {
+  if (smsFeatureDisabled(reply)) return;
   const data = registrationSchema.parse(request.body);
   if (await request.server.prisma.user.findUnique({ where: { phone: data.phone } })) return reply.status(409).send({ message: 'Этот номер уже зарегистрирован.' });
   return issueCode(request, reply, pendingKey('register', data.phone), { name: data.name, passwordHash: await argon2.hash(data.password) }, 'регистрации');
 }
 
 export async function verifyPhoneRegistration(request: FastifyRequest, reply: FastifyReply) {
+  if (smsFeatureDisabled(reply)) return;
   const data = verifySchema.parse(request.body);
   const pending = await readVerified(request, reply, pendingKey('register', data.phone), data.code);
   if (!pending) return;
@@ -94,6 +108,7 @@ export async function requestPhonePasswordLogin(request: FastifyRequest, reply: 
 }
 
 export async function verifyPhonePasswordLogin(request: FastifyRequest, reply: FastifyReply) {
+  if (smsFeatureDisabled(reply)) return;
   const data = verifySchema.parse(request.body);
   const pending = await readVerified(request, reply, pendingKey('login', data.phone), data.code);
   if (!pending) return;
@@ -103,6 +118,7 @@ export async function verifyPhonePasswordLogin(request: FastifyRequest, reply: F
 }
 
 export async function requestPhonePasswordReset(request: FastifyRequest, reply: FastifyReply) {
+  if (smsFeatureDisabled(reply)) return;
   const data = z.object({ phone }).parse(request.body);
   const user = await request.server.prisma.user.findUnique({ where: { phone: data.phone } });
   if (!user || user.isBlocked) return reply.send({ ok: true, expiresIn: 300 });
@@ -110,6 +126,7 @@ export async function requestPhonePasswordReset(request: FastifyRequest, reply: 
 }
 
 export async function verifyPhonePasswordReset(request: FastifyRequest, reply: FastifyReply) {
+  if (smsFeatureDisabled(reply)) return;
   const data = resetSchema.parse(request.body);
   const pending = await readVerified(request, reply, pendingKey('reset', data.phone), data.code);
   if (!pending) return;

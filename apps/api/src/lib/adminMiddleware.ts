@@ -20,10 +20,10 @@ export const adminMiddleware = async (
   // Проверяем пользователя в БД для актуальной роли и проверки блокировки
   const user = await request.server.prisma.user.findUnique({
     where: { id: request.user.userId },
-    select: { id: true, role: true, adminRole: true, isBlocked: true },
+    select: { id: true, role: true, adminRole: true, isBlocked: true, isDeleted: true },
   });
 
-  if (!user || user.isBlocked) {
+  if (!user || user.isBlocked || user.isDeleted) {
     return reply.status(403).send({ message: 'Access denied. Account is blocked or does not exist.' });
   }
 

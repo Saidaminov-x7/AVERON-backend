@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   approveImportSchema,
   createCategorySchema,
+  createImportSchema,
   createManualProductSchema,
   productListQuerySchema,
   updateManualProductSchema,
@@ -129,5 +130,23 @@ describe('commerce product country validation', () => {
       slug: 'Upper Wear',
       name: { ru: 'Одежда', uz: 'Kiyim', en: 'Clothing' },
     }).success).toBe(false);
+  });
+
+  it('validates source-provider metadata and deterministic deduplication keys', () => {
+    const payload = {
+      source: 'SOURCE_1688',
+      sourceProvider: 'SOURCE_1688',
+      sourceProductId: 'source-123',
+      sourceUrl: 'https://example.test/item/123',
+      sourceMetadata: { seller: 'seller-1' },
+      deduplicationKey: 'SOURCE_1688:source-123',
+      originalTitle: 'Cotton jacket',
+      sourcePriceCny: 25,
+      normalizedPayload: { title: 'Cotton jacket' },
+    };
+
+    expect(createImportSchema.safeParse(payload).success).toBe(true);
+    expect(createImportSchema.safeParse({ ...payload, sourceProvider: 'TAOBAO' }).success).toBe(false);
+    expect(createImportSchema.safeParse({ ...payload, deduplicationKey: 'arbitrary-key' }).success).toBe(false);
   });
 });

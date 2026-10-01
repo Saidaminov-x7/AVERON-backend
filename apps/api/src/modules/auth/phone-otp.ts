@@ -2,8 +2,11 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import argon2 from 'argon2';
 import crypto from 'crypto';
 import { z } from 'zod';
+import { config } from '../../config';
 import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
+import { featureFlags } from '../features/feature-flags';
+import { smsProvider } from '../integrations/sms-provider';
 import { saveAuthSession } from './sessions';
 
 const phoneSchema = z.string().transform((value) => value.replace(/\D/g, '')).refine(
@@ -19,24 +22,20 @@ const otpCooldownKey = (phone: string) => `phone-otp-cooldown:${phone}`;
 const RESEND_COOLDOWN_SECONDS = 60;
 
 export async function sendSms(phone: string, code: string, action = 'входа') {
-  const endpoint = process.env.SMS_API_URL?.trim();
-  const token = process.env.SMS_API_TOKEN?.trim();
-  const sender = process.env.SMS_SENDER?.trim() || 'AVERON';
-  if (!endpoint || !token) return false;
+  return smsProvider.send(phone, `AVERON: код ${action} ${code}`);
+}
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ mobile_phone: phone, message: `AVERON: код ${action} ${code}`, from: sender }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  return response.ok;
+function smsFeatureDisabled(reply: FastifyReply) {
+  if (featureFlags.isEnabled('SMS_VERIFICATION')) return false;
+  reply.status(403).send({ code: 'FEATURE_DISABLED', message: 'SMS verification is disabled.' });
+  return true;
 }
 
 export async function requestPhoneOtp(
   request: FastifyRequest<{ Body: { phone: string } }>,
   reply: FastifyReply,
 ) {
+  if (smsFeatureDisabled(reply)) return;
   const { phone } = requestSchema.parse(request.body);
   const cooldownKey = otpCooldownKey(phone);
   const cooldown = await request.server.redis.set(
@@ -55,18 +54,18 @@ export async function requestPhoneOtp(
   await request.server.redis.set(otpKey(phone), JSON.stringify({ codeHash, attempts: 0 }), 'EX', 300);
 
   const sent = await sendSms(phone, code).catch((error) => {
-    request.log.error({ error }, 'SMS provider request failed');
+    request.log.error({ errorName: error instanceof Error ? error.name : 'unknown' }, 'SMS provider request failed');
     return false;
   });
-  if (!sent && process.env.NODE_ENV === 'production') {
+  if (!sent && config.NODE_ENV === 'production') {
     await request.server.redis.del(otpKey(phone), cooldownKey);
-    return reply.status(503).send({ message: 'SMS-сервис ещё не подключён. Добавьте SMS_API_URL и SMS_API_TOKEN.' });
+    return reply.status(503).send({ code: 'SMS_PROVIDER_NOT_CONFIGURED', message: 'SMS verification is not configured.' });
   }
 
   return reply.send({
     ok: true,
     expiresIn: 300,
-    ...(process.env.NODE_ENV !== 'production' ? { devCode: code } : {}),
+    ...(config.NODE_ENV !== 'production' ? { devCode: code } : {}),
   });
 }
 
@@ -74,6 +73,7 @@ export async function verifyPhoneOtp(
   request: FastifyRequest<{ Body: { phone: string; code: string } }>,
   reply: FastifyReply,
 ) {
+  if (smsFeatureDisabled(reply)) return;
   const { phone, code } = verifySchema.parse(request.body);
   const key = otpKey(phone);
   const stored = await request.server.redis.get(key);

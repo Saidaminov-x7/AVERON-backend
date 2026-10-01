@@ -59,6 +59,9 @@ function createTestApp({
     siteSettings: {
       findUnique: vi.fn(async () => ({ maxProductPhotos, maxProductPhotoSizeMb })),
     },
+    importedProduct: {
+      upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => create),
+    },
     media: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
         where.id.in.map((id) => ({ id, url: 'https://cdn.example/photo.jpg', size: mediaSize }))),
@@ -171,6 +174,60 @@ describe('commerce admin routes', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(tx.commerceProduct.create).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('rejects 1688 imports while their feature is disabled', async () => {
+    const { app } = createTestApp();
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/imports',
+      payload: {
+        source: 'SOURCE_1688',
+        sourceProductId: 'source-123',
+        sourceUrl: 'https://example.test/item/123',
+        originalTitle: 'Cotton jacket',
+        sourcePriceCny: 25,
+        normalizedPayload: { title: 'Cotton jacket' },
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'FEATURE_DISABLED' });
+    await app.close();
+  });
+
+  it('stores imported source metadata and keeps the item pending human review', async () => {
+    const { app, prisma } = createTestApp();
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/imports',
+      payload: {
+        source: 'TAOBAO',
+        sourceProductId: 'source-456',
+        sourceUrl: 'https://example.test/item/456',
+        sourceMetadata: { seller: 'seller-2' },
+        deduplicationKey: 'TAOBAO:source-456',
+        originalTitle: 'Cotton jacket',
+        sourcePriceCny: 25,
+        normalizedPayload: { title: 'Cotton jacket' },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(prisma.importedProduct.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: { source_sourceProductId: { source: 'TAOBAO', sourceProductId: 'source-456' } },
+      create: expect.objectContaining({
+        status: 'PENDING_REVIEW',
+        sourceMetadata: {
+          seller: 'seller-2',
+          sourceProvider: 'TAOBAO',
+          deduplicationKey: 'TAOBAO:source-456',
+        },
+      }),
+    }));
     await app.close();
   });
 

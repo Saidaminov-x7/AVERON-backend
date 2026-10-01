@@ -59,10 +59,9 @@ export const forgotPasswordHandler = async (
   const userLocale = dto.locale || 'ru';
   const resetLink = `${siteBase}/${userLocale}/reset-password?token=${resetToken}`;
 
-  // Логируем в консоль / логгер (особенно полезно для разработки и отладки)
   request.log.info(
-    { userId: user.id, email: user.email, resetLink, siteBase, userLocale },
-    `[ForgotPassword] Reset link generated for ${user.email}`,
+    { userId: user.id, locale: userLocale },
+    'Password reset link generated',
   );
 
   // Отправляем уведомление через Telegram, если бот настроен (админу или в канал логов)
@@ -74,8 +73,7 @@ export const forgotPasswordHandler = async (
         `🔐 <b>Запрос на сброс пароля</b>\n\n` +
         `👤 Пользователь: <b>${user.name}</b> (${user.email})\n` +
         `🌐 Локаль: <code>${userLocale}</code>\n` +
-        `🔗 Ссылка для сброса:\n<code>${resetLink}</code>\n\n` +
-        `<i>Ссылка действительна 1 час.</i>`,
+        `<i>Письмо со ссылкой отправлено пользователю, если email-провайдер настроен.</i>`,
         'HTML',
         request.log,
       ).catch(() => {});
@@ -195,29 +193,24 @@ export const resetPasswordHandler = async (
   // Хэшируем новый пароль с помощью argon2
   const newPasswordHash = await argon2.hash(dto.password);
 
-  // Обновляем пароль пользователя
-  const updatedUser = await prisma.user.update({
-    where: { id: session.userId },
-    data: {
-      passwordHash: newPasswordHash,
-    },
-    select: { id: true, email: true, name: true },
+  const updatedUser = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.update({
+      where: { id: session.userId },
+      data: {
+        passwordHash: newPasswordHash,
+        refreshTokenHash: null,
+      },
+      select: { id: true, email: true, name: true },
+    });
+    await tx.authSession.updateMany({
+      where: { userId: session.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return user;
   });
 
   // Удаляем использованный токен из Redis
   await redis.del(redisKey);
-
-  // Инвалидируем все активные refresh-токены пользователя для безопасности
-  const userRefreshTokensKey = `user_refresh_tokens:${session.userId}`;
-  const activeTokens = await redis.smembers(userRefreshTokensKey).catch(() => []);
-  if (activeTokens.length > 0) {
-    const pipeline = redis.pipeline();
-    for (const t of activeTokens) {
-      pipeline.del(`refresh_token:${t}`);
-    }
-    pipeline.del(userRefreshTokensKey);
-    await pipeline.exec().catch(() => {});
-  }
 
   // Записываем аудит-лог
   await prisma.auditLog.create({
