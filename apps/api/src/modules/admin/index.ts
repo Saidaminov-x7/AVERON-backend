@@ -3,7 +3,7 @@
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { AdminRole } from '@prisma/client';
-import FileType from 'file-type';
+import { fileTypeFromBuffer } from 'file-type';
 import { adminMiddleware, requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { updateListingSchema } from '../listings/schemas';
@@ -485,7 +485,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     const data = await readSingleMultipartFile(request, 'file', 10 * 1024 * 1024);
     const buffer = data.data;
 
-    const detected = await FileType.fromBuffer(buffer);
+    const detected = await fileTypeFromBuffer(buffer);
     const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
     let finalMime: string = detected?.mime || data.mimetype || 'image/png';
     if (!detected || !ALLOWED.includes(detected.mime)) {
@@ -1309,4 +1309,3 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     });
   });
 };
-

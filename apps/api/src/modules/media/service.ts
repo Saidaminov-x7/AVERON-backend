@@ -2,7 +2,7 @@
 
 import { PrismaClient, Media } from '@prisma/client';
 import { createHash } from 'crypto';
-import FileType from 'file-type';
+import { fileTypeFromBuffer } from 'file-type';
 import { config } from '../../config';
 import { ALLOWED_MIME_TYPES } from './schemas';
 import { createStorageAdapter, IStorageAdapter } from './storage';
@@ -43,7 +43,7 @@ export class MediaService {
     const { data, filename } = file;
 
     // 1. Проверяем сигнатуру (magic bytes) реального содержимого
-    const detected = await FileType.fromBuffer(data);
+    const detected = await fileTypeFromBuffer(data);
     const isSvg = file.mimetype === 'image/svg+xml' || data.slice(0, 200).toString('utf-8').includes('<svg');
     let mimetype: string = detected?.mime || file.mimetype || 'image/png';
     if (!detected || !ALLOWED_MIME_TYPES.includes(detected.mime as (typeof ALLOWED_MIME_TYPES)[number])) {

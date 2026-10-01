@@ -1,7 +1,7 @@
 // apps/api/src/modules/media/index.ts
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
-import FileType from 'file-type';
+import { fileTypeFromBuffer } from 'file-type';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
@@ -12,7 +12,7 @@ const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES = 25 * 1024 * 1024;
 
 async function validateFileType(buffer: Buffer) {
-  const detected = await FileType.fromBuffer(buffer);
+  const detected = await fileTypeFromBuffer(buffer);
   if (!detected || !ALLOWED_MIME.includes(detected.mime)) {
     const error = new Error('INVALID_FILE_TYPE: Поддерживаются только изображения (JPEG, PNG, WEBP, GIF)') as Error & { statusCode: number };
     error.statusCode = 400;

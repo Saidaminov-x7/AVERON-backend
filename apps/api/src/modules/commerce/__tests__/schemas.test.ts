@@ -36,6 +36,12 @@ describe('commerce product country validation', () => {
     }).success).toBe(false);
   });
 
+  it('validates manually managed stock as a nonnegative integer', () => {
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN', stock: 0 }).success).toBe(true);
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN', stock: -1 }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({ stock: 1.5 }).success).toBe(false);
+  });
+
   it('allows a manual product without sourceUrl and requires localized titles plus at least one photo', () => {
     const result = createManualProductSchema.safeParse({ ...manualProduct, country: 'CN' });
     expect(result.success).toBe(true);

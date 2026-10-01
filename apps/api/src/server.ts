@@ -34,6 +34,7 @@ import { analyticsModule } from './modules/analytics';
 import { capabilitiesModule } from './modules/features';
 import { productAiModule } from './modules/commerce/product-ai';
 import { visualSearchModule } from './modules/visual-search';
+import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -77,6 +78,17 @@ const server = fastify({
     },
   },
 });
+
+const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
+  async () => {
+    const settings = await prisma.siteSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { adaptiveRateLimitEnabled: true },
+    });
+    return settings?.adaptiveRateLimitEnabled === true;
+  },
+  (error) => server.log.warn({ err: error }, '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
+);
 
 redis.on('error', (err) => {
   server.log.error({ err }, '[Redis] Connection error');
@@ -124,15 +136,12 @@ server.register(fastifyRateLimit, {
   redis,
   global: true,
   max: async (req) => {
-    try {
-      const siteSettings = await prisma.siteSettings.findUnique({ where: { id: 'singleton' } });
-      if (siteSettings?.adaptiveRateLimitEnabled) {
-        // При включенном адаптивном лимите: снижаем лимит для публичных страниц каталога и поиска
-        if (req.url.startsWith('/listings') || req.url.startsWith('/analytics/search-queries')) {
-          return 40; // 40 запросов в минуту при строгом режиме
-        }
+    if (await isAdaptiveRateLimitEnabled()) {
+      // При включенном адаптивном лимите: снижаем лимит для публичных страниц каталога и поиска
+      if (req.url.startsWith('/listings') || req.url.startsWith('/analytics/search-queries')) {
+        return 40; // 40 запросов в минуту при строгом режиме
       }
-    } catch {}
+    }
     return config.RATE_LIMIT_MAX;
   },
   timeWindow: config.RATE_LIMIT_WINDOW,

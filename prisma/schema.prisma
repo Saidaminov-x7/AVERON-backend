@@ -166,6 +166,8 @@ model User {
   promoCodeUsages      PromoCodeUsage[]
   authSessions         AuthSession[]
   adminRecoveryCodes   AdminRecoveryCode[]
+  commerceCart         CommerceCart?
+  checkoutIdempotency CommerceCheckoutIdempotency[]
 
   @@index([email])
   @@index([phone])
@@ -771,6 +773,7 @@ enum AveronOrderStatus {
   OUT_FOR_DELIVERY
   DELIVERED
   COMPLETED
+  CONFIRMED
   CANCELLED
   REFUNDED
 }
@@ -857,6 +860,8 @@ model CommerceProduct {
   images            CommerceProductImage[]
   imageEmbeddings   ProductImageEmbedding[]
   variants          CommerceProductVariant[]
+  stock             Int                      @default(0)
+  cartItems         CommerceCartItem[]
   orderItems        CommerceOrderItem[]
   favoriteLinks     ProductFavorite[]
   alerts            ProductPriceAlert[]
@@ -928,6 +933,7 @@ model CommerceProductVariant {
   salePriceUzs    Decimal             @db.Decimal(16, 2)
   stock           Int                 @default(0)
   active          Boolean             @default(true)
+  cartItems       CommerceCartItem[]
   orderItems      CommerceOrderItem[]
 
   @@index([productId, active])
@@ -990,9 +996,50 @@ model CommerceOrder {
   expenses        CommerceExpense[]
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
+  checkoutIdempotency CommerceCheckoutIdempotency?
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
+}
+
+model CommerceCart {
+  id        String             @id @default(uuid())
+  userId    String             @unique
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CommerceCartItem[]
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+}
+
+model CommerceCartItem {
+  id        String                  @id @default(uuid())
+  cartId    String
+  cart      CommerceCart            @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  itemKey   String
+  productId String
+  product   CommerceProduct         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId String?
+  variant   CommerceProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  quantity  Int
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+
+  @@unique([cartId, itemKey])
+  @@index([productId])
+  @@index([variantId])
+}
+
+model CommerceCheckoutIdempotency {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  key         String
+  requestHash String
+  orderId     String        @unique
+  order       CommerceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now())
+
+  @@unique([userId, key])
 }
 
 model CommerceOrderItem {
@@ -1004,6 +1051,7 @@ model CommerceOrderItem {
   variantId  String?
   variant    CommerceProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
   title      String
+  variantSnapshot Json?
   quantity   Int
   unitPrice  Decimal                 @db.Decimal(16, 2)
   totalPrice Decimal                 @db.Decimal(16, 2)

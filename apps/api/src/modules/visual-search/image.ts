@@ -1,4 +1,4 @@
-import FileType from 'file-type';
+import { fileTypeFromBuffer } from 'file-type';
 import sharp from 'sharp';
 import { VisualSearchError } from './errors';
 
@@ -62,7 +62,7 @@ export async function normalizeUploadedImage(
 
   let detected: { mime: string } | undefined;
   try {
-    detected = await FileType.fromBuffer(data);
+    detected = await fileTypeFromBuffer(data);
   } catch {
     detected = undefined;
   }

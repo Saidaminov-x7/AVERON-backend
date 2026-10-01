@@ -2,13 +2,14 @@ import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { Prisma, ProductPublicationStatus } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
-import { authMiddleware } from '../../lib/authMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
+import { cartCheckoutModule } from './cart-checkout';
+import { commerceOrdersModule } from './orders';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -122,6 +123,8 @@ function mergeLocalizedDescriptions(
 
 export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(parserImportModule);
+  app.register(cartCheckoutModule);
+  app.register(commerceOrdersModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
@@ -220,25 +223,6 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const input = customOrderSchema.parse(request.body);
     const item = await app.prisma.customOrderRequest.create({ data: { ...input, contact: input.contact as any, selectedVariant: input.selectedVariant as any } });
     return reply.status(201).send(item);
-  });
-
-  app.get('/orders/me', { preHandler: authMiddleware }, async (request) => {
-    return app.prisma.commerceOrder.findMany({
-      where: { userId: request.user.userId },
-      select: {
-        id: true,
-        orderNumber: true,
-        status: true,
-        currency: true,
-        totalRevenue: true,
-        createdAt: true,
-        updatedAt: true,
-        items: { select: { id: true, title: true, quantity: true, unitPrice: true, totalPrice: true, productId: true } },
-        statusHistory: { orderBy: { createdAt: 'desc' }, take: 10 },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-    });
   });
 
   app.get('/admin/dashboard', { preHandler: adminMiddleware }, async () => {
@@ -351,6 +335,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           originalPriceCny: input.sourcePriceCny ?? null,
           exchangeRate: input.exchangeRate ?? null,
           salePriceUzs: input.salePriceUzs,
+          stock: input.stock,
           categoryId: input.categoryId,
           approvedById: request.user.userId,
           approvedAt: new Date(),
@@ -363,7 +348,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
               return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title } };
             }),
           },
-          variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
+          variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock }] } : undefined,
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
@@ -390,7 +375,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         translations: true,
         description: true,
         images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true } },
-        variants: { where: { sku: { startsWith: 'MANUAL-' } }, take: 1, select: { id: true } },
+        variants: { select: { id: true, sku: true, stock: true, active: true } },
       },
     });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
@@ -435,6 +420,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           throw Object.assign(new Error('The selected category is not active'), { statusCode: 400 });
         }
       }
+      const manualVariant = product.variants.find((variant) => variant.sku.startsWith('MANUAL-'));
+      const hasActiveVariants = product.variants.some((variant) => variant.active);
+      if (input.stock !== undefined && hasActiveVariants && (!manualVariant || !manualVariant.active)) {
+        throw Object.assign(new Error('Stock for variant products must be managed on the variant'), { statusCode: 400 });
+      }
       const descriptionsProvided = input.description !== undefined
         || input.descriptionUz !== undefined
         || input.descriptionEn !== undefined;
@@ -462,6 +452,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             : {}),
           ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
           ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
+          ...(input.stock !== undefined && !hasActiveVariants && input.color === undefined && input.size === undefined
+            ? { stock: input.stock }
+            : {}),
           ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
         },
       });
@@ -500,18 +493,25 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
 
       if (product.source === 'MANUAL' && (
-        input.color !== undefined || input.size !== undefined || input.salePriceUzs !== undefined
+        input.color !== undefined || input.size !== undefined || input.salePriceUzs !== undefined || input.stock !== undefined
       )) {
         const color = input.color?.trim() || null;
         const size = input.size?.trim() || null;
-        const variant = product.variants[0];
-        if (variant && (color || size)) {
+        const variant = manualVariant;
+        const changedVariantOptions = input.color !== undefined || input.size !== undefined || input.salePriceUzs !== undefined;
+        if (variant && !changedVariantOptions && input.stock !== undefined) {
+          await tx.commerceProductVariant.update({
+            where: { id: variant.id },
+            data: { stock: input.stock },
+          });
+        } else if (variant && (color || size)) {
           await tx.commerceProductVariant.update({
             where: { id: variant.id },
             data: {
               color,
               size,
               active: true,
+              ...(input.stock !== undefined ? { stock: input.stock } : {}),
               ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
             },
           });
@@ -529,7 +529,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
               size,
               sourcePriceCny: null,
               salePriceUzs: input.salePriceUzs ?? Number(updatedProduct.salePriceUzs),
-              stock: 1,
+              stock: input.stock ?? 0,
             },
           });
         }
@@ -736,5 +736,4 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get('/admin/orders', { preHandler: adminMiddleware }, async () => app.prisma.commerceOrder.findMany({ include: { items: true, payments: true, purchases: true }, orderBy: { createdAt: 'desc' }, take: 100 }));
 };
