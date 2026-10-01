@@ -7,7 +7,7 @@ import { productAiProvider } from './product-ai-provider';
 export const productAiModule: FastifyPluginAsync = async (app) => {
   app.post('/admin/products/ai-suggestions', {
     preHandler: adminMiddleware,
-    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    config: { rateLimit: { max: 5, timeWindow: '1 minute', skipOnError: false } },
   }, async (request, reply) => {
     if (!featureFlags.isEnabled('AI_PRODUCT_FILL')) {
       return reply.status(403).send({ code: 'FEATURE_DISABLED', message: 'AI product suggestions are disabled.' });
