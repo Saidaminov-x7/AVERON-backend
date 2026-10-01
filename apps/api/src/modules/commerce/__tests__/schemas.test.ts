@@ -3,15 +3,13 @@ import {
   approveImportSchema,
   createManualProductSchema,
   productListQuerySchema,
-  updateProductCountrySchema,
+  updateManualProductSchema,
 } from '../schemas';
 import { buildProductWhere } from '../index';
 
 const manualProduct = {
   title: 'Test product',
   sourceUrl: 'https://example.com/product',
-  sourcePriceCny: 100,
-  exchangeRate: 1800,
   salePriceUzs: 180000,
 };
 
@@ -23,6 +21,15 @@ describe('commerce product country validation', () => {
   it('requires a supported country for manual product creation', () => {
     expect(createManualProductSchema.safeParse(manualProduct).success).toBe(false);
     expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'FR' }).success).toBe(false);
+  });
+
+  it('accepts a UZS-only manual product without a fabricated CNY price or exchange rate', () => {
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN' }).success).toBe(true);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      salePriceUzs: Number.POSITIVE_INFINITY,
+    }).success).toBe(false);
   });
 
   it('requires a supported country when approving an imported product', () => {
@@ -71,8 +78,21 @@ describe('commerce product country validation', () => {
     expect(publishedOnly.status).toBe('PUBLISHED');
   });
 
-  it('validates product country updates', () => {
-    expect(updateProductCountrySchema.safeParse({ country: 'GB' }).success).toBe(true);
-    expect(updateProductCountrySchema.safeParse({ country: 'FR' }).success).toBe(false);
+  it('validates full product updates and remains compatible with country-only updates', () => {
+    expect(updateManualProductSchema.safeParse({ country: 'GB' }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ country: 'FR' }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({
+      title: 'Updated title',
+      titleUz: 'Yangi nom',
+      titleEn: 'Updated title',
+      description: 'Описание',
+      descriptionUz: 'Tavsif',
+      descriptionEn: 'Description',
+      sourceUrl: 'https://example.com/product',
+      salePriceUzs: 750000,
+      categoryId: null,
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ salePriceUzs: 0 }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({}).success).toBe(false);
   });
 });

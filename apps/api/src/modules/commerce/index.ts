@@ -4,7 +4,7 @@ import { ProductPublicationStatus } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
-import { adminProductListQuerySchema, approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateProductCountrySchema } from './schemas';
+import { adminProductListQuerySchema, approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
 
@@ -61,6 +61,51 @@ const localizedTitle = (translations: unknown, fallback: string): string => {
   }
   return fallback;
 };
+
+function isJsonObject(value: unknown): value is Prisma.InputJsonObject {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function copyJsonObject(value: unknown): Record<string, Prisma.InputJsonValue | null> {
+  const result: Record<string, Prisma.InputJsonValue | null> = {};
+  if (!isJsonObject(value)) return result;
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== undefined) result[key] = item as Prisma.InputJsonValue | null;
+  }
+  return result;
+}
+
+function mergeLocalizedTitles(
+  existing: Prisma.JsonValue,
+  updates: Partial<Record<'ru' | 'uz' | 'en', string>>,
+): Prisma.InputJsonObject {
+  const translations = copyJsonObject(existing);
+  for (const [locale, title] of Object.entries(updates)) {
+    if (title === undefined) continue;
+    const currentValue = translations[locale];
+    const localized = isJsonObject(currentValue)
+      ? copyJsonObject(currentValue)
+      : typeof currentValue === 'string'
+        ? { title: currentValue }
+        : {};
+    localized.title = title;
+    translations[locale] = localized;
+  }
+  return translations as Prisma.InputJsonObject;
+}
+
+function mergeLocalizedDescriptions(
+  existing: Prisma.JsonValue | null,
+  updates: Partial<Record<'ru' | 'uz' | 'en', string>>,
+): Prisma.InputJsonObject {
+  const descriptions = copyJsonObject(existing);
+  for (const [locale, description] of Object.entries(updates)) {
+    if (description === undefined) continue;
+    if (description.trim()) descriptions[locale] = description.trim();
+    else delete descriptions[locale];
+  }
+  return descriptions as Prisma.InputJsonObject;
+}
 
 export const commerceModule: FastifyPluginAsync = async (app) => {
   app.get('/products', async (request) => {
@@ -146,6 +191,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/admin/products', { preHandler: adminMiddleware }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
+    const descriptions = {
+      ...(input.description?.trim() ? { ru: input.description.trim() } : {}),
+      ...(input.descriptionUz?.trim() ? { uz: input.descriptionUz.trim() } : {}),
+      ...(input.descriptionEn?.trim() ? { en: input.descriptionEn.trim() } : {}),
+    };
     const sourceProductId = randomUUID();
     let product;
     try {
@@ -153,12 +203,12 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         slug,
         country: input.country,
         translations: { ru: { title: input.title }, uz: { title: input.titleUz || input.title }, en: { title: input.titleEn || input.title } },
-        description: input.description ? { ru: input.description } : undefined,
+        description: Object.keys(descriptions).length ? descriptions : undefined,
         attributes: { audience: 'everyone' }, source: 'MANUAL', sourceProductId, sourceUrl: input.sourceUrl,
-        originalPriceCny: input.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,
+        originalPriceCny: input.sourcePriceCny ?? null, exchangeRate: input.exchangeRate ?? null, salePriceUzs: input.salePriceUzs,
         categoryId: input.categoryId, approvedById: request.user.userId, approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
         images: input.imageUrl ? { create: [{ url: input.imageUrl, alt: { ru: input.title } }] } : undefined,
-        variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: input.sourcePriceCny, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
+        variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
       }, include: { images: true, variants: true } }));
     } catch (error) {
       if (error instanceof ProductSlugCollisionError) {
@@ -173,24 +223,109 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.put('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const input = updateProductCountrySchema.parse(request.body);
-    const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true } });
+    const input = updateManualProductSchema.parse(request.body);
+    const product = await app.prisma.commerceProduct.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        source: true,
+        translations: true,
+        description: true,
+        images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { id: true, url: true } },
+        variants: { where: { sku: { startsWith: 'MANUAL-' } }, take: 1, select: { id: true } },
+      },
+    });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
 
     return app.prisma.$transaction(async (tx) => {
+      const descriptionsProvided = input.description !== undefined
+        || input.descriptionUz !== undefined
+        || input.descriptionEn !== undefined;
       const updatedProduct = await tx.commerceProduct.update({
         where: { id },
-        data: { country: input.country },
+        data: {
+          ...(input.country !== undefined ? { country: input.country } : {}),
+          ...(input.title !== undefined || input.titleUz !== undefined || input.titleEn !== undefined
+            ? {
+                translations: mergeLocalizedTitles(product.translations, {
+                  ru: input.title,
+                  uz: input.titleUz,
+                  en: input.titleEn,
+                }),
+              }
+            : {}),
+          ...(descriptionsProvided
+            ? {
+                description: mergeLocalizedDescriptions(product.description, {
+                  ru: input.description,
+                  uz: input.descriptionUz,
+                  en: input.descriptionEn,
+                }),
+              }
+            : {}),
+          ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
+          ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
+          ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
+        },
       });
+      const changedFields = Object.keys(input);
+      const countryOnlyUpdate = changedFields.length === 1 && changedFields[0] === 'country';
       await tx.auditLog.create({
         data: {
           userId: request.user.userId,
-          action: 'PRODUCT_COUNTRY_UPDATED',
+          action: countryOnlyUpdate ? 'PRODUCT_COUNTRY_UPDATED' : 'PRODUCT_UPDATED',
           resource: 'CommerceProduct',
           resourceId: id,
-          meta: { country: input.country },
+          meta: { changedFields, ...(input.country !== undefined ? { country: input.country } : {}) },
         },
       });
+
+      if (input.imageUrl && input.imageUrl !== product.images[0]?.url) {
+        if (product.images[0]) {
+          await tx.commerceProductImage.update({
+            where: { id: product.images[0].id },
+            data: { url: input.imageUrl },
+          });
+        } else {
+          await tx.commerceProductImage.create({ data: { productId: id, url: input.imageUrl } });
+        }
+      }
+
+      if (product.source === 'MANUAL' && (
+        input.color !== undefined || input.size !== undefined || input.salePriceUzs !== undefined
+      )) {
+        const color = input.color?.trim() || null;
+        const size = input.size?.trim() || null;
+        const variant = product.variants[0];
+        if (variant && (color || size)) {
+          await tx.commerceProductVariant.update({
+            where: { id: variant.id },
+            data: {
+              color,
+              size,
+              active: true,
+              ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
+            },
+          });
+        } else if (variant) {
+          await tx.commerceProductVariant.update({
+            where: { id: variant.id },
+            data: { active: false },
+          });
+        } else if (color || size) {
+          await tx.commerceProductVariant.create({
+            data: {
+              productId: id,
+              sku: `MANUAL-${randomUUID()}`,
+              color,
+              size,
+              sourcePriceCny: null,
+              salePriceUzs: input.salePriceUzs ?? Number(updatedProduct.salePriceUzs),
+              stock: 1,
+            },
+          });
+        }
+      }
       return updatedProduct;
     });
   });

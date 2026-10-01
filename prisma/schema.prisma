@@ -827,8 +827,8 @@ model CommerceProduct {
   source            ProductSource
   sourceProductId   String
   sourceUrl         String
-  originalPriceCny  Decimal                  @db.Decimal(14, 2)
-  exchangeRate      Decimal                  @db.Decimal(14, 4)
+  originalPriceCny  Decimal?                 @db.Decimal(14, 2)
+  exchangeRate      Decimal?                 @db.Decimal(14, 4)
   salePriceUzs      Decimal                  @db.Decimal(16, 2)
   compareAtPriceUzs Decimal?                 @db.Decimal(16, 2)
   status            ProductPublicationStatus @default(DRAFT)
@@ -871,7 +871,7 @@ model CommerceProductVariant {
   sourceVariantId String?
   color           String?
   size            String?
-  sourcePriceCny  Decimal             @db.Decimal(14, 2)
+  sourcePriceCny  Decimal?            @db.Decimal(14, 2)
   salePriceUzs    Decimal             @db.Decimal(16, 2)
   stock           Int                 @default(0)
   active          Boolean             @default(true)

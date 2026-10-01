@@ -39,7 +39,7 @@ export const createImportSchema = z.object({
 export const approveImportSchema = z.object({
   translations: z.record(z.string(), z.unknown()).optional(),
   country: productCountrySchema,
-  salePriceUzs: z.coerce.number().positive(),
+  salePriceUzs: z.coerce.number().finite().positive(),
   exchangeRate: z.coerce.number().positive(),
   publish: z.boolean().default(true),
 });
@@ -52,19 +52,35 @@ export const createManualProductSchema = z.object({
   titleUz: z.string().max(500).optional(),
   titleEn: z.string().max(500).optional(),
   description: z.string().max(5000).optional(),
+  descriptionUz: z.string().max(5000).optional(),
+  descriptionEn: z.string().max(5000).optional(),
   sourceUrl: z.string().url(),
   imageUrl: z.string().url().optional(),
-  sourcePriceCny: z.coerce.number().nonnegative(),
-  exchangeRate: z.coerce.number().positive(),
-  salePriceUzs: z.coerce.number().positive(),
+  sourcePriceCny: z.coerce.number().finite().nonnegative().optional(),
+  exchangeRate: z.coerce.number().finite().positive().optional(),
+  salePriceUzs: z.coerce.number().finite().positive(),
   categoryId: z.string().uuid().optional(),
   color: z.string().max(80).optional(),
   size: z.string().max(80).optional(),
   publish: z.boolean().default(true),
 });
 
-export const updateProductCountrySchema = z.object({
-  country: productCountrySchema,
+export const updateManualProductSchema = z.object({
+  country: productCountrySchema.optional(),
+  title: z.string().min(2).max(500).optional(),
+  titleUz: z.string().max(500).optional(),
+  titleEn: z.string().max(500).optional(),
+  description: z.string().max(5000).optional(),
+  descriptionUz: z.string().max(5000).optional(),
+  descriptionEn: z.string().max(5000).optional(),
+  sourceUrl: z.string().url().optional(),
+  imageUrl: z.string().url().optional(),
+  salePriceUzs: z.coerce.number().finite().positive().optional(),
+  categoryId: z.string().uuid().nullable().optional(),
+  color: z.string().max(80).optional(),
+  size: z.string().max(80).optional(),
+}).refine((value) => Object.keys(value).length > 0, {
+  message: 'At least one product field must be provided',
 });
 
 export const customOrderSchema = z.object({
