@@ -43,6 +43,17 @@ type AdminTotpUser = {
   isDeleted: boolean;
 };
 
+export interface RecoveryCodeStore {
+  findMany(args: {
+    where: { userId: string; usedAt: null };
+    select: { codeHash: true };
+  }): Promise<Array<{ codeHash: string }>>;
+  updateMany(args: {
+    where: { userId: string; codeHash: string; usedAt: null };
+    data: { usedAt: Date };
+  }): Promise<{ count: number }>;
+}
+
 async function getAdminTotpUser(
   request: FastifyRequest,
 ): Promise<AdminTotpUser | null> {
@@ -101,12 +112,12 @@ async function verifyFreshTotp(
   return updated.count === 1;
 }
 
-async function consumeRecoveryCode(
-  request: FastifyRequest,
+export async function consumeRecoveryCode(
+  store: RecoveryCodeStore,
   userId: string,
   code: string,
 ): Promise<boolean> {
-  const storedCodes = await request.server.prisma.adminRecoveryCode.findMany({
+  const storedCodes = await store.findMany({
     where: { userId, usedAt: null },
     select: { codeHash: true },
   });
@@ -115,7 +126,7 @@ async function consumeRecoveryCode(
     storedCodes.map(({ codeHash }) => codeHash),
   );
   if (!match) return false;
-  const consumed = await request.server.prisma.adminRecoveryCode.updateMany({
+  const consumed = await store.updateMany({
     where: { userId, codeHash: match, usedAt: null },
     data: { usedAt: new Date() },
   });
@@ -422,7 +433,11 @@ export const adminTotpModule: FastifyPluginAsync = async (server) => {
           });
           verified = consumed.count === 1;
         } else {
-          verified = await consumeRecoveryCode(request, user.id, body.code);
+          verified = await consumeRecoveryCode(
+            server.prisma.adminRecoveryCode,
+            user.id,
+            body.code,
+          );
         }
 
         if (!verified) {

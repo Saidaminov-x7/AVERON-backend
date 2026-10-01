@@ -1,6 +1,7 @@
 // apps/api/src/modules/auth/index.ts
 
 import { FastifyPluginAsync } from 'fastify';
+import { config } from '../../config';
 import { registerHandler } from './register';
 import { loginHandler } from './login';
 import { verify2faHandler, resend2faHandler } from './verify-2fa';
@@ -16,6 +17,12 @@ import { requestPhonePasswordLogin, requestPhonePasswordReset, requestPhoneRegis
 import { adminTotpModule } from './admin-totp';
 
 export const authModule: FastifyPluginAsync = async (server) => {
+  server.addHook('onRequest', async (request, reply) => {
+    if (config.NODE_ENV === 'production' && request.protocol !== 'https') {
+      return reply.status(426).send({ message: 'HTTPS is required' });
+    }
+  });
+
   await server.register(adminTotpModule);
   server.post('/register/phone/request-code', { config: { rateLimit: { max: 3, timeWindow: '15 minutes' } } }, requestPhoneRegistration);
   server.post('/register/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhoneRegistration);

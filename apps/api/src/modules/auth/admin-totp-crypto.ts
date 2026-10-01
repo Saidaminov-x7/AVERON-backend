@@ -9,8 +9,8 @@ import * as OTPAuth from "otpauth";
 import { config } from "../../config";
 
 const getEncryptionKey = () => {
-  if (!config.TOTP_ENCRYPTION_KEY) {
-    throw new Error("TOTP_ENCRYPTION_KEY is not configured");
+  if (!config.TOTP_ENCRYPTION_KEY || !/^[\da-fA-F]{64}$/.test(config.TOTP_ENCRYPTION_KEY)) {
+    throw new Error("TOTP_ENCRYPTION_KEY must be configured as 64 hexadecimal characters");
   }
   return Buffer.from(config.TOTP_ENCRYPTION_KEY, "hex");
 };

@@ -15,6 +15,8 @@ const requestSchema = z.object({ phone: phoneSchema });
 const verifySchema = z.object({ phone: phoneSchema, code: z.string().regex(/^\d{6}$/) });
 
 const otpKey = (phone: string) => `phone-otp:${phone}`;
+const otpCooldownKey = (phone: string) => `phone-otp-cooldown:${phone}`;
+const RESEND_COOLDOWN_SECONDS = 60;
 
 export async function sendSms(phone: string, code: string, action = 'входа') {
   const endpoint = process.env.SMS_API_URL?.trim();
@@ -36,6 +38,18 @@ export async function requestPhoneOtp(
   reply: FastifyReply,
 ) {
   const { phone } = requestSchema.parse(request.body);
+  const cooldownKey = otpCooldownKey(phone);
+  const cooldown = await request.server.redis.set(
+    cooldownKey,
+    '1',
+    'EX',
+    RESEND_COOLDOWN_SECONDS,
+    'NX',
+  );
+  if (!cooldown) {
+    return reply.status(429).send({ message: 'Подождите перед повторным запросом кода.' });
+  }
+
   const code = crypto.randomInt(100000, 1_000_000).toString();
   const codeHash = crypto.createHash('sha256').update(code).digest('hex');
   await request.server.redis.set(otpKey(phone), JSON.stringify({ codeHash, attempts: 0 }), 'EX', 300);
@@ -45,7 +59,7 @@ export async function requestPhoneOtp(
     return false;
   });
   if (!sent && process.env.NODE_ENV === 'production') {
-    await request.server.redis.del(otpKey(phone));
+    await request.server.redis.del(otpKey(phone), cooldownKey);
     return reply.status(503).send({ message: 'SMS-сервис ещё не подключён. Добавьте SMS_API_URL и SMS_API_TOKEN.' });
   }
 
@@ -71,7 +85,8 @@ export async function verifyPhoneOtp(
     return reply.status(429).send({ message: 'Слишком много попыток. Запросите новый код.' });
   }
   const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-  if (!crypto.timingSafeEqual(Buffer.from(codeHash), Buffer.from(payload.codeHash))) {
+  if (!/^[a-f\d]{64}$/i.test(payload.codeHash) ||
+      !crypto.timingSafeEqual(Buffer.from(codeHash, 'hex'), Buffer.from(payload.codeHash, 'hex'))) {
     await request.server.redis.set(key, JSON.stringify({ ...payload, attempts: payload.attempts + 1 }), 'KEEPTTL');
     return reply.status(401).send({ message: 'Неверный код.' });
   }
@@ -90,7 +105,7 @@ export async function verifyPhoneOtp(
       },
     });
   }
-  if (user.isBlocked) return reply.status(403).send({ message: 'Аккаунт заблокирован.' });
+  if (user.isBlocked || user.isDeleted) return reply.status(403).send({ message: 'Вход недоступен.' });
 
   const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
   await request.server.prisma.user.update({

@@ -1,21 +1,37 @@
 // prisma/seed.ts
 /**
- * Скрипт безопасного начального наполнения базы данных (Safe Idempotent Seed)
- * Безопасен для запуска на проде: использует upsert, НЕ удаляет существующие данные пользователей,
- * объявлений или кастомных настроек конструктора страниц.
- * Запуск: pnpm prisma:seed (или npx tsx prisma/seed.ts)
+ * Development-only idempotent seed. Refuses to run in production and requires
+ * explicit credentials so no shared/default test password is created.
+ * Запуск: см. prisma/DEVELOPMENT.md
  */
 
 import { PrismaClient, Role, AdminRole } from '@prisma/client';
 import argon2 from 'argon2';
+import { passwordValidation } from '../apps/api/src/modules/auth/schemas';
+import { normalizeUzbekPhone } from '../apps/api/src/modules/auth/phone';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🌱 Starting safe idempotent database seed...');
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('The development seed is disabled in production.');
+  }
 
-  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase() || 'vosilhojasaidaminov@gmail.com';
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD?.trim() || process.env.ADMIN_PASSWORD?.trim() || 'admin1';
+  const adminEmail = process.env.SEED_ADMIN_EMAIL?.trim().toLowerCase();
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD;
+  const adminPhone = process.env.SEED_ADMIN_PHONE;
+  const normalizedAdminPhone = adminPhone ? normalizeUzbekPhone(adminPhone) : null;
+  if (
+    !adminEmail ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) ||
+    !adminPassword ||
+    !normalizedAdminPhone
+  ) {
+    throw new Error('Set SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD, and SEED_ADMIN_PHONE to run the development seed.');
+  }
+  passwordValidation.parse(adminPassword);
+
+  console.log('🌱 Starting safe idempotent database seed...');
 
   // Хэширование пароля супер-администратора (argon2 hash)
   const superAdminPasswordHash = await argon2.hash(adminPassword);
@@ -33,12 +49,11 @@ async function main() {
     },
     create: {
       email: adminEmail,
-      phone: '+998900000001',
+      phone: normalizedAdminPhone,
       passwordHash: superAdminPasswordHash,
       name: 'Восилхожа Саидаминов',
       role: Role.ADMIN,
       adminRole: AdminRole.SUPER_ADMIN,
-      verified: true,
     },
   });
 
@@ -296,7 +311,7 @@ async function main() {
   console.log('');
   console.log('--- Аккаунт администратора ---');
   console.log(`Email:    ${adminEmail}`);
-  console.log(`Пароль:   [установлен из переменной SEED_ADMIN_PASSWORD]`);
+  console.log('Пароль:   [установлен из переменной SEED_ADMIN_PASSWORD]');
   console.log(`Роль:     SUPER_ADMIN`);
 }
 

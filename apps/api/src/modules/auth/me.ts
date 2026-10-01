@@ -12,6 +12,7 @@ export const meHandler = async (
       id: true,
       email: true,
       phone: true,
+      telegramId: true,
       name: true,
       avatar: true,
       role: true,

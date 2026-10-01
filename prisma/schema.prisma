@@ -123,6 +123,7 @@ model User {
   id               String     @id @default(uuid())
   email            String     @unique
   phone            String     @unique
+  telegramId       String?    @unique
   passwordHash     String
   name             String
   avatar           String?

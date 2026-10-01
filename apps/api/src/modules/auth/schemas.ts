@@ -2,17 +2,19 @@
 
 import { z } from 'zod';
 import { Role } from '@prisma/client';
-
-export const passwordStrengthRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~])[A-Za-z\d!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]{8,100}$/;
+import { uzbekPhoneSchema } from './phone';
 
 export const passwordValidation = z
   .string()
   .min(8, 'Password must be at least 8 characters')
-  .max(100);
+  .max(256, 'Password must not exceed 256 characters')
+  .regex(/[a-z]/, 'Password must include a lowercase letter')
+  .regex(/[A-Z]/, 'Password must include an uppercase letter')
+  .regex(/\d/, 'Password must include a digit');
 
 export const registerSchema = z.object({
   email: z.string().email('Invalid email address').max(255),
-  phone: z.string().regex(/^\+?[0-9\s-]{10,20}$/, 'Invalid phone number format'),
+  phone: uzbekPhoneSchema,
   password: passwordValidation,
   name: z.string().min(2, 'Name must be at least 2 characters').max(100),
   // Запрещаем прямую регистрацию с ролью ADMIN через публичный эндпоинт
@@ -23,7 +25,7 @@ export type RegisterDto = z.infer<typeof registerSchema>;
 
 export const loginSchema = z.object({
   email: z.string().email('Invalid email address').max(255),
-  password: z.string().min(1, 'Password is required').max(100),
+  password: z.string().min(1, 'Password is required').max(256),
 });
 
 export type LoginDto = z.infer<typeof loginSchema>;
@@ -61,7 +63,7 @@ export const adminTotpLoginSchema = z.object({
 export type AdminTotpLoginDto = z.infer<typeof adminTotpLoginSchema>;
 
 export const adminTotpSensitiveActionSchema = z.object({
-  currentPassword: z.string().min(1).max(100),
+  currentPassword: z.string().min(1).max(256),
   code: z.string().trim().min(6).max(64),
 });
 

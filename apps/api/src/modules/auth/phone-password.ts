@@ -6,12 +6,14 @@ import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
 import { sendSms } from './phone-otp';
 import { saveAuthSession } from './sessions';
+import { passwordValidation } from './schemas';
+import { uzbekPhoneSchema } from './phone';
+import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
 
-const normalizePhone = (value: string) => `+${value.replace(/\D/g, '')}`;
-const phone = z.string().transform(normalizePhone).refine((value) => /^\+998\d{9}$/.test(value), 'Введите номер в формате +998 XX XXX XX XX');
-const password = z.string().min(8).max(100);
+const phone = uzbekPhoneSchema;
+const password = passwordValidation;
 const registrationSchema = z.object({ name: z.string().min(2).max(100), phone, password });
-const loginSchema = z.object({ phone, password: z.string().min(1).max(100) });
+const loginSchema = z.object({ phone, password: z.string().min(1).max(256) });
 const verifySchema = z.object({ phone, code: z.string().regex(/^\d{6}$/) });
 const resetSchema = verifySchema.extend({ password });
 const pendingKey = (kind: 'register' | 'login' | 'reset', normalizedPhone: string) => `phone-password:${kind}:${normalizedPhone}`;
@@ -20,12 +22,18 @@ type Pending = { codeHash: string; attempts: number; userId?: string; name?: str
 const hashCode = (code: string) => crypto.createHash('sha256').update(code).digest('hex');
 
 async function issueCode(request: FastifyRequest, reply: FastifyReply, key: string, payload: Omit<Pending, 'codeHash' | 'attempts'>, action: string) {
+  const normalizedPhone = key.slice(key.lastIndexOf(':') + 1);
+  const cooldownKey = `phone-password-cooldown:${normalizedPhone}`;
+  if (await request.server.redis.exists(cooldownKey)) {
+    return reply.status(429).send({ message: 'Подождите перед повторным запросом кода.' });
+  }
   const code = crypto.randomInt(100000, 1_000_000).toString();
+  await request.server.redis.set(cooldownKey, '1', 'EX', 60);
   await request.server.redis.set(key, JSON.stringify({ ...payload, codeHash: hashCode(code), attempts: 0 }), 'EX', 300);
-  const normalizedPhone = key.slice(key.lastIndexOf(':') + 1).replace(/^\+/, '');
-  const sent = await sendSms(normalizedPhone, code, action).catch(() => false);
+  const sent = await sendSms(normalizedPhone.replace(/\D/g, ''), code, action).catch(() => false);
   if (!sent && process.env.NODE_ENV === 'production') {
     await request.server.redis.del(key);
+    await request.server.redis.del(cooldownKey);
     return reply.status(503).send({ message: 'SMS-сервис не настроен. Добавьте SMS_API_URL и SMS_API_TOKEN.' });
   }
   return reply.send({ ok: true, expiresIn: 300, ...(process.env.NODE_ENV !== 'production' ? { devCode: code } : {}) });
@@ -71,9 +79,17 @@ export async function verifyPhoneRegistration(request: FastifyRequest, reply: Fa
 
 export async function requestPhonePasswordLogin(request: FastifyRequest, reply: FastifyReply) {
   const data = loginSchema.parse(request.body);
+  const failureKey = loginFailureKey('phone', data.phone);
+  if (await isLoginTemporarilyLocked(request.server.redis, failureKey)) {
+    return reply.status(429).send({ message: 'Неверный номер телефона или пароль. Попробуйте позже.' });
+  }
   const user = await request.server.prisma.user.findUnique({ where: { phone: data.phone } });
-  if (!user || !(await argon2.verify(user.passwordHash, data.password))) return reply.status(401).send({ message: 'Неверный номер телефона или пароль.' });
-  if (user.isBlocked) return reply.status(403).send({ message: 'Аккаунт заблокирован.' });
+  if (!user || !(await argon2.verify(user.passwordHash, data.password)) || user.isBlocked || user.isDeleted) {
+    await recordLoginFailure(request.server.redis, failureKey);
+    return reply.status(401).send({ message: 'Неверный номер телефона или пароль.' });
+  }
+  await clearLoginFailures(request.server.redis, failureKey);
+  if (user.adminTotpEnabled || user.role === 'ADMIN' || user.adminRole) return reply.status(401).send({ message: 'Неверный номер телефона или пароль.' });
   return issueCode(request, reply, pendingKey('login', data.phone), { userId: user.id }, 'входа');
 }
 

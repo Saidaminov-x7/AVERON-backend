@@ -1,7 +1,7 @@
 // apps/api/src/modules/auth/__tests__/auth.test.ts
 
 import { describe, it, expect } from 'vitest';
-import { registerSchema, loginSchema, verify2faSchema, resetPasswordSchema } from '../schemas';
+import { passwordValidation, registerSchema, loginSchema, verify2faSchema, resetPasswordSchema } from '../schemas';
 
 describe('Auth Module Validation & Password Policy', () => {
   describe('registerSchema', () => {
@@ -61,12 +61,24 @@ describe('Auth Module Validation & Password Policy', () => {
       const validData = {
         email: 'user@ijarauz.uz',
         phone: '+998901234567',
-        password: 'admin123',
+        password: 'Admin123',
         name: 'Vosilhoja',
       };
 
       const result = registerSchema.safeParse(validData);
       expect(result.success).toBe(true);
+    });
+
+    it.each([
+      ['lowercase and digits only', 'password123'],
+      ['uppercase and digits only', 'PASSWORD123'],
+      ['letters only', 'PasswordOnly'],
+    ])('rejects passwords missing a required character class (%s)', (_label, password) => {
+      expect(passwordValidation.safeParse(password).success).toBe(false);
+    });
+
+    it('allows special characters and long passwords within the safety limit', () => {
+      expect(passwordValidation.safeParse('Long+Safe#Password123'.repeat(8)).success).toBe(true);
     });
   });
 

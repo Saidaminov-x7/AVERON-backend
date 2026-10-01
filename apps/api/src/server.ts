@@ -375,9 +375,15 @@ server.addHook('onResponse', async (request, reply) => {
 
 server.setErrorHandler((error, request, reply) => {
   const isProduction = config.NODE_ENV === 'production';
+  const diagnosticStage = 'diagnosticStage' in error && typeof error.diagnosticStage === 'string'
+    ? error.diagnosticStage
+    : 'request_handler';
 
   // Логируем всегда — с деталями
   request.log.error({
+    requestId: request.id,
+    diagnosticStage,
+    safeDescription: `Request failed during ${diagnosticStage}`,
     err: {
       name: error.name,
       message: error.message,

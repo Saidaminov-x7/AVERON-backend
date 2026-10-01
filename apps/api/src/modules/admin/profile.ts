@@ -5,15 +5,19 @@ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { AdminService } from './service';
+import { passwordValidation } from '../auth/schemas';
+import { uzbekPhoneSchema } from '../auth/phone';
 
 const updateProfileSchema = z.object({
   name: z.string().min(2).max(100).optional(),
-  phone: z.string().min(5).max(20).optional(),
+  phone: uzbekPhoneSchema.optional(),
+  telegramId: z.string().trim().regex(/^\d{5,20}$/, 'Telegram ID должен содержать 5–20 цифр').optional().or(z.literal('')),
+  avatar: z.string().url().nullable().optional(),
 });
 
 const updatePasswordSchema = z.object({
-  currentPassword: z.string().min(6),
-  newPassword: z.string().min(6),
+  currentPassword: z.string().min(1).max(256),
+  newPassword: passwordValidation,
 });
 
 export const profileModule: FastifyPluginAsync = async (server) => {

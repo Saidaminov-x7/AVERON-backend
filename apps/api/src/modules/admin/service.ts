@@ -528,7 +528,7 @@ export class AdminService {
     return this.updateUserRole(id, role, adminId, ip);
   }
 
-  async updateUser(id: string, dto: { name?: string; phone?: string }, adminId: string, ip?: string) {
+  async updateUser(id: string, dto: { name?: string; phone?: string; telegramId?: string; avatar?: string | null }, adminId: string, ip?: string) {
     const existing = await this.prisma.user.findUnique({ where: { id } });
     if (!existing) throw Object.assign(new Error('User not found'), { statusCode: 404 });
 
@@ -537,8 +537,10 @@ export class AdminService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.phone !== undefined && { phone: dto.phone }),
+        ...(dto.telegramId !== undefined && { telegramId: dto.telegramId || null }),
+        ...(dto.avatar !== undefined && { avatar: dto.avatar }),
       },
-      select: { id: true, name: true, email: true, phone: true, role: true, adminRole: true, avatar: true },
+      select: { id: true, name: true, email: true, phone: true, telegramId: true, role: true, adminRole: true, avatar: true },
     });
 
     await this.log({
@@ -546,7 +548,12 @@ export class AdminService {
       action: 'USER_UPDATED',
       resource: 'user',
       resourceId: id,
-      meta: { nameChanged: dto.name !== undefined, phoneChanged: dto.phone !== undefined },
+      meta: {
+        nameChanged: dto.name !== undefined,
+        phoneChanged: dto.phone !== undefined,
+        telegramIdChanged: dto.telegramId !== undefined,
+        avatarChanged: dto.avatar !== undefined,
+      },
       ip,
     });
     return updated;

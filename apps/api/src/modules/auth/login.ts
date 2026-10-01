@@ -8,31 +8,40 @@ import { refreshCookieOptions } from '../../lib/cookies';
 import { sendTelegram2FACode } from '../../lib/telegram';
 import { saveAuthSession } from './sessions';
 import { Role } from '@prisma/client';
+import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
 
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
   reply: FastifyReply,
 ) => {
+  const dto = loginSchema.parse(request.body);
   try {
-    const dto = loginSchema.parse(request.body);
+    const failureKey = loginFailureKey('email', dto.email);
+    if (await isLoginTemporarilyLocked(request.server.redis, failureKey)) {
+      return reply.status(429).send({ message: 'Неверный email или пароль. Попробуйте позже.' });
+    }
     const authService = new AuthService(request.server.prisma);
 
     // Поиск пользователя
     const user = await authService.findByEmail(dto.email);
     if (!user) {
+      await recordLoginFailure(request.server.redis, failureKey);
       return reply.status(401).send({ message: 'Неверный email или пароль' });
     }
 
     // Проверка пароля
     const isValid = await authService.verifyPassword(user.passwordHash, dto.password);
     if (!isValid) {
+      await recordLoginFailure(request.server.redis, failureKey);
       return reply.status(401).send({ message: 'Неверный email или пароль' });
     }
 
     // Проверка блокировки
     if (user.isBlocked || user.isDeleted) {
+      await recordLoginFailure(request.server.redis, failureKey);
       return reply.status(401).send({ message: 'Неверный email или пароль' });
     }
+    await clearLoginFailures(request.server.redis, failureKey);
 
     const isAdmin = user.role === Role.ADMIN || !!user.adminRole;
     if (isAdmin && user.adminTotpEnabled) {

@@ -21,6 +21,24 @@
 - `/admin` (`adminModule`): Управление пользователями, аудит-лог, системные настройки, страницы сайта
 - `/site-settings` (`siteSettingsPublicModule`): Публичные настройки витрины
 
+## Контракт каталога и production migrations
+
+- Публичный `GET /api/v1/categories` возвращает только активные категории. Поле
+  `active` — единственное каноническое поле состояния категории; API не использует
+  alias `isActive`.
+- `GET /api/v1/products?category=<slug>` фильтрует каталог на сервере до
+  пагинации. Название категории в JSON хранит локали `ru`, `uz`, `en`.
+- Ручной товар может не иметь `sourceUrl`, `originalPriceCny` и `exchangeRate`.
+  В схеме Prisma эти поля nullable; для production применяйте только
+  `pnpm prisma:deploy` (`prisma migrate deploy`). Не используйте `db push` или
+  команды reset.
+
+Для production admin TOTP задайте `TOTP_ENCRYPTION_KEY` только в backend secret
+store. Это случайный ключ ровно из 64 hex-символов (32 байта), например
+сгенерированный `openssl rand -hex 32`. Ключ необязателен для запуска API, но
+без него enrollment будет отключён; не добавляйте его в клиентские переменные
+окружения, логи или репозиторий.
+
 ## Установка и запуск
 
 1. Клонируйте репозиторий:

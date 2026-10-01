@@ -6,17 +6,21 @@ import { z } from 'zod';
 import argon2 from 'argon2';
 import { AdminRole, Role } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
+import { passwordValidation } from '../auth/schemas';
+import { uzbekPhoneSchema } from '../auth/phone';
 
 const createStaffSchema = z.object({
-  email: z.string().email(),
+email: z.string().trim().email().transform((value) => value.toLowerCase()),
   adminRole: z.nativeEnum(AdminRole),
   name: z.string().min(2).optional(),
-  phone: z.string().optional(),
-  password: z.string().min(6).optional(),
+  phone: uzbekPhoneSchema.optional(),
+  password: passwordValidation.optional(),
+  telegramId: z.string().trim().regex(/^\d{5,20}$/, 'Telegram ID должен содержать 5–20 цифр').optional().or(z.literal('')),
 });
 
 const updateStaffSchema = z.object({
-  adminRole: z.nativeEnum(AdminRole),
+  adminRole: z.nativeEnum(AdminRole).optional(),
+  telegramId: z.string().trim().regex(/^\d{5,20}$/, 'Telegram ID должен содержать 5–20 цифр').optional().or(z.literal('')),
 });
 
 export const staffModule: FastifyPluginAsync = async (server) => {
@@ -39,6 +43,7 @@ export const staffModule: FastifyPluginAsync = async (server) => {
         name: true,
         email: true,
         phone: true,
+        telegramId: true,
         role: true,
         adminRole: true,
         avatar: true,
@@ -73,12 +78,14 @@ export const staffModule: FastifyPluginAsync = async (server) => {
           role: Role.ADMIN,
           adminRole: dto.adminRole,
           ...(dto.name && { name: dto.name }),
+          ...(dto.telegramId !== undefined && { telegramId: dto.telegramId || null }),
         },
         select: {
           id: true,
           name: true,
           email: true,
           phone: true,
+          telegramId: true,
           role: true,
           adminRole: true,
           createdAt: true,
@@ -102,25 +109,27 @@ export const staffModule: FastifyPluginAsync = async (server) => {
     }
 
     // Создаем нового пользователя
-    const password = dto.password || 'Password123!';
-    const passwordHash = await argon2.hash(password);
-    const phone = dto.phone || `+99890${Math.floor(1000000 + Math.random() * 9000000)}`;
+    if (!dto.password || !dto.phone) {
+      return reply.status(400).send({ message: 'Для нового сотрудника укажите пароль и номер телефона.' });
+    }
+    const passwordHash = await argon2.hash(dto.password);
 
     const newUser = await request.server.prisma.user.create({
       data: {
         email: dto.email,
-        phone,
+        phone: dto.phone,
+        telegramId: dto.telegramId || null,
         passwordHash,
         name: dto.name || dto.email.split('@')[0],
         role: Role.ADMIN,
         adminRole: dto.adminRole,
-        verified: true,
       },
       select: {
         id: true,
         name: true,
         email: true,
         phone: true,
+        telegramId: true,
         role: true,
         adminRole: true,
         createdAt: true,
@@ -148,6 +157,9 @@ export const staffModule: FastifyPluginAsync = async (server) => {
   server.patch<{ Params: { id: string } }>('/:id', { preHandler }, async (request, reply) => {
     const { id } = request.params;
     const dto = updateStaffSchema.parse(request.body);
+    if (!dto.adminRole && dto.telegramId === undefined) {
+      return reply.status(400).send({ message: 'Укажите роль или Telegram ID для изменения.' });
+    }
 
     const user = await request.server.prisma.user.findUnique({ where: { id } });
     if (!user) {
@@ -155,21 +167,23 @@ export const staffModule: FastifyPluginAsync = async (server) => {
     }
 
     // Защита: нельзя понизить роль главного супер-админа
-    if (user.email === 'vosilhojasaidaminov@gmail.com' && dto.adminRole !== AdminRole.SUPER_ADMIN) {
+    if (user.email === 'vosilhojasaidaminov@gmail.com' && dto.adminRole && dto.adminRole !== AdminRole.SUPER_ADMIN) {
       return reply.status(400).send({ message: 'Cannot change role of primary Super Admin' });
     }
 
     const updated = await request.server.prisma.user.update({
       where: { id },
       data: {
-        adminRole: dto.adminRole,
+        ...(dto.adminRole && { adminRole: dto.adminRole }),
         role: Role.ADMIN,
+        ...(dto.telegramId !== undefined && { telegramId: dto.telegramId || null }),
       },
       select: {
         id: true,
         name: true,
         email: true,
         phone: true,
+        telegramId: true,
         role: true,
         adminRole: true,
       },
