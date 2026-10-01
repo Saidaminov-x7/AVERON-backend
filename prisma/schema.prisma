@@ -718,6 +718,14 @@ enum ProductSource {
   MANUAL
 }
 
+enum ProductCountry {
+  CN
+  US
+  TR
+  IT
+  GB
+}
+
 enum ImportStatus {
   FETCHED
   AI_PROCESSING
@@ -808,6 +816,7 @@ model CommerceCategory {
 
 model CommerceProduct {
   id                String                   @id @default(uuid())
+  country           ProductCountry
   categoryId        String?
   category          CommerceCategory?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   slug              String                   @unique
@@ -838,6 +847,7 @@ model CommerceProduct {
 
   @@unique([source, sourceProductId])
   @@index([status, createdAt])
+  @@index([country, status, createdAt])
   @@index([categoryId, status])
   @@index([salePriceUzs])
 }

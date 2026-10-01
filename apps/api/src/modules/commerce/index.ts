@@ -1,9 +1,53 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { ProductPublicationStatus } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
-import { approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, rejectImportSchema } from './schemas';
+import { adminProductListQuerySchema, approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateProductCountrySchema } from './schemas';
 import { assertHumanApproval, slugifyProduct } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
+
+type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
+
+export function buildProductWhere(
+  query: ProductListQuery,
+  status: ProductPublicationStatus = ProductPublicationStatus.PUBLISHED,
+): Prisma.CommerceProductWhereInput {
+  const where: Prisma.CommerceProductWhereInput = { status };
+  if (query.country) where.country = query.country;
+  if (query.category) where.category = { slug: query.category };
+  if (query.audience) where.attributes = { path: ['audience'], equals: query.audience };
+  if (query.size || query.color) {
+    where.variants = {
+      some: {
+        active: true,
+        ...(query.size ? { size: query.size } : {}),
+        ...(query.color ? { color: { equals: query.color, mode: 'insensitive' } } : {}),
+      },
+    };
+  }
+  if (query.minPrice || query.maxPrice) {
+    where.salePriceUzs = {
+      ...(query.minPrice ? { gte: query.minPrice } : {}),
+      ...(query.maxPrice ? { lte: query.maxPrice } : {}),
+    };
+  }
+  if (query.q?.trim()) {
+    const q = query.q.trim();
+    where.OR = [
+      { id: { equals: q } },
+      { slug: { contains: q, mode: 'insensitive' } },
+      { material: { contains: q, mode: 'insensitive' } },
+    ];
+  }
+  return where;
+}
+
+function productOrderBy(sort?: string): Prisma.CommerceProductOrderByWithRelationInput {
+  if (sort === 'price_asc') return { salePriceUzs: 'asc' };
+  if (sort === 'price_desc') return { salePriceUzs: 'desc' };
+  return { publishedAt: 'desc' };
+}
 
 const localizedTitle = (translations: unknown, fallback: string): string => {
   if (!translations || typeof translations !== 'object') return fallback;
@@ -18,24 +62,12 @@ const localizedTitle = (translations: unknown, fallback: string): string => {
 
 export const commerceModule: FastifyPluginAsync = async (app) => {
   app.get('/products', async (request) => {
-    const query = request.query as { q?: string; category?: string; audience?: string; size?: string; color?: string; minPrice?: string; maxPrice?: string; sort?: string; page?: string; limit?: string };
+    const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where: any = { status: 'PUBLISHED' };
-    if (query.category) where.category = { slug: query.category };
-    if (query.audience) where.attributes = { path: ['audience'], equals: query.audience };
-    if (query.size || query.color) where.variants = { some: { active: true, ...(query.size ? { size: query.size } : {}), ...(query.color ? { color: { equals: query.color, mode: 'insensitive' } } : {}) } };
-    if (query.minPrice || query.maxPrice) where.salePriceUzs = { ...(query.minPrice ? { gte: query.minPrice } : {}), ...(query.maxPrice ? { lte: query.maxPrice } : {}) };
-    if (query.q?.trim()) {
-      const q = query.q.trim();
-      where.OR = [
-        { id: { equals: q } },
-        { slug: { contains: q, mode: 'insensitive' } },
-        { material: { contains: q, mode: 'insensitive' } },
-      ];
-    }
+    const where = buildProductWhere(query);
     const [items, total] = await Promise.all([
-      app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: query.sort === 'price_asc' ? { salePriceUzs: 'asc' } : query.sort === 'price_desc' ? { salePriceUzs: 'desc' } : { publishedAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
+      app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),
     ]);
     return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
@@ -87,6 +119,24 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { products: { published, pendingReview, rejected }, orders: { total: orders }, users: { total: users }, finance: { revenue: revenue._sum.totalRevenue ?? 0, netProfit: revenue._sum.netProfit ?? 0, expenses: expenses._sum.amount ?? 0 } };
   });
 
+  app.get('/admin/products', { preHandler: adminMiddleware }, async (request) => {
+    const query = adminProductListQuerySchema.parse(request.query);
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
+    const where = buildProductWhere(query, query.status ?? ProductPublicationStatus.PUBLISHED);
+    const [items, total] = await Promise.all([
+      app.prisma.commerceProduct.findMany({
+        where,
+        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true },
+        orderBy: productOrderBy(query.sort),
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      app.prisma.commerceProduct.count({ where }),
+    ]);
+    return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+  });
+
   app.get('/admin/imports', { preHandler: adminMiddleware }, async (request) => {
     const query = request.query as { status?: string };
     return app.prisma.importedProduct.findMany({ where: query.status ? { status: query.status as any } : undefined, include: { category: true, product: true }, orderBy: { createdAt: 'desc' }, take: 100 });
@@ -97,6 +147,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const product = await app.prisma.commerceProduct.create({ data: {
       slug: `${slugifyProduct(input.title)}-${suffix}`.slice(0, 190),
+      country: input.country,
       translations: { ru: { title: input.title }, uz: { title: input.titleUz || input.title }, en: { title: input.titleEn || input.title } },
       description: input.description ? { ru: input.description } : undefined,
       attributes: { audience: 'everyone' }, source: 'MANUAL', sourceProductId: suffix, sourceUrl: input.sourceUrl,
@@ -108,6 +159,30 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     await app.prisma.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: product.id, meta: { published: input.publish } } });
     if (input.publish) publishProductToTelegram(product, input.imageUrl).catch((error) => app.log.error({ error, productId: product.id }, 'Telegram product publication failed'));
     return reply.status(201).send(product);
+  });
+
+  app.put('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const input = updateProductCountrySchema.parse(request.body);
+    const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true } });
+    if (!product) return reply.status(404).send({ message: 'Товар не найден' });
+
+    return app.prisma.$transaction(async (tx) => {
+      const updatedProduct = await tx.commerceProduct.update({
+        where: { id },
+        data: { country: input.country },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId: request.user.userId,
+          action: 'PRODUCT_COUNTRY_UPDATED',
+          resource: 'CommerceProduct',
+          resourceId: id,
+          meta: { country: input.country },
+        },
+      });
+      return updatedProduct;
+    });
   });
 
   app.post('/admin/imports', { preHandler: adminMiddleware }, async (request, reply) => {
@@ -131,6 +206,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const result = await app.prisma.$transaction(async (tx) => {
       const product = await tx.commerceProduct.create({ data: {
         slug: `${baseSlug}-${imported.sourceProductId}`.slice(0, 190),
+        country: input.country,
         translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as any,
         source: imported.source, sourceProductId: imported.sourceProductId, sourceUrl: imported.sourceUrl,
         originalPriceCny: imported.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,

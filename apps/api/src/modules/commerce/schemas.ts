@@ -1,4 +1,25 @@
 import { z } from 'zod';
+import { ProductCountry, ProductPublicationStatus } from '@prisma/client';
+
+export const productCountrySchema = z.nativeEnum(ProductCountry);
+
+export const productListQuerySchema = z.object({
+  q: z.string().optional(),
+  country: productCountrySchema.optional(),
+  category: z.string().optional(),
+  audience: z.string().optional(),
+  size: z.string().optional(),
+  color: z.string().optional(),
+  minPrice: z.string().optional(),
+  maxPrice: z.string().optional(),
+  sort: z.string().optional(),
+  page: z.string().optional(),
+  limit: z.string().optional(),
+});
+
+export const adminProductListQuerySchema = productListQuerySchema.extend({
+  status: z.nativeEnum(ProductPublicationStatus).optional(),
+});
 
 export const createImportSchema = z.object({
   source: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']),
@@ -18,6 +39,7 @@ export const createImportSchema = z.object({
 export const approveImportSchema = z.object({
   slug: z.string().min(2).max(180).optional(),
   translations: z.record(z.string(), z.unknown()).optional(),
+  country: productCountrySchema,
   salePriceUzs: z.coerce.number().positive(),
   exchangeRate: z.coerce.number().positive(),
   publish: z.boolean().default(true),
@@ -27,6 +49,7 @@ export const rejectImportSchema = z.object({ reason: z.string().min(3).max(500) 
 
 export const createManualProductSchema = z.object({
   title: z.string().min(2).max(500),
+  country: productCountrySchema,
   titleUz: z.string().max(500).optional(),
   titleEn: z.string().max(500).optional(),
   description: z.string().max(5000).optional(),
@@ -39,6 +62,10 @@ export const createManualProductSchema = z.object({
   color: z.string().max(80).optional(),
   size: z.string().max(80).optional(),
   publish: z.boolean().default(true),
+});
+
+export const updateProductCountrySchema = z.object({
+  country: productCountrySchema,
 });
 
 export const customOrderSchema = z.object({
