@@ -1,13 +1,14 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { ProductPublicationStatus } from '@prisma/client';
-import type { Prisma } from '@prisma/client';
+import { Prisma, ProductPublicationStatus } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
-import { adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
+import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
 import { featureFlags } from '../features/feature-flags';
+import { parserImportModule } from './parser-import';
+import { dispatchDomainEvent } from '../integrations/domain-events';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -120,6 +121,7 @@ function mergeLocalizedDescriptions(
 }
 
 export const commerceModule: FastifyPluginAsync = async (app) => {
+  app.register(parserImportModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
@@ -271,8 +273,31 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   });
 
   app.get('/admin/imports', { preHandler: adminMiddleware }, async (request) => {
-    const query = request.query as { status?: string };
-    return app.prisma.importedProduct.findMany({ where: query.status ? { status: query.status as any } : undefined, include: { category: true, product: true }, orderBy: { createdAt: 'desc' }, take: 100 });
+    const query = adminImportListQuerySchema.parse(request.query);
+    const where: Prisma.ImportedProductWhereInput = {
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.provider ? { source: query.provider } : {}),
+      ...(query.country ? { normalizedPayload: { path: ['country'], equals: query.country } } : {}),
+      ...(query.q ? { OR: [
+        { originalTitle: { contains: query.q, mode: 'insensitive' } },
+        { sourceProductId: { contains: query.q, mode: 'insensitive' } },
+      ] } : {}),
+      ...(query.from || query.to ? { createdAt: {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lte: new Date(query.to) } : {}),
+      } } : {}),
+    };
+    const [items, total] = await Promise.all([
+      app.prisma.importedProduct.findMany({
+        where,
+        include: { category: true, product: true },
+        orderBy: { createdAt: 'desc' },
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      app.prisma.importedProduct.count({ where }),
+    ]);
+    return { items, pagination: { page: query.page, limit: query.limit, total, pages: Math.ceil(total / query.limit) } };
   });
 
   app.post('/admin/products', { preHandler: adminMiddleware }, async (request, reply) => {
@@ -543,27 +568,55 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       sourceProvider: sourceProvider ?? input.source,
       deduplicationKey: deduplicationKey ?? `${input.source}:${input.sourceProductId}`,
     };
-    const item = await app.prisma.importedProduct.upsert({
-      where: { source_sourceProductId: { source: input.source, sourceProductId: input.sourceProductId } },
-      create: {
-        ...importData,
-        sourceMetadata: persistedSourceMetadata,
-        status: 'PENDING_REVIEW',
-        normalizedPayload: importData.normalizedPayload as Prisma.InputJsonValue,
-        aiPayload: importData.aiPayload as Prisma.InputJsonValue | undefined,
-        aiWarnings: importData.aiWarnings as Prisma.InputJsonValue | undefined,
-      },
-      update: {
-        sourceUrl: input.sourceUrl,
-        sourceMetadata: persistedSourceMetadata,
-        sourcePriceCny: input.sourcePriceCny,
-        normalizedPayload: importData.normalizedPayload as Prisma.InputJsonValue,
-        aiPayload: importData.aiPayload as Prisma.InputJsonValue | undefined,
-        aiWarnings: importData.aiWarnings as Prisma.InputJsonValue | undefined,
-        status: 'PENDING_REVIEW',
-      },
-    });
-    return reply.status(201).send(item);
+    const where = { source_sourceProductId: { source: input.source, sourceProductId: input.sourceProductId } };
+    const existing = await app.prisma.importedProduct.findUnique({ where });
+    if (existing && existing.status !== 'PENDING_REVIEW') {
+      return reply.send({ result: 'ALREADY_EXISTS', item: existing });
+    }
+    const createData = {
+      ...importData,
+      sourceMetadata: persistedSourceMetadata,
+      status: 'PENDING_REVIEW',
+      normalizedPayload: importData.normalizedPayload as Prisma.InputJsonValue,
+      aiPayload: importData.aiPayload as Prisma.InputJsonValue | undefined,
+      aiWarnings: importData.aiWarnings as Prisma.InputJsonValue | undefined,
+    } satisfies Prisma.ImportedProductUncheckedCreateInput;
+    if (existing) {
+      const changed = await app.prisma.importedProduct.updateMany({
+        where: { source: input.source, sourceProductId: input.sourceProductId, status: 'PENDING_REVIEW' },
+        data: {
+          sourceUrl: input.sourceUrl,
+          originalTitle: input.originalTitle,
+          sourceMetadata: persistedSourceMetadata,
+          sourcePriceCny: input.sourcePriceCny,
+          normalizedPayload: importData.normalizedPayload as Prisma.InputJsonValue,
+          aiPayload: importData.aiPayload as Prisma.InputJsonValue | undefined,
+          aiWarnings: importData.aiWarnings as Prisma.InputJsonValue | undefined,
+        },
+      });
+      if (changed.count !== 1) {
+        const latest = await app.prisma.importedProduct.findUnique({ where });
+        if (latest) return reply.send({ result: 'ALREADY_EXISTS', item: latest });
+        throw new Error('IMPORT_UPDATE_RACE');
+      }
+      const item = await app.prisma.importedProduct.findUniqueOrThrow({ where });
+      return reply.status(200).send({ result: 'UPDATED_PENDING', item });
+    }
+    try {
+      const item = await app.prisma.importedProduct.create({ data: createData });
+      dispatchDomainEvent(app, {
+        type: 'product.import.received',
+        importId: item.id,
+        provider: persistedSourceMetadata.sourceProvider,
+        occurredAt: new Date().toISOString(),
+      });
+      return reply.status(201).send({ result: 'CREATED', item });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
+      const raced = await app.prisma.importedProduct.findUnique({ where });
+      if (!raced) throw error;
+      return reply.send({ result: 'ALREADY_EXISTS', item: raced });
+    }
   });
 
   app.post('/admin/imports/:id/approve', { preHandler: adminMiddleware }, async (request, reply) => {
@@ -573,46 +626,114 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     if (!imported) return reply.status(404).send({ message: 'Импорт не найден' });
     assertHumanApproval(imported.status, request.user.userId);
     const title = localizedTitle(input.translations ?? imported.aiPayload, imported.originalTitle);
+    const media = input.mediaIds.length
+      ? await app.prisma.media.findMany({ where: { id: { in: input.mediaIds } } })
+      : [];
+    if (media.length !== input.mediaIds.length) {
+      return reply.status(400).send({ code: 'INVALID_MEDIA', message: 'One or more uploaded product images are unavailable.' });
+    }
+    if (input.publish && media.length === 0) {
+      return reply.status(400).send({ code: 'PRODUCT_IMAGE_REQUIRED', message: 'Upload at least one AVERON product image before publication.' });
+    }
+    const settings = await app.prisma.siteSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { maxProductPhotos: true, maxProductPhotoSizeMb: true },
+    });
+    const maxPhotos = Math.min(15, settings?.maxProductPhotos ?? 15);
+    const maxPhotoBytes = Math.min(25, settings?.maxProductPhotoSizeMb ?? 10) * 1024 * 1024;
+    if (media.length > maxPhotos || media.some((image) => image.size > maxPhotoBytes)) {
+      return reply.status(400).send({ code: 'PRODUCT_MEDIA_LIMIT', message: 'One or more uploaded product images exceed the configured limits.' });
+    }
+    const mediaById = new Map(media.map((image) => [image.id, image]));
     let result;
     try {
       result = await createProductWithUniqueSlug(title, (slug) => app.prisma.$transaction(async (tx) => {
+        const claimed = await tx.importedProduct.updateMany({
+          where: { id, status: 'PENDING_REVIEW' },
+          data: { status: 'APPROVED', reviewedById: request.user.userId, reviewedAt: new Date() },
+        });
+        if (claimed.count !== 1) throw new Error('IMPORT_NOT_PENDING_REVIEW');
         const product = await tx.commerceProduct.create({ data: {
           slug,
           country: input.country,
-          translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as any,
+          translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as Prisma.InputJsonValue,
+          description: input.translations
+            ? Object.fromEntries(Object.entries(input.translations).flatMap(([locale, content]) =>
+              content?.description ? [[locale, content.description]] : [])) as Prisma.InputJsonValue
+            : undefined,
           source: imported.source, sourceProductId: imported.sourceProductId, sourceUrl: imported.sourceUrl,
-          originalPriceCny: imported.sourcePriceCny, exchangeRate: input.exchangeRate, salePriceUzs: input.salePriceUzs,
+          originalPriceCny: imported.sourcePriceCny, exchangeRate: input.exchangeRate ?? null, salePriceUzs: input.salePriceUzs,
           categoryId: imported.categoryId, importedFromId: imported.id, approvedById: request.user.userId,
           approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
-        } });
-        await tx.importedProduct.update({ where: { id }, data: { status: 'APPROVED', reviewedById: request.user.userId, reviewedAt: new Date() } });
+          images: input.mediaIds.length ? { create: input.mediaIds.map((mediaId, sortOrder) => {
+            const file = mediaById.get(mediaId);
+            if (!file) throw new Error('Product media reference was not resolved');
+            return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: title } };
+          }) } : undefined,
+        }, include: { images: { orderBy: { sortOrder: 'asc' } } } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
         return product;
       }));
     } catch (error) {
+      if (error instanceof Error && error.message === 'IMPORT_NOT_PENDING_REVIEW') {
+        return reply.status(409).send({ code: error.message, message: 'This import is no longer awaiting review.' });
+      }
       if (error instanceof ProductSlugCollisionError) {
         return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
       }
       throw error;
     }
+    const occurredAt = new Date().toISOString();
+    dispatchDomainEvent(app, {
+      type: 'product.import.approved',
+      importId: id,
+      productId: result.id,
+      actorId: request.user.userId,
+      occurredAt,
+    });
     if (input.publish) {
-      const payload = imported.normalizedPayload as Record<string, any> | null;
-      const imageUrl = payload?.images?.[0]?.url || payload?.images?.[0];
-      publishProductToTelegram(result, typeof imageUrl === 'string' ? imageUrl : undefined).catch((error) => app.log.error({ error, productId: result.id }, 'Telegram product publication failed'));
+      dispatchDomainEvent(app, {
+        type: 'product.published',
+        productId: result.id,
+        actorId: request.user.userId,
+        occurredAt,
+      });
+      publishProductToTelegram(result, result.images[0]?.url).catch((error) => app.log.error({ error, productId: result.id }, 'Telegram product publication failed'));
     }
     return result;
   });
 
-  app.post('/admin/imports/:id/reject', { preHandler: adminMiddleware }, async (request) => {
+  app.post('/admin/imports/:id/reject', { preHandler: adminMiddleware }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = rejectImportSchema.parse(request.body);
-    const imported = await app.prisma.importedProduct.findUniqueOrThrow({ where: { id } });
+    const imported = await app.prisma.importedProduct.findUnique({ where: { id } });
+    if (!imported) return reply.status(404).send({ message: 'Импорт не найден' });
     assertHumanApproval(imported.status, request.user.userId);
-    return app.prisma.$transaction(async (tx) => {
-      const item = await tx.importedProduct.update({ where: { id }, data: { status: 'REJECTED', rejectionReason: input.reason, reviewedById: request.user.userId, reviewedAt: new Date() } });
-      await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_REJECTED', resource: 'ImportedProduct', resourceId: id, meta: { reason: input.reason } } });
+    try {
+      const item = await app.prisma.$transaction(async (tx) => {
+        const claimed = await tx.importedProduct.updateMany({
+          where: { id, status: 'PENDING_REVIEW' },
+          data: { status: 'REJECTED', rejectionReason: input.reason, reviewedById: request.user.userId, reviewedAt: new Date() },
+        });
+        if (claimed.count !== 1) throw new Error('IMPORT_NOT_PENDING_REVIEW');
+        const updated = await tx.importedProduct.findUniqueOrThrow({ where: { id } });
+        await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_REJECTED', resource: 'ImportedProduct', resourceId: id, meta: { reason: input.reason } } });
+        return updated;
+      });
+      dispatchDomainEvent(app, {
+        type: 'product.import.rejected',
+        importId: id,
+        actorId: request.user.userId,
+        reason: input.reason,
+        occurredAt: new Date().toISOString(),
+      });
       return item;
-    });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'IMPORT_NOT_PENDING_REVIEW') {
+        return reply.status(409).send({ code: error.message });
+      }
+      throw error;
+    }
   });
 
   app.get('/admin/orders', { preHandler: adminMiddleware }, async () => app.prisma.commerceOrder.findMany({ include: { items: true, payments: true, purchases: true }, orderBy: { createdAt: 'desc' }, take: 100 }));

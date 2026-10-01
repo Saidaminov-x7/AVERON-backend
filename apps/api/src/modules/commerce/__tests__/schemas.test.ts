@@ -59,7 +59,12 @@ describe('commerce product country validation', () => {
   });
 
   it('requires a supported country when approving an imported product', () => {
-    const approval = { salePriceUzs: 180000, exchangeRate: 1800, publish: true };
+    const approval = {
+      salePriceUzs: 180000,
+      exchangeRate: 1800,
+      publish: true,
+      mediaIds: ['00000000-0000-4000-8000-000000000002'],
+    };
     expect(approveImportSchema.safeParse({ ...approval, country: 'CN' }).success).toBe(true);
     expect(approveImportSchema.safeParse(approval).success).toBe(false);
     expect(approveImportSchema.safeParse({ ...approval, country: 'FR' }).success).toBe(false);

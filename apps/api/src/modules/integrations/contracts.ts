@@ -14,9 +14,29 @@ export interface ProductSourceProvider {
   importProduct(sourceProductId: string): Promise<ProductImportContract>;
 }
 
+export type ShipmentStatus = 'PENDING' | 'IN_TRANSIT' | 'DELIVERED' | 'FAILED';
+
+export interface ShippingAddress {
+  recipientName: string;
+  phone: string;
+  countryCode: string;
+  region: string;
+  city: string;
+  addressLine: string;
+  postalCode?: string;
+}
+
+export interface ShippingQuote {
+  deliveryCost: number;
+  currency: 'UZS';
+  estimatedDeliveryAt?: string;
+  providerReference?: string;
+}
+
 export interface Shipment {
+  id?: string;
   trackingNumber: string | null;
-  status: 'PENDING' | 'IN_TRANSIT' | 'DELIVERED' | 'FAILED';
+  status: ShipmentStatus;
   deliveryCost: number | null;
   providerReference: string | null;
 }
@@ -30,6 +50,11 @@ export interface ShippingProvider {
 
 export interface IPostProvider extends ShippingProvider {
   readonly id: 'ipost';
+  quote(address: ShippingAddress, weightGrams: number): Promise<ShippingQuote>;
+}
+
+export interface TelegramSecurityProvider {
+  sendLoginCode(telegramId: string, code: string): Promise<void>;
 }
 
 export interface TelegramProductPublication {
@@ -55,9 +80,14 @@ export interface SmsProvider {
 }
 
 export type AveronDomainEvent =
+  | { type: 'product.import.received'; importId: string; provider: string; occurredAt: string }
+  | { type: 'product.import.approved'; importId: string; productId: string; actorId: string; occurredAt: string }
+  | { type: 'product.import.rejected'; importId: string; actorId: string; reason?: string; occurredAt: string }
+  | { type: 'product.published'; productId: string; actorId: string; occurredAt: string }
   | { type: 'product.approved'; productId: string; occurredAt: string }
   | { type: 'order.created'; orderId: string; occurredAt: string }
   | { type: 'order.status_changed'; orderId: string; status: string; occurredAt: string }
+  | { type: 'shipment.created'; orderId: string; occurredAt: string }
   | { type: 'shipment.updated'; orderId: string; status: string; occurredAt: string };
 
 export interface DomainEventPublisher {

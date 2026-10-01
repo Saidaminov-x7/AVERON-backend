@@ -61,6 +61,20 @@ false пока не появятся реальные реализованные
 | Automatic currency | `FEATURE_AUTO_CURRENCY` | `false` | Backend | Interface only | Approved rate provider, source/quality policy, and explicit activation |
 | SMS verification | `FEATURE_SMS_VERIFICATION` | `false` | Backend | Existing OTP paths gated; provider adapter retained | Approved SMS provider/configuration and end-to-end OTP verification |
 
+### Parser import API
+
+The Parser submits one explicitly selected source item to `POST /api/v1/parser/imports` using the versioned `ParserImportProductV1` contract (`schemaVersion: 1`) and `Authorization: Bearer <PARSER_IMPORT_TOKEN>`. Configure the same generated, rotatable token only in Backend and Parser environments; use HTTPS in production. The service validates bounded payloads and provider feature flags, persists source snapshots, and deduplicates by `(provider, sourceProductId)`. Repeated pending payloads return `UNCHANGED` or `UPDATED_PENDING`; reviewed records return `ALREADY_EXISTS` and are not reopened or overwritten. Every new record is `PENDING_REVIEW`.
+
+The exact workflow is Parser → authenticated import API → `PENDING_REVIEW` → Admin review → approve or reject → product `DRAFT` by default → explicit Admin publication. Source image URLs remain review-only snapshots; approved product images must use uploaded AVERON media. The `PARSER_IMPORT_TOKEN` must never be provided to browser clients. Parser imports require `FEATURE_1688_PARSER=true` in both services; all parser/provider flags remain false by default. `PINDUODUO` remains unavailable because no verified provider or matching product-source database enum exists.
+
+`ImportedProduct.sourcePriceCny` is nullable so an absent source price is preserved as unknown rather than fabricated. The additive migration only drops `NOT NULL`; production migration status must be confirmed before enabling parser imports.
+
+Internal events (`product.import.received`, `.approved`, `.rejected`, and
+`product.published`) are dispatched without making business operations depend on
+n8n. The Telegram security provider is interface-only; it does not send login
+codes, and TOTP remains the active admin 2FA mechanism. The iPost boundary is
+not connected to a real service; `IPOST_STATUS=AWAITING_OFFICIAL_API_SPEC`.
+
 Flags accept only the literal strings `true` or `false`. AI credentials, SMS
 credentials, and Telegram credentials are backend-only. AI suggestions validate
 the response structure, accept only localized copy and source-backed

@@ -40,6 +40,11 @@ function createTestApp({
   };
   const tx = {
     commerceProduct: { create: vi.fn(async () => createdProduct) },
+    importedProduct: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findUnique: vi.fn(async () => null),
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'import-1', status: 'REJECTED' })),
+    },
     commerceCategory: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === categoryId && category.active ? category : null),
     },
@@ -60,7 +65,12 @@ function createTestApp({
       findUnique: vi.fn(async () => ({ maxProductPhotos, maxProductPhotoSizeMb })),
     },
     importedProduct: {
-      upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => create),
+      findUnique: vi.fn(async () => null),
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'import-1' })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'import-1', ...data })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findMany: vi.fn(async () => []),
+      count: vi.fn(async () => 0),
     },
     media: {
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
@@ -217,9 +227,8 @@ describe('commerce admin routes', () => {
     });
 
     expect(response.statusCode).toBe(201);
-    expect(prisma.importedProduct.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      where: { source_sourceProductId: { source: 'TAOBAO', sourceProductId: 'source-456' } },
-      create: expect.objectContaining({
+    expect(prisma.importedProduct.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
         status: 'PENDING_REVIEW',
         sourceMetadata: {
           seller: 'seller-2',
@@ -228,6 +237,130 @@ describe('commerce admin routes', () => {
         },
       }),
     }));
+    await app.close();
+  });
+
+  it('does not reopen an already reviewed import through the legacy admin import route', async () => {
+    const { app, prisma } = createTestApp();
+    const reviewedImport = {
+      id: 'import-1',
+      source: 'TAOBAO',
+      sourceProductId: 'source-456',
+      status: 'REJECTED',
+    };
+    vi.mocked(prisma.importedProduct.findUnique).mockResolvedValue(reviewedImport as never);
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/imports',
+      payload: {
+        source: 'TAOBAO',
+        sourceProductId: 'source-456',
+        sourceUrl: 'https://example.test/item/456',
+        originalTitle: 'Cotton jacket',
+        sourcePriceCny: 25,
+        normalizedPayload: { title: 'Cotton jacket' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ result: 'ALREADY_EXISTS', item: { status: 'REJECTED' } });
+    expect(prisma.importedProduct.updateMany).not.toHaveBeenCalled();
+    expect(prisma.importedProduct.create).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('only updates a pending import and preserves a concurrent review decision', async () => {
+    const { app, prisma } = createTestApp();
+    vi.mocked(prisma.importedProduct.findUnique)
+      .mockResolvedValueOnce({ id: 'import-1', source: 'TAOBAO', sourceProductId: 'source-456', status: 'PENDING_REVIEW' } as never)
+      .mockResolvedValueOnce({ id: 'import-1', status: 'APPROVED' } as never);
+    vi.mocked(prisma.importedProduct.updateMany).mockResolvedValue({ count: 0 } as never);
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/imports',
+      payload: {
+        source: 'TAOBAO',
+        sourceProductId: 'source-456',
+        sourceUrl: 'https://example.test/item/456',
+        originalTitle: 'Cotton jacket',
+        sourcePriceCny: 25,
+        normalizedPayload: { title: 'Cotton jacket' },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ result: 'ALREADY_EXISTS', item: { status: 'APPROVED' } });
+    expect(prisma.importedProduct.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: 'PENDING_REVIEW' }),
+    }));
+    expect(prisma.importedProduct.create).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('approves an import as a draft by default and records human audit data', async () => {
+    const { app, prisma, tx } = createTestApp();
+    vi.mocked(prisma.importedProduct.findUnique).mockResolvedValue({
+      id: 'import-1',
+      source: 'TAOBAO',
+      sourceProductId: 'source-456',
+      sourceUrl: 'https://example.test/item/456',
+      originalTitle: 'Source jacket',
+      sourcePriceCny: null,
+      categoryId: null,
+      normalizedPayload: { country: 'CN' },
+      aiPayload: null,
+      status: 'PENDING_REVIEW',
+    } as never);
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/imports/import-1/approve',
+      payload: { country: 'CN', salePriceUzs: 180000 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(tx.commerceProduct.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'DRAFT', publishedAt: null, originalPriceCny: null }),
+      include: { images: { orderBy: { sortOrder: 'asc' } } },
+    }));
+    expect(tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        userId: '00000000-0000-4000-8000-000000000001',
+        action: 'PRODUCT_IMPORT_APPROVED',
+        resourceId: 'import-1',
+        meta: expect.objectContaining({ published: false }),
+      }),
+    }));
+    await app.close();
+  });
+
+  it('rejects an import without creating a product and records the reviewer and reason', async () => {
+    const { app, prisma, tx } = createTestApp();
+    vi.mocked(prisma.importedProduct.findUnique).mockResolvedValue({
+      id: 'import-1',
+      originalTitle: 'Source jacket',
+      status: 'PENDING_REVIEW',
+    } as never);
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/imports/import-1/reject',
+      payload: { reason: 'Source details do not match the product.' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(tx.importedProduct.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'import-1', status: 'PENDING_REVIEW' },
+      data: expect.objectContaining({
+        status: 'REJECTED',
+        reviewedById: '00000000-0000-4000-8000-000000000001',
+        rejectionReason: 'Source details do not match the product.',
+      }),
+    }));
+    expect(tx.commerceProduct.create).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).toHaveBeenCalledOnce();
     await app.close();
   });
 
@@ -277,6 +410,38 @@ describe('commerce admin routes', () => {
         category: { slug: 'outerwear', active: true },
       }),
       skip: 24,
+    }));
+    await app.close();
+  });
+
+  it('filters and paginates imported products on the server', async () => {
+    const { app, prisma } = createTestApp();
+    await start(app);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/imports?status=PENDING_REVIEW&provider=SOURCE_1688&country=CN&q=coat&from=2026-10-01T00:00:00.000Z&to=2026-10-02T00:00:00.000Z&page=2&limit=10',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(prisma.importedProduct.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        status: 'PENDING_REVIEW',
+        source: 'SOURCE_1688',
+        normalizedPayload: { path: ['country'], equals: 'CN' },
+        OR: [
+          { originalTitle: { contains: 'coat', mode: 'insensitive' } },
+          { sourceProductId: { contains: 'coat', mode: 'insensitive' } },
+        ],
+        createdAt: {
+          gte: new Date('2026-10-01T00:00:00.000Z'),
+          lte: new Date('2026-10-02T00:00:00.000Z'),
+        },
+      }),
+      skip: 10,
+      take: 10,
+    }));
+    expect(prisma.importedProduct.count).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ status: 'PENDING_REVIEW', source: 'SOURCE_1688' }),
     }));
     await app.close();
   });

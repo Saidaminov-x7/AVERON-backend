@@ -21,6 +21,71 @@ export const adminProductListQuerySchema = productListQuerySchema.extend({
   status: z.nativeEnum(ProductPublicationStatus).optional(),
 });
 
+export const adminImportListQuerySchema = z.object({
+  status: z.enum(['PENDING_REVIEW', 'APPROVED', 'REJECTED']).optional(),
+  provider: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']).optional(),
+  country: productCountrySchema.optional(),
+  q: z.string().trim().max(200).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+const boundedImportMetadataSchema = z.record(z.string().max(100), z.unknown()).superRefine((value, context) => {
+  if (Object.keys(value).length > 100) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'At most 100 source attributes are allowed' });
+  }
+});
+
+export const parserImportProductV1Schema = z.object({
+  schemaVersion: z.number().int(),
+  provider: z.enum(['SOURCE_1688', 'PINDUODUO']),
+  sourceProductId: z.string().trim().min(1).max(160),
+  deduplicationKey: z.string().trim().min(1).max(320),
+  sourceUrl: z.string().url().max(2048).refine((value) => new URL(value).protocol === 'https:', 'Source URL must use HTTPS'),
+  sourceTitle: z.string().trim().min(1).max(500),
+  sourceDescription: z.string().max(8000).optional(),
+  sourceImages: z.array(z.string().url().max(2048).refine((value) => new URL(value).protocol === 'https:', 'Image URL must use HTTPS')).max(15).default([]),
+  sourcePrice: z.object({
+    amount: z.number().finite().nonnegative(),
+    currency: z.literal('CNY'),
+  }).optional(),
+  sourceCategory: z.string().trim().max(200).optional(),
+  country: productCountrySchema,
+  sourceAttributes: z.record(z.string().max(100), z.union([
+    z.string().max(500),
+    z.array(z.string().max(500)).max(30),
+  ])).default({}),
+  variants: z.array(z.object({
+    sourceVariantId: z.string().max(160).optional(),
+    color: z.string().max(80).optional(),
+    size: z.string().max(80).optional(),
+    sourcePriceCny: z.number().finite().nonnegative().optional(),
+  })).max(100).default([]),
+  sizes: z.array(z.string().max(80)).max(100).default([]),
+  fetchedAt: z.string().datetime(),
+  rawMetadata: boundedImportMetadataSchema.optional(),
+}).superRefine((value, context) => {
+  if (value.deduplicationKey !== `${value.provider}:${value.sourceProductId}`) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['deduplicationKey'],
+      message: 'deduplicationKey must match the provider and source product ID',
+    });
+  }
+  if (value.schemaVersion !== 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['schemaVersion'],
+      message: 'Unsupported parser import schema version',
+    });
+  }
+  if (value.rawMetadata && Buffer.byteLength(JSON.stringify(value.rawMetadata), 'utf8') > 12 * 1024) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rawMetadata'], message: 'Source metadata exceeds the 12 KB limit' });
+  }
+});
+
 export const createImportSchema = z.object({
   source: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']),
   sourceProvider: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']).optional(),
@@ -56,11 +121,36 @@ export const createImportSchema = z.object({
 });
 
 export const approveImportSchema = z.object({
-  translations: z.record(z.string(), z.unknown()).optional(),
+  translations: z.object({
+    ru: z.object({
+      title: z.string().trim().min(2).max(500).optional(),
+      description: z.string().max(5000).optional(),
+      characteristics: z.record(z.string().trim().min(1).max(120), z.string().trim().max(500)).optional(),
+    }).partial(),
+    uz: z.object({
+      title: z.string().trim().min(2).max(500).optional(),
+      description: z.string().max(5000).optional(),
+      characteristics: z.record(z.string().trim().min(1).max(120), z.string().trim().max(500)).optional(),
+    }).partial(),
+    en: z.object({
+      title: z.string().trim().min(2).max(500).optional(),
+      description: z.string().max(5000).optional(),
+      characteristics: z.record(z.string().trim().min(1).max(120), z.string().trim().max(500)).optional(),
+    }).partial(),
+  }).partial().optional(),
   country: productCountrySchema,
   salePriceUzs: z.coerce.number().finite().positive(),
-  exchangeRate: z.coerce.number().positive(),
-  publish: z.boolean().default(true),
+  exchangeRate: z.coerce.number().finite().positive().optional(),
+  mediaIds: z.array(z.string().uuid()).max(15).default([]),
+  publish: z.boolean().default(false),
+}).superRefine((value, context) => {
+  if (value.publish && value.mediaIds.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['mediaIds'],
+      message: 'A product must have at least one AVERON media image before publication',
+    });
+  }
 });
 
 export const rejectImportSchema = z.object({ reason: z.string().min(3).max(500) });

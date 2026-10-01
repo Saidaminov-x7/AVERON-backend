@@ -909,7 +909,7 @@ model ImportedProduct {
   sourceUrl         String
   sellerId          String?
   originalTitle     String
-  sourcePriceCny    Decimal           @db.Decimal(14, 2)
+  sourcePriceCny    Decimal?          @db.Decimal(14, 2)
   sourceMetadata    Json?
   normalizedPayload Json
   aiPayload         Json?

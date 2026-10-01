@@ -27,6 +27,10 @@ const envSchema = z.object({
   TELEGRAM_TOKEN_2FA: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_ADMIN_CHAT_ID: z.string().optional(),
+  PARSER_IMPORT_TOKEN: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().min(32, 'PARSER_IMPORT_TOKEN must be at least 32 characters').optional(),
+  ),
 
   // Public Site URL (for reset links, verification links etc)
   PUBLIC_SITE_URL: z.string().url('PUBLIC_SITE_URL must be a valid URL').default('http://localhost:3000'),
@@ -104,6 +108,13 @@ const envSchema = z.object({
         message: `${key} must use HTTPS in production`,
       });
     }
+  }
+  if (values.PARSER_IMPORT_TOKEN && !values.PUBLIC_SITE_URL.startsWith('https://')) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['PARSER_IMPORT_TOKEN'],
+      message: 'Parser import API must be used over HTTPS in production',
+    });
   }
 });
 
