@@ -14,6 +14,9 @@ describe('feature flags', () => {
       TELEGRAM_PRODUCT_PUBLISH: false,
       AUTO_CURRENCY: false,
       SMS_VERIFICATION: false,
+      VISUAL_SEARCH: false,
+      SIMILAR_PRODUCTS: false,
+      IMAGE_EMBEDDINGS: false,
     });
 
     expect(flags.capabilities()).toEqual({
@@ -25,6 +28,9 @@ describe('feature flags', () => {
       telegramProductPublish: false,
       autoCurrency: false,
       smsVerification: false,
+      visualSearch: false,
+      similarProducts: false,
+      imageEmbeddings: false,
     });
     expect(flags.isEnabled('AI_PRODUCT_FILL')).toBe(false);
   });
@@ -38,12 +44,15 @@ describe('feature flags', () => {
     expect(Object.keys(response.json()).sort()).toEqual([
       'aiProductFill',
       'autoCurrency',
+      'imageEmbeddings',
       'ipost',
       'n8n',
       'parser1688',
       'parserPinduoduo',
+      'similarProducts',
       'smsVerification',
       'telegramProductPublish',
+      'visualSearch',
     ]);
     expect(Object.values(response.json()).every((value) => typeof value === 'boolean')).toBe(true);
     await app.close();

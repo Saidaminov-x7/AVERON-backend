@@ -33,6 +33,7 @@ import { aiChatModule } from './modules/ai-chat';
 import { analyticsModule } from './modules/analytics';
 import { capabilitiesModule } from './modules/features';
 import { productAiModule } from './modules/commerce/product-ai';
+import { visualSearchModule } from './modules/visual-search';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -222,6 +223,7 @@ server.register(profileModule, { prefix: '/admin' });
 server.register(themeModule, { prefix: '/admin' });
 server.register(notificationsModule, { prefix: '/admin/notifications' });
 server.register(commerceModule, { prefix: '/api/v1' });
+server.register(visualSearchModule, { prefix: '/api/v1' });
 server.register(capabilitiesModule, { prefix: '/api/v1' });
 server.register(productAiModule, { prefix: '/api/v1' });
 server.register(aiChatModule, { prefix: '/ai-chat' });

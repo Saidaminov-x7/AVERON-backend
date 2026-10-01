@@ -9,6 +9,9 @@ export const featureFlagNames = [
   'TELEGRAM_PRODUCT_PUBLISH',
   'AUTO_CURRENCY',
   'SMS_VERIFICATION',
+  'VISUAL_SEARCH',
+  'SIMILAR_PRODUCTS',
+  'IMAGE_EMBEDDINGS',
 ] as const;
 
 export type FeatureFlag = typeof featureFlagNames[number];
@@ -30,6 +33,9 @@ export function createFeatureFlags(values: FeatureFlagValues) {
         telegramProductPublish: values.TELEGRAM_PRODUCT_PUBLISH,
         autoCurrency: values.AUTO_CURRENCY,
         smsVerification: values.SMS_VERIFICATION,
+        visualSearch: values.VISUAL_SEARCH,
+        similarProducts: values.SIMILAR_PRODUCTS,
+        imageEmbeddings: values.IMAGE_EMBEDDINGS,
       };
     },
   };
@@ -44,4 +50,7 @@ export const featureFlags = createFeatureFlags({
   TELEGRAM_PRODUCT_PUBLISH: config.FEATURE_TELEGRAM_PRODUCT_PUBLISH,
   AUTO_CURRENCY: config.FEATURE_AUTO_CURRENCY,
   SMS_VERIFICATION: config.FEATURE_SMS_VERIFICATION,
+  VISUAL_SEARCH: config.FEATURE_VISUAL_SEARCH,
+  SIMILAR_PRODUCTS: config.FEATURE_SIMILAR_PRODUCTS,
+  IMAGE_EMBEDDINGS: config.FEATURE_IMAGE_EMBEDDINGS,
 });

@@ -855,6 +855,7 @@ model CommerceProduct {
   approvedAt        DateTime?
   publishedAt       DateTime?
   images            CommerceProductImage[]
+  imageEmbeddings   ProductImageEmbedding[]
   variants          CommerceProductVariant[]
   orderItems        CommerceOrderItem[]
   favoriteLinks     ProductFavorite[]
@@ -880,9 +881,39 @@ model CommerceProductImage {
   url       String
   alt       Json?
   sortOrder Int             @default(0)
+  embeddings ProductImageEmbedding[]
 
   @@index([productId, sortOrder])
   @@index([mediaId])
+}
+
+enum ProductImageEmbeddingStatus {
+  PENDING
+  INDEXED
+  FAILED
+}
+
+model ProductImageEmbedding {
+  id                String                       @id @default(uuid())
+  productId         String
+  product           CommerceProduct              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productImageId    String
+  productImage      CommerceProductImage         @relation(fields: [productImageId], references: [id], onDelete: Cascade)
+  embeddingBytes    Bytes?
+  provider          String
+  model             String
+  dimensions        Int
+  embeddingVersion  String
+  imageFingerprint  String
+  status            ProductImageEmbeddingStatus  @default(PENDING)
+  failureCode       String?
+  indexedAt         DateTime?
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+
+  @@unique([productImageId, provider, model, embeddingVersion, imageFingerprint])
+  @@index([productId, status])
+  @@index([embeddingVersion, provider, model, dimensions, status])
 }
 
 model CommerceProductVariant {
