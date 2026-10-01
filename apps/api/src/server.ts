@@ -15,6 +15,7 @@ import { fastifyMultipart } from '@fastify/multipart';
 import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
 import argon2 from 'argon2';
+import { ZodError } from 'zod';
 
 import { mkdirSync } from 'fs';
 import { config } from './config';
@@ -378,13 +379,31 @@ server.setErrorHandler((error, request, reply) => {
   // Логируем всегда — с деталями
   request.log.error({
     err: {
+      name: error.name,
       message: error.message,
       stack: error.stack,
       code: error.code,
+      ...(error instanceof ZodError
+        ? { issues: error.issues.map(({ code, path, message }) => ({ code, path, message })) }
+        : {}),
+      ...('meta' in error ? { meta: error.meta } : {}),
     },
     method: request.method,
     url: request.url,
+    userId: request.user?.userId,
   }, 'Request error');
+
+  if (error instanceof ZodError) {
+    return reply.status(400).send({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: 'Validation failed',
+      details: error.issues.map((issue) => ({
+        path: issue.path.join('.'),
+        message: issue.message,
+      })),
+    });
+  }
 
   // Fastify validation errors (400)
   if (error.validation) {

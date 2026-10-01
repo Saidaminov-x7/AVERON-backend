@@ -1106,6 +1106,8 @@ export class AdminService {
         googleAuthEnabled: true,
         autoModerationEnabled: false,
         maxImagesPerListing: 10,
+        maxProductPhotos: 15,
+        maxProductPhotoSizeMb: 10,
       },
       include: { updatedBy: { select: { id: true, name: true } } },
     });
@@ -1129,6 +1131,8 @@ export class AdminService {
       googleAuthEnabled: dto.googleAuthEnabled ?? true,
       autoModerationEnabled: dto.autoModerationEnabled ?? false,
       maxImagesPerListing: dto.maxImagesPerListing ?? 10,
+      maxProductPhotos: dto.maxProductPhotos ?? 15,
+      maxProductPhotoSizeMb: dto.maxProductPhotoSizeMb ?? 10,
       updatedById: adminId,
     };
     if (navLinks !== undefined && navLinks !== null) {

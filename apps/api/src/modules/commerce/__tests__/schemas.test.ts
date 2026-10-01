@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   approveImportSchema,
+  createCategorySchema,
   createManualProductSchema,
   productListQuerySchema,
   updateManualProductSchema,
@@ -9,8 +10,10 @@ import { buildProductWhere } from '../index';
 
 const manualProduct = {
   title: 'Test product',
-  sourceUrl: 'https://example.com/product',
+  titleUz: 'Sinov mahsuloti',
+  titleEn: 'Test product',
   salePriceUzs: 180000,
+  images: [{ mediaId: '00000000-0000-4000-8000-000000000001' }],
 };
 
 describe('commerce product country validation', () => {
@@ -30,6 +33,28 @@ describe('commerce product country validation', () => {
       country: 'CN',
       salePriceUzs: Number.POSITIVE_INFINITY,
     }).success).toBe(false);
+  });
+
+  it('allows a manual product without sourceUrl and requires localized titles plus at least one photo', () => {
+    const result = createManualProductSchema.safeParse({ ...manualProduct, country: 'CN' });
+    expect(result.success).toBe(true);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      images: [],
+    }).success).toBe(false);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      titleUz: '',
+    }).success).toBe(false);
+  });
+
+  it('rejects more than the hard system maximum of 15 photos', () => {
+    const images = Array.from({ length: 16 }, (_, index) => ({
+      mediaId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+    }));
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN', images }).success).toBe(false);
   });
 
   it('requires a supported country when approving an imported product', () => {
@@ -88,11 +113,21 @@ describe('commerce product country validation', () => {
       description: 'Описание',
       descriptionUz: 'Tavsif',
       descriptionEn: 'Description',
-      sourceUrl: 'https://example.com/product',
       salePriceUzs: 750000,
       categoryId: null,
     }).success).toBe(true);
     expect(updateManualProductSchema.safeParse({ salePriceUzs: 0 }).success).toBe(false);
     expect(updateManualProductSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('validates localized category fields and slug format', () => {
+    expect(createCategorySchema.safeParse({
+      slug: 'outerwear',
+      name: { ru: 'Верхняя одежда', uz: 'Ustki kiyim', en: 'Outerwear' },
+    }).success).toBe(true);
+    expect(createCategorySchema.safeParse({
+      slug: 'Upper Wear',
+      name: { ru: 'Одежда', uz: 'Kiyim', en: 'Clothing' },
+    }).success).toBe(false);
   });
 });

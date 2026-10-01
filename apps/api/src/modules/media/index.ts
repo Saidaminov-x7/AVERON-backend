@@ -8,6 +8,7 @@ import { MediaService } from './service';
 import { uploadQuerySchema, mediaListQuerySchema } from './schemas';
 
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES = 25 * 1024 * 1024;
 
 async function validateFileType(buffer: Buffer) {
   const detected = await FileType.fromBuffer(buffer);
@@ -32,10 +33,27 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const query = uploadQuerySchema.parse(request.query);
+    const isAdmin = request.user.role === 'ADMIN';
+    if (query.purpose === 'productPhoto' && !isAdmin) {
+      return reply.status(403).send({ message: 'Only administrators can upload product photos' });
+    }
+    const settings = query.purpose === 'productPhoto'
+      ? await request.server.prisma.siteSettings.findUnique({
+          where: { id: 'singleton' },
+          select: { maxProductPhotoSizeMb: true },
+        })
+      : null;
+    const maxFileSizeBytes = query.purpose === 'productPhoto'
+      ? Math.min(25, settings?.maxProductPhotoSizeMb ?? 10) * 1024 * 1024
+      : 10 * 1024 * 1024;
 
     // Получаем multipart-файл
     const data = await request.file({
-      limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+      limits: {
+        fileSize: query.purpose === 'productPhoto'
+          ? HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES
+          : maxFileSizeBytes,
+      },
     });
 
     if (!data) {
@@ -48,20 +66,23 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     const buffer = Buffer.concat(chunks);
+    if (data.file.truncated || buffer.length > maxFileSizeBytes) {
+      return reply.status(413).send({ message: `File exceeds the ${Math.floor(maxFileSizeBytes / 1024 / 1024)} MB limit` });
+    }
 
     // Проверяем сигнатуру (magic bytes) файла
     await validateFileType(buffer);
 
     const service = getService(request);
-    const isAdmin = request.user.role === 'ADMIN';
     try {
       const media = await service.upload(
         { filename: data.filename, mimetype: data.mimetype, data: buffer },
         request.user.userId,
         query.listingId,
         isAdmin,
+        maxFileSizeBytes,
       );
-      return reply.status(201).send(media);
+      return reply.status(media.isNewUpload ? 201 : 200).send(media);
     } catch (err) {
       const error = err as Error & { statusCode?: number };
       const statusCode = error.statusCode ?? 500;
@@ -81,8 +102,9 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
   }, async (request, reply) => {
     const service = getService(request);
     const isAdmin = request.user.role === 'ADMIN';
+    const onlyIfUnattached = (request.query as { onlyIfUnattached?: string }).onlyIfUnattached === 'true';
     try {
-      await service.delete(request.params.id, request.user.userId, isAdmin);
+      await service.delete(request.params.id, request.user.userId, isAdmin, onlyIfUnattached);
       return reply.status(204).send();
     } catch (err) {
       const error = err as Error & { statusCode?: number };

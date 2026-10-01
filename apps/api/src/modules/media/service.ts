@@ -38,7 +38,8 @@ export class MediaService {
     ownerId: string,
     listingId?: string,
     isAdmin = false,
-  ): Promise<Media> {
+    maxFileSizeBytes = config.MAX_FILE_SIZE,
+  ): Promise<Media & { isNewUpload: boolean }> {
     const { data, filename } = file;
 
     // 1. Проверяем сигнатуру (magic bytes) реального содержимого
@@ -57,9 +58,9 @@ export class MediaService {
     }
 
     // 2. Проверяем размер
-    if (data.length > config.MAX_FILE_SIZE) {
+    if (data.length > maxFileSizeBytes) {
       throw Object.assign(
-        new Error(`File too large. Max size: ${config.MAX_FILE_SIZE / 1024 / 1024}MB`),
+        new Error(`File too large. Max size: ${maxFileSizeBytes / 1024 / 1024}MB`),
         { statusCode: 413 },
       );
     }
@@ -87,12 +88,13 @@ export class MediaService {
     const existing = await this.prisma.media.findUnique({ where: { hash } });
     if (existing) {
       if (listingId && existing.listingId !== listingId) {
-        return this.prisma.media.update({
+        const updated = await this.prisma.media.update({
           where: { id: existing.id },
           data: { listingId },
         });
+        return { ...updated, isNewUpload: false };
       }
-      return existing;
+      return { ...existing, isNewUpload: false };
     }
 
     // 6. Сохраняем файл через выбранный адаптер (Local или Cloudinary)
@@ -104,7 +106,7 @@ export class MediaService {
     });
 
     // 7. Записываем метаданные в БД
-    return this.prisma.media.create({
+    const created = await this.prisma.media.create({
       data: {
         url: uploadResult.url,
         ownerId,
@@ -116,16 +118,24 @@ export class MediaService {
         hash,
       },
     });
+    return { ...created, isNewUpload: true };
   }
 
   /**
    * Удалить медиафайл (только владелец или ADMIN)
    */
-  async delete(id: string, ownerId: string, isAdmin = false): Promise<void> {
+  async delete(id: string, ownerId: string, isAdmin = false, onlyIfUnattached = false): Promise<void> {
     const media = await this.prisma.media.findUnique({ where: { id } });
     if (!media) throw Object.assign(new Error('Media not found'), { statusCode: 404 });
     if (!isAdmin && media.ownerId !== ownerId) {
       throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
+    }
+    const productImageReferences = await this.prisma.commerceProductImage.count({ where: { mediaId: id } });
+    if (productImageReferences > 0) {
+      throw Object.assign(new Error('Media is still in use by a product'), { statusCode: 409 });
+    }
+    if (onlyIfUnattached && media.listingId) {
+      throw Object.assign(new Error('Media is still attached to a listing'), { statusCode: 409 });
     }
 
     // Удаляем из хранилища (Local или Cloudinary)

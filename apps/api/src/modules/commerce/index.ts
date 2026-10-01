@@ -4,7 +4,7 @@ import { ProductPublicationStatus } from '@prisma/client';
 import type { Prisma } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
-import { adminProductListQuerySchema, approveImportSchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateManualProductSchema } from './schemas';
+import { adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
 import { publishProductToTelegram } from './telegram-publisher';
 
@@ -128,6 +128,80 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.get('/categories', async () => app.prisma.commerceCategory.findMany({ where: { active: true }, orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }] }));
 
+  app.get('/admin/categories', { preHandler: adminMiddleware }, async () =>
+    app.prisma.commerceCategory.findMany({
+      include: { parent: { select: { id: true, slug: true, name: true } }, _count: { select: { products: true, imports: true } } },
+      orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }],
+    }));
+
+  app.post('/admin/categories', { preHandler: adminMiddleware }, async (request, reply) => {
+    const input = createCategorySchema.parse(request.body);
+    if (input.parentId) {
+      const parent = await app.prisma.commerceCategory.findUnique({ where: { id: input.parentId }, select: { id: true, active: true } });
+      if (!parent || !parent.active) return reply.status(400).send({ message: 'Parent category must be active' });
+    }
+    try {
+      return reply.status(201).send(await app.prisma.commerceCategory.create({
+        data: { ...input, name: input.name as Prisma.InputJsonValue },
+      }));
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ message: 'Category slug already exists' });
+      }
+      throw error;
+    }
+  });
+
+  app.put<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+    const input = updateCategorySchema.parse(request.body);
+    const current = await app.prisma.commerceCategory.findUnique({ where: { id: request.params.id } });
+    if (!current) return reply.status(404).send({ message: 'Category not found' });
+
+    if (input.parentId) {
+      let parentId: string | null = input.parentId;
+      const visited = new Set<string>();
+      while (parentId) {
+        if (parentId === current.id || visited.has(parentId)) {
+          return reply.status(400).send({ message: 'Category hierarchy cannot contain a cycle' });
+        }
+        visited.add(parentId);
+        const parent: { id: string; active: boolean; parentId: string | null } | null = await app.prisma.commerceCategory.findUnique({
+          where: { id: parentId },
+          select: { id: true, active: true, parentId: true },
+        });
+        if (!parent || !parent.active) return reply.status(400).send({ message: 'Parent category must be active' });
+        parentId = parent.parentId;
+      }
+    }
+
+    const oldName = current.name && typeof current.name === 'object' && !Array.isArray(current.name)
+      ? current.name as Record<string, unknown>
+      : {};
+    try {
+      return await app.prisma.commerceCategory.update({
+        where: { id: current.id },
+        data: {
+          ...(input.slug !== undefined ? { slug: input.slug } : {}),
+          ...(input.name !== undefined ? { name: { ...oldName, ...input.name } as Prisma.InputJsonValue } : {}),
+          ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
+          ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+          ...(input.active !== undefined ? { active: input.active } : {}),
+        },
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2002') {
+        return reply.status(409).send({ message: 'Category slug already exists' });
+      }
+      throw error;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+    const current = await app.prisma.commerceCategory.findUnique({ where: { id: request.params.id } });
+    if (!current) return reply.status(404).send({ message: 'Category not found' });
+    return app.prisma.commerceCategory.update({ where: { id: current.id }, data: { active: false } });
+  });
+
   app.post('/custom-orders', async (request, reply) => {
     const input = customOrderSchema.parse(request.body);
     const item = await app.prisma.customOrderRequest.create({ data: { ...input, contact: input.contact as any, selectedVariant: input.selectedVariant as any } });
@@ -174,7 +248,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({
         where,
-        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true },
+        include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true },
         orderBy: productOrderBy(query.sort),
         skip: (page - 1) * limit,
         take: limit,
@@ -191,6 +265,30 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/admin/products', { preHandler: adminMiddleware }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
+    const mediaIds = input.images.map((image) => image.mediaId).filter((id): id is string => Boolean(id));
+    const settings = await app.prisma.siteSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { maxProductPhotos: true, maxProductPhotoSizeMb: true },
+    });
+    const maxPhotos = Math.min(15, settings?.maxProductPhotos ?? 15);
+    const maxPhotoBytes = Math.min(25, settings?.maxProductPhotoSizeMb ?? 10) * 1024 * 1024;
+    if (input.images.length > maxPhotos) {
+      return reply.status(400).send({ message: `A product can have at most ${maxPhotos} photos` });
+    }
+    if (input.categoryId) {
+      const category = await app.prisma.commerceCategory.findUnique({
+        where: { id: input.categoryId },
+        select: { id: true, active: true },
+      });
+      if (!category?.active) {
+        return reply.status(400).send({ message: 'The selected category is not active' });
+      }
+    }
+    const media = await app.prisma.media.findMany({ where: { id: { in: mediaIds } } });
+    if (media.length !== mediaIds.length || media.some((image) => image.size > maxPhotoBytes)) {
+      return reply.status(400).send({ message: 'One or more product photos are missing or exceed the configured file size limit' });
+    }
+    const mediaById = new Map(media.map((image) => [image.id, image]));
     const descriptions = {
       ...(input.description?.trim() ? { ru: input.description.trim() } : {}),
       ...(input.descriptionUz?.trim() ? { uz: input.descriptionUz.trim() } : {}),
@@ -199,25 +297,44 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const sourceProductId = randomUUID();
     let product;
     try {
-      product = await createProductWithUniqueSlug(input.title, (slug) => app.prisma.commerceProduct.create({ data: {
-        slug,
-        country: input.country,
-        translations: { ru: { title: input.title }, uz: { title: input.titleUz || input.title }, en: { title: input.titleEn || input.title } },
-        description: Object.keys(descriptions).length ? descriptions : undefined,
-        attributes: { audience: 'everyone' }, source: 'MANUAL', sourceProductId, sourceUrl: input.sourceUrl,
-        originalPriceCny: input.sourcePriceCny ?? null, exchangeRate: input.exchangeRate ?? null, salePriceUzs: input.salePriceUzs,
-        categoryId: input.categoryId, approvedById: request.user.userId, approvedAt: new Date(), status: input.publish ? 'PUBLISHED' : 'DRAFT', publishedAt: input.publish ? new Date() : null,
-        images: input.imageUrl ? { create: [{ url: input.imageUrl, alt: { ru: input.title } }] } : undefined,
-        variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
-      }, include: { images: true, variants: true } }));
+      product = await createProductWithUniqueSlug(input.title, (slug) => app.prisma.$transaction(async (tx) => {
+        const created = await tx.commerceProduct.create({ data: {
+          slug,
+          country: input.country,
+          translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
+          description: Object.keys(descriptions).length ? descriptions : undefined,
+          attributes: { audience: 'everyone' },
+          source: 'MANUAL',
+          sourceProductId,
+          sourceUrl: input.sourceUrl ?? null,
+          originalPriceCny: input.sourcePriceCny ?? null,
+          exchangeRate: input.exchangeRate ?? null,
+          salePriceUzs: input.salePriceUzs,
+          categoryId: input.categoryId,
+          approvedById: request.user.userId,
+          approvedAt: new Date(),
+          status: input.publish ? 'PUBLISHED' : 'DRAFT',
+          publishedAt: input.publish ? new Date() : null,
+          images: {
+            create: input.images.map((image, sortOrder) => {
+              const file = mediaById.get(image.mediaId!);
+              if (!file) throw new Error('Product photo reference was not resolved');
+              return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title } };
+            }),
+          },
+          variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: 1 }] } : undefined,
+        }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
+        await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
+        return created;
+      }));
     } catch (error) {
       if (error instanceof ProductSlugCollisionError) {
         return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
       }
+      request.log.error({ err: error, stage: 'manual_product_create', userId: request.user.userId }, 'Manual product creation failed');
       throw error;
     }
-    await app.prisma.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: product.id, meta: { published: input.publish } } });
-    if (input.publish) publishProductToTelegram(product, input.imageUrl).catch((error) => app.log.error({ error, productId: product.id }, 'Telegram product publication failed'));
+    if (input.publish) publishProductToTelegram(product, product.images[0]?.url).catch((error) => app.log.error({ error, productId: product.id }, 'Telegram product publication failed'));
     return reply.status(201).send(product);
   });
 
@@ -229,15 +346,55 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       select: {
         id: true,
         source: true,
+        categoryId: true,
         translations: true,
         description: true,
-        images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { id: true, url: true } },
+        images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true } },
         variants: { where: { sku: { startsWith: 'MANUAL-' } }, take: 1, select: { id: true } },
       },
     });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
 
-    return app.prisma.$transaction(async (tx) => {
+    let removedMediaIds: string[] = [];
+    const updated = await app.prisma.$transaction(async (tx) => {
+      let resolvedImages: Array<{ id?: string; mediaId: string | null; url: string }> | undefined;
+      if (input.images) {
+        const settings = await tx.siteSettings.findUnique({
+          where: { id: 'singleton' },
+          select: { maxProductPhotos: true, maxProductPhotoSizeMb: true },
+        });
+        const maxPhotos = Math.min(15, settings?.maxProductPhotos ?? 15);
+        const maxPhotoBytes = Math.min(25, settings?.maxProductPhotoSizeMb ?? 10) * 1024 * 1024;
+        if (input.images.length > maxPhotos) {
+          throw Object.assign(new Error(`A product can have at most ${maxPhotos} photos`), { statusCode: 400 });
+        }
+        const mediaIds = input.images.map((image) => image.mediaId).filter((mediaId): mediaId is string => Boolean(mediaId));
+        const mediaFiles = await tx.media.findMany({ where: { id: { in: mediaIds } } });
+        if (mediaFiles.length !== mediaIds.length || mediaFiles.some((image) => image.size > maxPhotoBytes)) {
+          throw Object.assign(new Error('One or more product photos are missing or exceed the configured file size limit'), { statusCode: 400 });
+        }
+        const mediaById = new Map(mediaFiles.map((image) => [image.id, image]));
+        const existingById = new Map(product.images.map((image) => [image.id, image]));
+        resolvedImages = input.images.map((image) => {
+          if (image.id) {
+            const existing = existingById.get(image.id);
+            if (!existing) throw Object.assign(new Error('Product image does not belong to this product'), { statusCode: 400 });
+            return { id: existing.id, mediaId: existing.mediaId, url: existing.url };
+          }
+          const file = mediaById.get(image.mediaId!);
+          if (!file) throw Object.assign(new Error('Product photo reference was not resolved'), { statusCode: 400 });
+          return { mediaId: file.id, url: file.url };
+        });
+      }
+      if (input.categoryId && input.categoryId !== product.categoryId) {
+        const category = await tx.commerceCategory.findUnique({
+          where: { id: input.categoryId },
+          select: { id: true, active: true },
+        });
+        if (!category?.active) {
+          throw Object.assign(new Error('The selected category is not active'), { statusCode: 400 });
+        }
+      }
       const descriptionsProvided = input.description !== undefined
         || input.descriptionUz !== undefined
         || input.descriptionEn !== undefined;
@@ -280,14 +437,25 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         },
       });
 
-      if (input.imageUrl && input.imageUrl !== product.images[0]?.url) {
-        if (product.images[0]) {
-          await tx.commerceProductImage.update({
-            where: { id: product.images[0].id },
-            data: { url: input.imageUrl },
-          });
-        } else {
-          await tx.commerceProductImage.create({ data: { productId: id, url: input.imageUrl } });
+      if (resolvedImages) {
+        const retainedIds = resolvedImages.flatMap((image) => image.id ? [image.id] : []);
+        removedMediaIds = product.images
+          .filter((image) => !retainedIds.includes(image.id) && image.mediaId)
+          .map((image) => image.mediaId!);
+        await tx.commerceProductImage.deleteMany({
+          where: { productId: id, ...(retainedIds.length ? { id: { notIn: retainedIds } } : {}) },
+        });
+        for (const [sortOrder, image] of resolvedImages.entries()) {
+          if (image.id) {
+            await tx.commerceProductImage.update({
+              where: { id: image.id },
+              data: { sortOrder },
+            });
+          } else {
+            await tx.commerceProductImage.create({
+              data: { productId: id, mediaId: image.mediaId, url: image.url, sortOrder },
+            });
+          }
         }
       }
 
@@ -328,6 +496,20 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
       return updatedProduct;
     });
+    if (removedMediaIds.length) {
+      const mediaToDelete = await app.prisma.media.findMany({
+        where: { id: { in: removedMediaIds }, listingId: null, productImages: { none: {} } },
+        select: { id: true },
+      });
+      const { MediaService } = await import('../media/service');
+      const mediaService = new MediaService(app.prisma, undefined, request.log);
+      for (const media of mediaToDelete) {
+        await mediaService.delete(media.id, request.user.userId, true).catch((error) => {
+          request.log.error({ err: error, mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
+        });
+      }
+    }
+    return updated;
   });
 
   app.post('/admin/imports', { preHandler: adminMiddleware }, async (request, reply) => {

@@ -85,6 +85,8 @@ export const updateSiteSettingsSchema = z.object({
   googleAuthEnabled: z.boolean().optional(),
   autoModerationEnabled: z.boolean().optional(),
   maxImagesPerListing: z.coerce.number().int().min(1).max(50).optional(),
+  maxProductPhotos: z.coerce.number().int().min(1).max(15).optional(),
+  maxProductPhotoSizeMb: z.coerce.number().int().min(1).max(25).optional(),
   listingsPerPage: z.coerce.number().int().min(1).max(100).optional(),
   logoUrl: z.string().url().optional().nullable(),
   vipBoostEnabled: z.boolean().optional(),

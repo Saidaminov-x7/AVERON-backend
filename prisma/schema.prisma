@@ -374,6 +374,7 @@ model Media {
   owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   listingId String?
   listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  productImages CommerceProductImage[]
   mimeType  String
   size      Int
   width     Int?
@@ -415,6 +416,8 @@ model SiteSettings {
   googleAuthEnabled     Boolean @default(false)
   autoModerationEnabled Boolean @default(false)
   maxImagesPerListing   Int     @default(10)
+  maxProductPhotos      Int     @default(15)
+  maxProductPhotoSizeMb Int     @default(10)
   listingsPerPage       Int     @default(10) // Количество объявлений на странице в админке
   logoUrl               String? // URL логотипа платформы
   logoMediaKey          String? // Ключ медиа-файла для удаления в Cloudinary/storage
@@ -826,7 +829,7 @@ model CommerceProduct {
   material          String?
   source            ProductSource
   sourceProductId   String
-  sourceUrl         String
+  sourceUrl         String?
   originalPriceCny  Decimal?                 @db.Decimal(14, 2)
   exchangeRate      Decimal?                 @db.Decimal(14, 4)
   salePriceUzs      Decimal                  @db.Decimal(16, 2)
@@ -856,11 +859,14 @@ model CommerceProductImage {
   id        String          @id @default(uuid())
   productId String
   product   CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  mediaId   String?
+  media     Media?          @relation(fields: [mediaId], references: [id], onDelete: SetNull)
   url       String
   alt       Json?
   sortOrder Int             @default(0)
 
   @@index([productId, sortOrder])
+  @@index([mediaId])
 }
 
 model CommerceProductVariant {
