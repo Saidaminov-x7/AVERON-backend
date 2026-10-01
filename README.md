@@ -41,7 +41,10 @@
   фиксирует существующую начальную миграцию `20260821201059_init` как baseline,
   затем применяет остальные committed migrations через `migrate deploy`.
   Baseline не исполняет SQL начальной миграции и не изменяет пользовательские
-  таблицы или данные. Любая иная ошибка baseline/deploy блокирует запуск API.
+  таблицы или данные. Операция требует явного
+  `PRISMA_BASELINE_INITIAL_MIGRATION=true` и предварительной проверки, что
+  существующая схема соответствует исходной миграции; default — `false`.
+  Любая иная ошибка baseline/deploy блокирует запуск API.
 
 Для production admin TOTP задайте `TOTP_ENCRYPTION_KEY` только в backend secret
 store. Это случайный ключ ровно из 64 hex-символов (32 байта), например

@@ -30,6 +30,11 @@ else
     exit "$MIGRATION_EXIT_CODE"
   fi
 
+  if [ "${PRISMA_BASELINE_INITIAL_MIGRATION:-false}" != "true" ]; then
+    echo "❌ [AVERON Entrypoint] P3005 requires explicit PRISMA_BASELINE_INITIAL_MIGRATION=true after verifying the existing schema matches the initial migration."
+    exit "$MIGRATION_EXIT_CODE"
+  fi
+
   echo "⚠️ [AVERON Entrypoint] Existing non-empty database has no Prisma migration history; recording the initial baseline."
   pnpm --filter api exec prisma migrate resolve \
     --applied 20260821201059_init \
