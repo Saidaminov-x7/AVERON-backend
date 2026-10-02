@@ -1,13 +1,10 @@
-// apps/api/src/modules/analytics/index.ts
-// Модуль аналитики и трекинга посещений
-
-import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 
 const visitSchema = z.object({
-  deviceId: z.string().min(8).max(128),
-  path: z.string().min(1).max(512),
+  deviceId: z.string().uuid(),
+  path: z.string().regex(/^\/(?:ru|uz|en)(?:\/[a-zA-Z0-9._~!$&'()*+,;=:@%-]*)*$/).max(512),
 });
 
 const dateRangeQuerySchema = z.object({
@@ -16,309 +13,283 @@ const dateRangeQuerySchema = z.object({
   days: z.coerce.number().min(1).max(365).optional().default(30),
 });
 
+const exportQuerySchema = dateRangeQuerySchema.extend({
+  type: z.enum(['traffic', 'visitors', 'products', 'orders']).optional().default('traffic'),
+});
+
+const PAID_ORDER_STATUSES = [
+  'PAID',
+  'ORDERED_FROM_SUPPLIER',
+  'SUPPLIER_CONFIRMED',
+  'IN_TRANSIT_CHINA',
+  'CARGO_WAREHOUSE',
+  'INTERNATIONAL_TRANSIT',
+  'ARRIVED_UZBEKISTAN',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'COMPLETED',
+] as const;
+
+function getDateRange(query: z.infer<typeof dateRangeQuerySchema>) {
+  if (query.from && query.to) {
+    return {
+      startDate: new Date(`${query.from}T00:00:00.000Z`),
+      endDate: new Date(`${query.to}T23:59:59.999Z`),
+    };
+  }
+  const endDate = new Date();
+  return {
+    startDate: new Date(endDate.getTime() - query.days * 24 * 60 * 60 * 1000),
+    endDate,
+  };
+}
+
+function isPrivatePath(path: string) {
+  return /^\/(?:ru|uz|en)\/(?:login|register|forgot-password|reset-password|profile|cart|checkout|orders(?:\/|$)|favorites|compare|outfits|wishlist\/shared(?:\/|$)|mini-app)(?:\/|$)/.test(path);
+}
+
+function asNumber(value: { toString(): string } | number) {
+  return Number(value.toString());
+}
+
 export const analyticsModule: FastifyPluginAsync = async (server) => {
-  /**
-   * POST /analytics/visit — публичный неблокирующий эндпоинт фиксации визита
-   */
-  server.post('/visit', async (request: FastifyRequest, reply: FastifyReply) => {
+  server.post('/visit', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = visitSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ANALYTICS_EVENT' });
+    const { deviceId, path } = parsed.data;
+    if (isPrivatePath(path) || path.startsWith('/admin/') || path.startsWith('/api/')) {
+      return reply.status(204).send();
+    }
+
+    const dayKey = new Date().toISOString().slice(0, 10);
     try {
-      const { deviceId, path } = visitSchema.parse(request.body);
-
-      // Игнорируем внутренние системные пути
-      if (path.startsWith('/admin') || path.startsWith('/api') || path.startsWith('/_next')) {
-        return reply.status(200).send({ ok: true, ignored: true });
-      }
-
-      const todayKey = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
-      const ip = (request.headers['x-forwarded-for'] as string) || request.ip;
-      const userAgent = request.headers['user-agent'] as string | undefined;
-
-      // Дедупликация: одно устройство учитывается ровно 1 раз в сутки благодаря @@unique([deviceId, dayKey])
-      await request.server.prisma.visitLog.upsert({
-        where: {
-          deviceId_dayKey: {
-            deviceId,
-            dayKey: todayKey,
-          },
-        },
-        update: {
-          path, // Обновляем последний посещенный путь за день
-        },
-        create: {
-          deviceId,
-          dayKey: todayKey,
-          path,
-          ip,
-          userAgent,
-        },
+      await server.prisma.visitLog.upsert({
+        where: { deviceId_dayKey: { deviceId, dayKey } },
+        update: { path },
+        create: { deviceId, dayKey, path },
       });
-
-      return reply.status(200).send({ ok: true });
-    } catch {
-      // Fire-and-forget — всегда возвращаем успешный ответ, чтобы не ломать фронтенд
-      return reply.status(200).send({ ok: true });
+    } catch (error) {
+      request.log.warn({ err: error }, 'Analytics visit could not be recorded');
     }
+    return reply.status(204).send();
   });
 
-  /**
-   * GET /admin/stats/visitors — детальная статистика уникальных посетителей по дням за период
-   */
-  server.get('/admin/visitors', { preHandler: [adminMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { from, to, days } = dateRangeQuerySchema.parse(request.query);
-
-    let startDate: Date;
-    let endDate: Date;
-
-    if (from && to) {
-      startDate = new Date(`${from}T00:00:00.000Z`);
-      endDate = new Date(`${to}T23:59:59.999Z`);
-    } else {
-      endDate = new Date();
-      startDate = new Date(endDate.getTime() - days * 24 * 60 * 60 * 1000);
-    }
-
-    // Группировка уникальных визитов по dayKey
-    const visits = await request.server.prisma.visitLog.groupBy({
-      by: ['dayKey'],
-      where: {
-        createdAt: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      _count: {
-        id: true,
-      },
-      orderBy: {
-        dayKey: 'asc',
-      },
-    });
-
-    const totalVisitors = visits.reduce((acc, curr) => acc + curr._count.id, 0);
-
-    return reply.send({
-      from: startDate.toISOString().slice(0, 10),
-      to: endDate.toISOString().slice(0, 10),
-      totalVisitors,
-      daily: visits.map((v) => ({
-        date: v.dayKey,
-        visitors: v._count.id,
-      })),
-    });
-  });
-
-  /**
-   * GET /admin/stats/range — комплексная статистика за произвольный период
-   */
-  server.get('/admin/range', { preHandler: [adminMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { from, to, days } = dateRangeQuerySchema.parse(request.query);
-
-    let startDate: Date;
-    let endDate: Date;
-
-    if (from && to) {
-      startDate = new Date(`${from}T00:00:00.000Z`);
-      endDate = new Date(`${to}T23:59:59.999Z`);
-    } else {
-      endDate = new Date();
-      startDate = new Date(endDate.getTime() - days * 24 * 60 * 60 * 1000);
-    }
-
-    const [visitorsGroup, listings, users, byCityRaw] = await Promise.all([
-      // Посетители по дням
-      request.server.prisma.visitLog.groupBy({
+  server.get('/admin/visitors', { preHandler: [adminMiddleware] }, async (request, reply) => {
+    const parsed = dateRangeQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
+    const { startDate, endDate } = getDateRange(parsed.data);
+    const [visits, uniqueVisitors] = await Promise.all([
+      server.prisma.visitLog.groupBy({
         by: ['dayKey'],
         where: { createdAt: { gte: startDate, lte: endDate } },
         _count: { id: true },
         orderBy: { dayKey: 'asc' },
       }),
-      // Объявления за период
-      request.server.prisma.listing.findMany({
+      server.prisma.visitLog.groupBy({
+        by: ['deviceId'],
         where: { createdAt: { gte: startDate, lte: endDate } },
-        select: { createdAt: true, city: true },
       }),
-      // Пользователи за период
-      request.server.prisma.user.findMany({
-        where: { createdAt: { gte: startDate, lte: endDate } },
+    ]);
+    return reply.send({
+      from: startDate.toISOString().slice(0, 10),
+      to: endDate.toISOString().slice(0, 10),
+      totalVisitors: uniqueVisitors.length,
+      daily: visits.map((item) => ({ date: item.dayKey, visitors: item._count.id })),
+    });
+  });
+
+  server.get('/admin/range', { preHandler: [adminMiddleware] }, async (request, reply) => {
+    const parsed = dateRangeQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
+    const { startDate, endDate } = getDateRange(parsed.data);
+    const range = { gte: startDate, lte: endDate };
+    const [visitorsByDay, uniqueVisitors, products, users, paidOrders] = await Promise.all([
+      server.prisma.visitLog.groupBy({
+        by: ['dayKey'],
+        where: { createdAt: range },
+        _count: { id: true },
+        orderBy: { dayKey: 'asc' },
+      }),
+      server.prisma.visitLog.groupBy({
+        by: ['deviceId'],
+        where: { createdAt: range },
+      }),
+      server.prisma.commerceProduct.findMany({
+        where: { createdAt: range, status: 'PUBLISHED' },
         select: { createdAt: true },
       }),
-      // Группировка по городам
-      request.server.prisma.listing.groupBy({
-        by: ['city'],
-        where: {
-          createdAt: { gte: startDate, lte: endDate },
-          status: 'ACTIVE',
-          moderationStatus: 'APPROVED',
-        },
-        _count: { id: true },
-        orderBy: { _count: { id: 'desc' } },
-        take: 10,
+      server.prisma.user.findMany({
+        where: { createdAt: range },
+        select: { createdAt: true },
+      }),
+      server.prisma.commerceOrder.findMany({
+        where: { createdAt: range, status: { in: [...PAID_ORDER_STATUSES] } },
+        select: { createdAt: true, totalRevenue: true, refundAmount: true },
       }),
     ]);
 
-    // Карта по дням для сводного графика
-    const dailyMap = new Map<string, { date: string; visitors: number; listings: number; registrations: number }>();
-
-    // Инициализируем дни в диапазоне
-    const cur = new Date(startDate);
-    while (cur <= endDate) {
-      const key = cur.toISOString().slice(0, 10);
-      dailyMap.set(key, { date: key, visitors: 0, listings: 0, registrations: 0 });
-      cur.setDate(cur.getDate() + 1);
+    const daily = new Map<string, {
+      date: string;
+      visitors: number;
+      products: number;
+      registrations: number;
+      paidOrders: number;
+      revenueUzs: number;
+    }>();
+    const cursor = new Date(Date.UTC(
+      startDate.getUTCFullYear(),
+      startDate.getUTCMonth(),
+      startDate.getUTCDate(),
+    ));
+    const lastDay = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate());
+    while (cursor.getTime() <= lastDay) {
+      const date = cursor.toISOString().slice(0, 10);
+      daily.set(date, { date, visitors: 0, products: 0, registrations: 0, paidOrders: 0, revenueUzs: 0 });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
-
-    visitorsGroup.forEach((v) => {
-      const item = dailyMap.get(v.dayKey);
-      if (item) item.visitors = v._count.id;
-    });
-
-    listings.forEach((l) => {
-      const key = l.createdAt.toISOString().slice(0, 10);
-      const item = dailyMap.get(key);
-      if (item) item.listings += 1;
-    });
-
-    users.forEach((u) => {
-      const key = u.createdAt.toISOString().slice(0, 10);
-      const item = dailyMap.get(key);
-      if (item) item.registrations += 1;
-    });
+    for (const item of visitorsByDay) {
+      const day = daily.get(item.dayKey);
+      if (day) day.visitors = item._count.id;
+    }
+    for (const item of products) {
+      const day = daily.get(item.createdAt.toISOString().slice(0, 10));
+      if (day) day.products += 1;
+    }
+    for (const item of users) {
+      const day = daily.get(item.createdAt.toISOString().slice(0, 10));
+      if (day) day.registrations += 1;
+    }
+    let revenueUzs = 0;
+    for (const order of paidOrders) {
+      const netOrderRevenue = Math.max(0, asNumber(order.totalRevenue) - asNumber(order.refundAmount));
+      const day = daily.get(order.createdAt.toISOString().slice(0, 10));
+      if (day) {
+        day.paidOrders += 1;
+        day.revenueUzs += netOrderRevenue;
+      }
+      revenueUzs += netOrderRevenue;
+    }
 
     return reply.send({
       from: startDate.toISOString().slice(0, 10),
       to: endDate.toISOString().slice(0, 10),
       summary: {
-        totalVisitors: visitorsGroup.reduce((a, b) => a + b._count.id, 0),
-        totalListings: listings.length,
+        totalVisitors: uniqueVisitors.length,
+        totalProducts: products.length,
+        totalPaidOrders: paidOrders.length,
+        revenueUzs: Number(revenueUzs.toFixed(2)),
         totalUsers: users.length,
       },
-      chartData: Array.from(dailyMap.values()),
-      byCity: byCityRaw.map((c) => ({ city: c.city, count: c._count.id })),
+      chartData: Array.from(daily.values()).map((item) => ({
+        ...item,
+        revenueUzs: Number(item.revenueUzs.toFixed(2)),
+      })),
     });
   });
 
-  /**
-   * GET /admin/stats/export — выгрузка отчётов в CSV
-   */
-  server.get('/admin/export', { preHandler: [adminMiddleware] }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { from, to, days } = dateRangeQuerySchema.parse(request.query);
-    const { type = 'traffic' } = request.query as { type?: string };
+  server.get('/admin/export', { preHandler: [adminMiddleware] }, async (request, reply) => {
+    const parsed = exportQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_EXPORT_QUERY' });
+    const { startDate, endDate } = getDateRange(parsed.data);
+    const range = { gte: startDate, lte: endDate };
+    let headers: string[];
+    let rows: string[][];
 
-    let startDate: Date;
-    let endDate: Date;
-
-    if (from && to) {
-      startDate = new Date(`${from}T00:00:00.000Z`);
-      endDate = new Date(`${to}T23:59:59.999Z`);
-    } else {
-      endDate = new Date();
-      startDate = new Date(endDate.getTime() - days * 24 * 60 * 60 * 1000);
-    }
-
-    let headers: string[] = [];
-    let rows: string[][] = [];
-
-    if (type === 'visitors') {
-      headers = ['Дата', 'Уникальных посетителей'];
-      const visits = await request.server.prisma.visitLog.groupBy({
+    if (parsed.data.type === 'visitors') {
+      headers = ['Date', 'Unique visitors'];
+      const visitors = await server.prisma.visitLog.groupBy({
         by: ['dayKey'],
-        where: { createdAt: { gte: startDate, lte: endDate } },
+        where: { createdAt: range },
         _count: { id: true },
         orderBy: { dayKey: 'asc' },
       });
-      rows = visits.map((v) => [v.dayKey, String(v._count.id)]);
-    } else if (type === 'listings') {
-      headers = ['ID', 'Название', 'Город', 'Цена', 'Статус', 'Дата создания'];
-      const listings = await request.server.prisma.listing.findMany({
-        where: { createdAt: { gte: startDate, lte: endDate } },
-        orderBy: { createdAt: 'desc' },
+      rows = visitors.map((item) => [item.dayKey, String(item._count.id)]);
+    } else if (parsed.data.type === 'products') {
+      headers = ['Product count', 'Date'];
+      const products = await server.prisma.commerceProduct.findMany({
+        where: { createdAt: range, status: 'PUBLISHED' },
+        select: { createdAt: true },
+        orderBy: { createdAt: 'asc' },
       });
-      rows = listings.map((l) => [
-        l.id,
-        `"${l.title.replace(/"/g, '""')}"`,
-        l.city,
-        String(l.price),
-        l.status,
-        l.createdAt.toISOString().slice(0, 10),
+      rows = products.map((item) => ['1', item.createdAt.toISOString().slice(0, 10)]);
+    } else if (parsed.data.type === 'orders') {
+      headers = ['Date', 'Paid order revenue (UZS)'];
+      const orders = await server.prisma.commerceOrder.findMany({
+        where: { createdAt: range, status: { in: [...PAID_ORDER_STATUSES] } },
+        select: { createdAt: true, totalRevenue: true, refundAmount: true },
+        orderBy: { createdAt: 'asc' },
+      });
+      rows = orders.map((order) => [
+        order.createdAt.toISOString().slice(0, 10),
+        Math.max(0, asNumber(order.totalRevenue) - asNumber(order.refundAmount)).toFixed(2),
       ]);
     } else {
-      // Сводный трафик
-      headers = ['Дата', 'Посетители', 'Регистрации', 'Новые объявления'];
-      const [visitorsGroup, listings, users] = await Promise.all([
-        request.server.prisma.visitLog.groupBy({
+      headers = ['Date', 'Unique visitors', 'Published products', 'Paid orders', 'Revenue (UZS)', 'Registrations'];
+      const [visitorsByDay, products, users, orders] = await Promise.all([
+        server.prisma.visitLog.groupBy({
           by: ['dayKey'],
-          where: { createdAt: { gte: startDate, lte: endDate } },
+          where: { createdAt: range },
           _count: { id: true },
-          orderBy: { dayKey: 'asc' },
         }),
-        request.server.prisma.listing.findMany({
-          where: { createdAt: { gte: startDate, lte: endDate } },
+        server.prisma.commerceProduct.findMany({
+          where: { createdAt: range, status: 'PUBLISHED' },
           select: { createdAt: true },
         }),
-        request.server.prisma.user.findMany({
-          where: { createdAt: { gte: startDate, lte: endDate } },
-          select: { createdAt: true },
+        server.prisma.user.findMany({ where: { createdAt: range }, select: { createdAt: true } }),
+        server.prisma.commerceOrder.findMany({
+          where: { createdAt: range, status: { in: [...PAID_ORDER_STATUSES] } },
+          select: { createdAt: true, totalRevenue: true, refundAmount: true },
         }),
       ]);
-
-      const map = new Map<string, { visitors: number; registrations: number; listings: number }>();
-      const cur = new Date(startDate);
-      while (cur <= endDate) {
-        map.set(cur.toISOString().slice(0, 10), { visitors: 0, registrations: 0, listings: 0 });
-        cur.setDate(cur.getDate() + 1);
-      }
-
-      visitorsGroup.forEach((v) => {
-        const item = map.get(v.dayKey);
-        if (item) item.visitors = v._count.id;
-      });
-      listings.forEach((l) => {
-        const item = map.get(l.createdAt.toISOString().slice(0, 10));
-        if (item) item.listings += 1;
-      });
-      users.forEach((u) => {
-        const item = map.get(u.createdAt.toISOString().slice(0, 10));
-        if (item) item.registrations += 1;
-      });
-
-      rows = Array.from(map.entries()).map(([date, d]) => [
-        date,
-        String(d.visitors),
-        String(d.registrations),
-        String(d.listings),
-      ]);
+      const byDate = new Map<string, string[]>();
+      const add = (date: string, column: number, amount = 1) => {
+        const values = byDate.get(date) ?? [date, '0', '0', '0', '0.00', '0'];
+        values[column] = column === 4
+          ? (Number(values[column]) + amount).toFixed(2)
+          : String(Number(values[column]) + amount);
+        byDate.set(date, values);
+      };
+      visitorsByDay.forEach((item) => add(item.dayKey, 1, item._count.id));
+      products.forEach((item) => add(item.createdAt.toISOString().slice(0, 10), 2));
+      orders.forEach((order) => add(
+        order.createdAt.toISOString().slice(0, 10),
+        4,
+        Math.max(0, asNumber(order.totalRevenue) - asNumber(order.refundAmount)),
+      ));
+      orders.forEach((order) => add(order.createdAt.toISOString().slice(0, 10), 3));
+      users.forEach((item) => add(item.createdAt.toISOString().slice(0, 10), 5));
+      rows = Array.from(byDate.values()).sort((a, b) => a[0].localeCompare(b[0]));
     }
 
-    const csv = [headers, ...rows].map((r) => r.join(',')).join('\n');
-
+    const csv = [headers, ...rows].map((row) => row.join(',')).join('\n');
     reply.header('Content-Type', 'text/csv; charset=utf-8');
-    reply.header('Content-Disposition', `attachment; filename="analytics_${type}_${startDate.toISOString().slice(0, 10)}_${endDate.toISOString().slice(0, 10)}.csv"`);
-    return reply.send('\uFEFF' + csv);
+    reply.header(
+      'Content-Disposition',
+      `attachment; filename="averon_analytics_${parsed.data.type}_${startDate.toISOString().slice(0, 10)}_${endDate.toISOString().slice(0, 10)}.csv"`,
+    );
+    return reply.send(`\uFEFF${csv}`);
   });
 
-  /**
-   * GET /analytics/funnel — Воронка конверсии (Визиты -> Избранное -> Заявки на просмотр)
-   */
-  server.get('/funnel', {
-    preHandler: [adminMiddleware],
-  }, async (request) => {
-    const { from, to, days } = dateRangeQuerySchema.parse(request.query);
-    const dateTo = to ? new Date(to) : new Date();
-    const dateFrom = from ? new Date(from) : new Date(Date.now() - (days || 30) * 24 * 60 * 60 * 1000);
-
-    const [views, favorites, viewingRequests] = await Promise.all([
-      request.server.prisma.visitLog.count({ where: { createdAt: { gte: dateFrom, lte: dateTo } } }),
-      request.server.prisma.favorite.count({ where: { createdAt: { gte: dateFrom, lte: dateTo } } }),
-      request.server.prisma.viewingRequest.count({ where: { createdAt: { gte: dateFrom, lte: dateTo } } }),
+  server.get('/funnel', { preHandler: [adminMiddleware] }, async (request, reply) => {
+    const parsed = dateRangeQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
+    const { startDate, endDate } = getDateRange(parsed.data);
+    const range = { gte: startDate, lte: endDate };
+    const [visits, favorites, paidOrders] = await Promise.all([
+      server.prisma.visitLog.count({ where: { createdAt: range } }),
+      server.prisma.productFavorite.count({ where: { createdAt: range } }),
+      server.prisma.commerceOrder.count({
+        where: { createdAt: range, status: { in: [...PAID_ORDER_STATUSES] } },
+      }),
     ]);
-
-    return {
-      views,
+    return reply.send({
+      visits,
       favorites,
-      viewingRequests,
-      favoriteRate: views > 0 ? favorites / views : 0,
-      viewingRate: favorites > 0 ? viewingRequests / favorites : 0,
-      conversionRate: views > 0 ? viewingRequests / views : 0,
-    };
+      paidOrders,
+      favoriteRate: visits > 0 ? favorites / visits : 0,
+      orderRate: visits > 0 ? paidOrders / visits : 0,
+    });
   });
 };

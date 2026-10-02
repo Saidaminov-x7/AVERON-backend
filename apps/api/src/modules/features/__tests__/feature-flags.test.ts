@@ -1,7 +1,9 @@
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { createFeatureFlags } from '../feature-flags';
+import { featureFlags } from '../feature-flags';
 import { capabilitiesModule } from '..';
+import { config } from '../../../config';
 
 describe('feature flags', () => {
   it('keeps unfinished integrations disabled when configured with their defaults', () => {
@@ -73,6 +75,13 @@ describe('feature flags', () => {
       'visualSearch',
     ]);
     expect(Object.values(response.json()).every((value) => typeof value === 'boolean')).toBe(true);
+    expect(response.json().n8n).toBe(featureFlags.capabilities().n8n);
+    expect(response.json().parser1688).toBe(
+      featureFlags.isEnabled('PARSER_1688') && Boolean(config.PARSER_IMPORT_TOKEN),
+    );
+    expect(response.json().parserPinduoduo).toBe(false);
+    expect(response.json().ipost).toBe(false);
+    expect(response.json().autoCurrency).toBe(false);
     await app.close();
   });
 });
