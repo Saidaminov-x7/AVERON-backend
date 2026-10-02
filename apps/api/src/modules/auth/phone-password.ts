@@ -11,6 +11,8 @@ import { uzbekPhoneSchema } from './phone';
 import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
 import { config } from '../../config';
 import { featureFlags } from '../features/feature-flags';
+import { consumeHashedOtp } from './otp-store';
+import { dummyPasswordHash } from './dummy-password';
 
 const phone = uzbekPhoneSchema;
 const password = passwordValidation;
@@ -39,29 +41,32 @@ async function issueCode(request: FastifyRequest, reply: FastifyReply, key: stri
   const code = crypto.randomInt(100000, 1_000_000).toString();
   await request.server.redis.set(cooldownKey, '1', 'EX', 60);
   await request.server.redis.set(key, JSON.stringify({ ...payload, codeHash: hashCode(code), attempts: 0 }), 'EX', 300);
-  const sent = await sendSms(normalizedPhone.replace(/\D/g, ''), code, action).catch((error) => {
-    request.log.error({ errorName: error instanceof Error ? error.name : 'unknown' }, 'SMS provider request failed');
-    return false;
-  });
-  if (!sent && config.NODE_ENV === 'production') {
+  let sent = config.NODE_ENV === 'test';
+  if (config.NODE_ENV !== 'test') {
+    sent = await sendSms(normalizedPhone.replace(/\D/g, ''), code, action).catch((error) => {
+      request.log.error({ errorName: error instanceof Error ? error.name : 'unknown' }, 'SMS provider request failed');
+      return false;
+    });
+  }
+  if (!sent) {
     await request.server.redis.del(key);
     await request.server.redis.del(cooldownKey);
     return reply.status(503).send({ code: 'SMS_PROVIDER_NOT_CONFIGURED', message: 'SMS verification is not configured.' });
   }
-  return reply.send({ ok: true, expiresIn: 300, ...(config.NODE_ENV !== 'production' ? { devCode: code } : {}) });
+  return reply.send({ ok: true, expiresIn: 300, ...(config.NODE_ENV === 'test' ? { devCode: code } : {}) });
 }
 
 async function readVerified(request: FastifyRequest, reply: FastifyReply, key: string, code: string) {
-  const raw = await request.server.redis.get(key);
-  if (!raw) { reply.status(401).send({ message: 'Код истёк. Запросите новый.' }); return null; }
-  const pending = JSON.parse(raw) as Pending;
-  if (pending.attempts >= 5) { await request.server.redis.del(key); reply.status(429).send({ message: 'Слишком много попыток.' }); return null; }
-  if (!crypto.timingSafeEqual(Buffer.from(hashCode(code)), Buffer.from(pending.codeHash))) {
-    await request.server.redis.set(key, JSON.stringify({ ...pending, attempts: pending.attempts + 1 }), 'KEEPTTL');
-    reply.status(401).send({ message: 'Неверный код.' }); return null;
+  const result = await consumeHashedOtp(request.server.redis, key, hashCode(code));
+  if (result.status === 0) { reply.status(401).send({ message: 'Код истёк. Запросите новый.' }); return null; }
+  if (result.status === 1) { reply.status(401).send({ message: 'Неверный код.' }); return null; }
+  if (result.status === 2) { reply.status(429).send({ message: 'Слишком много попыток.' }); return null; }
+  if (result.status !== 3 || !result.payload) {
+    request.log.error({ result: result.status }, 'Unexpected phone password OTP verification result');
+    reply.status(503).send({ message: 'Не удалось проверить код. Запросите новый.' });
+    return null;
   }
-  await request.server.redis.del(key);
-  return pending;
+  return JSON.parse(result.payload) as Pending;
 }
 
 async function completeLogin(request: FastifyRequest, reply: FastifyReply, user: any) {
@@ -98,7 +103,9 @@ export async function requestPhonePasswordLogin(request: FastifyRequest, reply: 
     return reply.status(429).send({ message: 'Неверный номер телефона или пароль. Попробуйте позже.' });
   }
   const user = await request.server.prisma.user.findUnique({ where: { phone: data.phone } });
-  if (!user || !(await argon2.verify(user.passwordHash, data.password)) || user.isBlocked || user.isDeleted) {
+  const passwordHash = user?.passwordHash ?? await dummyPasswordHash;
+  const isPasswordValid = await argon2.verify(passwordHash, data.password);
+  if (!user || !isPasswordValid || user.isBlocked || user.isDeleted) {
     await recordLoginFailure(request.server.redis, failureKey);
     return reply.status(401).send({ message: 'Неверный номер телефона или пароль.' });
   }

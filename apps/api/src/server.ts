@@ -35,6 +35,7 @@ import { capabilitiesModule } from './modules/features';
 import { productAiModule } from './modules/commerce/product-ai';
 import { visualSearchModule } from './modules/visual-search';
 import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
+import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -145,7 +146,7 @@ server.register(fastifyRateLimit, {
     return config.RATE_LIMIT_MAX;
   },
   timeWindow: config.RATE_LIMIT_WINDOW,
-  skipOnError: true,
+  skipOnError: false,
   errorResponseBuilder: (_req, context) => ({
     statusCode: 429,
     error: 'Too Many Requests',
@@ -216,6 +217,7 @@ import { v2 as cloudinary } from 'cloudinary';
 
 server.decorate('prisma', prisma);
 server.decorate('redis', redis);
+registerN8nEventPublisher(redis, server.log);
 
 // ─── Единый обработчик ошибок ────────────────────────────────────────────────
 registerErrorHandler(server);
@@ -261,7 +263,7 @@ server.get('/health', {
     return reply.send({ status: 'ok', db: 'up', redis: 'up', timestamp: new Date().toISOString() });
   } catch (err) {
     server.log.error({ err }, 'Health check failed');
-    return reply.status(503).send({ status: 'degraded', db: 'unknown', redis: 'unknown', error: (err as Error).message });
+    return reply.status(503).send({ status: 'degraded', db: 'unknown', redis: 'unknown' });
   }
 });
 

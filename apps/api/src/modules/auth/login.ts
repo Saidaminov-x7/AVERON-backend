@@ -9,6 +9,7 @@ import { sendTelegram2FACode } from '../../lib/telegram';
 import { saveAuthSession } from './sessions';
 import { Role } from '@prisma/client';
 import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
+import { dummyPasswordHash } from './dummy-password';
 
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
@@ -25,6 +26,7 @@ export const loginHandler = async (
     // Поиск пользователя
     const user = await authService.findByEmail(dto.email);
     if (!user) {
+      await authService.verifyPassword(await dummyPasswordHash, dto.password);
       await recordLoginFailure(request.server.redis, failureKey);
       return reply.status(401).send({ message: 'Неверный email или пароль' });
     }

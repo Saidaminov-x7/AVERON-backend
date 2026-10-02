@@ -76,6 +76,14 @@ const envSchema = z.object({
   FEATURE_TELEGRAM_PRODUCT_PUBLISH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_AUTO_CURRENCY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_SMS_VERIFICATION: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  N8N_WEBHOOK_URL: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().url().optional(),
+  ),
+  N8N_WEBHOOK_SECRET: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().min(32).optional(),
+  ),
   FEATURE_VISUAL_SEARCH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_SIMILAR_PRODUCTS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_IMAGE_EMBEDDINGS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
@@ -133,6 +141,25 @@ const envSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: [key],
         message: `${key} must use HTTPS in production`,
+      });
+    }
+  }
+  if (values.N8N_WEBHOOK_URL) {
+    const endpoint = new URL(values.N8N_WEBHOOK_URL);
+    const railwayPrivateHttp = endpoint.protocol === 'http:' &&
+      endpoint.hostname.endsWith('.railway.internal');
+    if (endpoint.protocol !== 'https:' && !railwayPrivateHttp) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['N8N_WEBHOOK_URL'],
+        message: 'N8N_WEBHOOK_URL must use HTTPS or Railway private networking in production',
+      });
+    }
+    if (endpoint.username || endpoint.password) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['N8N_WEBHOOK_URL'],
+        message: 'N8N_WEBHOOK_URL must not contain embedded credentials',
       });
     }
   }

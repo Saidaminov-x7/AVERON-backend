@@ -10,6 +10,29 @@ import { forgotPasswordHandler, resetPasswordHandler } from '../forgot-password'
 const userId = '00000000-0000-4000-8000-000000000001';
 
 describe('password reset security', () => {
+  it('keeps nonexistent-account reset responses generic without logging the submitted email', async () => {
+    const submittedEmail = 'unknown@example.test';
+    const logInfo = vi.fn();
+    const logWarn = vi.fn();
+    const reply = { send: vi.fn() };
+    const request = {
+      body: { email: submittedEmail, locale: 'en' },
+      server: {
+        prisma: { user: { findUnique: vi.fn(async () => null) } },
+        redis: {},
+      },
+      log: { info: logInfo, warn: logWarn },
+    } as never;
+
+    await forgotPasswordHandler(request, reply as never);
+
+    expect(reply.send).toHaveBeenCalledWith({
+      message: 'Если аккаунт с таким email существует, ссылка для сброса пароля отправлена.',
+    });
+    expect(JSON.stringify(logInfo.mock.calls)).not.toContain(submittedEmail);
+    expect(JSON.stringify(logWarn.mock.calls)).not.toContain(submittedEmail);
+  });
+
   it('does not log or send a password-reset URL through the admin notification path', async () => {
     const redisSet = vi.fn(async (_key: string, ..._args: unknown[]) => 'OK');
     const logInfo = vi.fn();

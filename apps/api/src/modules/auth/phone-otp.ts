@@ -8,6 +8,7 @@ import { refreshCookieOptions } from '../../lib/cookies';
 import { featureFlags } from '../features/feature-flags';
 import { smsProvider } from '../integrations/sms-provider';
 import { saveAuthSession } from './sessions';
+import { consumeHashedOtp } from './otp-store';
 
 const phoneSchema = z.string().transform((value) => value.replace(/\D/g, '')).refine(
   (value) => /^998\d{9}$/.test(value),
@@ -53,11 +54,14 @@ export async function requestPhoneOtp(
   const codeHash = crypto.createHash('sha256').update(code).digest('hex');
   await request.server.redis.set(otpKey(phone), JSON.stringify({ codeHash, attempts: 0 }), 'EX', 300);
 
-  const sent = await sendSms(phone, code).catch((error) => {
-    request.log.error({ errorName: error instanceof Error ? error.name : 'unknown' }, 'SMS provider request failed');
-    return false;
-  });
-  if (!sent && config.NODE_ENV === 'production') {
+  let sent = config.NODE_ENV === 'test';
+  if (config.NODE_ENV !== 'test') {
+    sent = await sendSms(phone, code).catch((error) => {
+      request.log.error({ errorName: error instanceof Error ? error.name : 'unknown' }, 'SMS provider request failed');
+      return false;
+    });
+  }
+  if (!sent) {
     await request.server.redis.del(otpKey(phone), cooldownKey);
     return reply.status(503).send({ code: 'SMS_PROVIDER_NOT_CONFIGURED', message: 'SMS verification is not configured.' });
   }
@@ -65,7 +69,7 @@ export async function requestPhoneOtp(
   return reply.send({
     ok: true,
     expiresIn: 300,
-    ...(config.NODE_ENV !== 'production' ? { devCode: code } : {}),
+    ...(config.NODE_ENV === 'test' ? { devCode: code } : {}),
   });
 }
 
@@ -76,21 +80,19 @@ export async function verifyPhoneOtp(
   if (smsFeatureDisabled(reply)) return;
   const { phone, code } = verifySchema.parse(request.body);
   const key = otpKey(phone);
-  const stored = await request.server.redis.get(key);
-  if (!stored) return reply.status(401).send({ message: 'Код истёк. Запросите новый.' });
-
-  const payload = JSON.parse(stored) as { codeHash: string; attempts: number };
-  if (payload.attempts >= 5) {
-    await request.server.redis.del(key);
-    return reply.status(429).send({ message: 'Слишком много попыток. Запросите новый код.' });
-  }
   const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-  if (!/^[a-f\d]{64}$/i.test(payload.codeHash) ||
-      !crypto.timingSafeEqual(Buffer.from(codeHash, 'hex'), Buffer.from(payload.codeHash, 'hex'))) {
-    await request.server.redis.set(key, JSON.stringify({ ...payload, attempts: payload.attempts + 1 }), 'KEEPTTL');
+  const { status: result } = await consumeHashedOtp(request.server.redis, key, codeHash);
+  if (result === 0) return reply.status(401).send({ message: 'Код истёк. Запросите новый.' });
+  if (result === 1) {
     return reply.status(401).send({ message: 'Неверный код.' });
   }
-  await request.server.redis.del(key);
+  if (result === 2) {
+    return reply.status(429).send({ message: 'Слишком много попыток. Запросите новый код.' });
+  }
+  if (result !== 3) {
+    request.log.error({ result }, 'Unexpected phone OTP verification result');
+    return reply.status(503).send({ message: 'Не удалось проверить код. Запросите новый.' });
+  }
 
   const normalizedPhone = `+${phone}`;
   let user = await request.server.prisma.user.findUnique({ where: { phone: normalizedPhone } });

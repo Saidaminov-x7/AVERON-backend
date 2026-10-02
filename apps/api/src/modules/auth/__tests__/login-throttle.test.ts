@@ -58,6 +58,8 @@ describe('email login failure throttling', () => {
     });
     expect(throttled.statusCode).toBe(429);
     expect(findByEmail).toHaveBeenCalledTimes(8);
+    expect(verifyPassword).toHaveBeenCalledTimes(8);
+    expect(verifyPassword).toHaveBeenNthCalledWith(1, expect.stringMatching(/^\$argon2/), 'incorrect');
     expect(redis.eval).toHaveBeenCalledTimes(8);
     await app.close();
   });

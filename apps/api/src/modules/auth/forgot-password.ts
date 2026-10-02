@@ -33,10 +33,9 @@ export const forgotPasswordHandler = async (
     select: { id: true, email: true, name: true, isBlocked: true },
   });
 
-  // Защита от timing-атак и раскрытия существования аккаунта:
-  // Если пользователь не найден или заблокирован, все равно возвращаем успешный ответ
+  // Keep the public response the same for missing and blocked accounts.
   if (!user || user.isBlocked) {
-    request.log.info({ email: dto.email }, 'Password reset requested for nonexistent or blocked user');
+    request.log.info('Password reset requested for nonexistent or blocked user');
     return reply.send({
       message: 'Если аккаунт с таким email существует, ссылка для сброса пароля отправлена.',
     });
