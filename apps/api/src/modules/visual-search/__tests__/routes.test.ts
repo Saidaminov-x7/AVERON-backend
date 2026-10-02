@@ -85,6 +85,10 @@ async function buildApp(
   flags: VisualSearchFlags = enabledFlags,
   maxImageBytes = 1024 * 1024,
   auditCreate = vi.fn(async () => ({})),
+  commerceProduct: object = {
+    findFirst: vi.fn(async () => null),
+    findMany: vi.fn(async () => []),
+  },
 ) {
   const app = Fastify();
   const userFind = vi.fn(async (): Promise<TestUser | null> => null);
@@ -93,6 +97,7 @@ async function buildApp(
   app.decorate('prisma', {
     auditLog: { create: auditCreate, findMany: auditFindMany, count: auditCount },
     user: { findUnique: userFind },
+    commerceProduct,
   } as never);
   await app.register(fastifyJwt, { secret: 'visual-search-test-secret-at-least-32-chars' });
   await app.register(fastifyMultipart);
@@ -109,6 +114,58 @@ async function buildApp(
 }
 
 describe('visual search routes', () => {
+  it('rehydrates similar-product IDs from current eligible database records', async () => {
+    const canonicalProduct = {
+      id: 'product-1',
+      slug: 'published-product',
+      status: 'PUBLISHED',
+      stock: 3,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      preorderEstimatedAt: null,
+      salePriceUzs: '97500',
+      compareAtPriceUzs: null,
+      translations: { en: { title: 'Current title' } },
+      images: [{ id: 'current-image', url: 'https://images.example/current.jpg', sortOrder: 0 }],
+      variants: [{ id: 'variant-1', active: true, stock: 3 }],
+      category: { id: 'category-1', active: true },
+    };
+    const service: VisualSimilarityService = {
+      isAvailable: () => true,
+      searchImage: vi.fn(),
+      findSimilarProducts: vi.fn(async () => [publishedProduct, draftProduct]),
+      reindexProductMainImage: vi.fn(),
+      getProductEmbeddingStatus: vi.fn(),
+    };
+    const commerceProduct = {
+      findFirst: vi.fn(async () => ({ id: 'base-product' })),
+      findMany: vi.fn(async () => [canonicalProduct]),
+    };
+    const { app } = await buildApp(service, enabledFlags, 1024 * 1024, vi.fn(async () => ({})), commerceProduct);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/products/source/similar?limit=3',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items).toHaveLength(1);
+    expect(response.json().items[0]).toMatchObject({
+      id: 'product-1',
+      slug: 'published-product',
+      salePriceUzs: '97500',
+      translations: { en: { title: 'Current title' } },
+    });
+    expect(commerceProduct.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        status: 'PUBLISHED',
+        id: expect.objectContaining({ in: ['product-1', 'draft-1'], not: 'base-product' }),
+      }),
+    }));
+    await app.close();
+  });
+
   it('returns the backend feature-disabled contract without parsing or processing an upload', async () => {
     const service: VisualSimilarityService = {
       isAvailable: () => false,

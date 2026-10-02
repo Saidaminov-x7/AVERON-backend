@@ -13,6 +13,7 @@ import { telegramPublicationModule } from './telegram-publication';
 import { productReviewsModule } from './product-reviews';
 import { catalogAssistantModule } from './catalog-assistant';
 import { publicProductDto } from './public-product-dto';
+import { createRecommendationsModule } from './recommendations';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -125,6 +126,7 @@ function mergeLocalizedDescriptions(
 }
 
 export const commerceModule: FastifyPluginAsync = async (app) => {
+  app.register(createRecommendationsModule());
   app.register(parserImportModule);
   app.register(cartCheckoutModule);
   app.register(commerceOrdersModule);

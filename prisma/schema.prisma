@@ -172,6 +172,7 @@ model User {
   telegramPublicationAttempts CommerceTelegramPublication[] @relation("CommerceTelegramPublicationActor")
   commerceProductReviews CommerceProductReview[] @relation("CommerceProductReviewAuthor")
   moderatedCommerceProductReviews CommerceProductReview[] @relation("CommerceProductReviewModerator")
+  recentlyViewedProducts CommerceRecentlyViewedProduct[]
 
   @@index([email])
   @@index([phone])
@@ -905,6 +906,7 @@ model CommerceProduct {
   variants          CommerceProductVariant[]
   telegramPublications CommerceTelegramPublication[]
   reviews           CommerceProductReview[]
+  recentlyViewedRecords CommerceRecentlyViewedProduct[]
   stock             Int                      @default(0)
   cartItems         CommerceCartItem[]
   orderItems        CommerceOrderItem[]
@@ -1316,6 +1318,22 @@ model ProductFavorite {
 
   @@id([userId, productId])
   @@index([userId])
+}
+
+model CommerceRecentlyViewedProduct {
+  id        String          @id @default(uuid())
+  userId    String?
+  user      User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionKey String?
+  productId String
+  product   CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  viewedAt  DateTime        @default(now())
+
+  @@unique([userId, productId])
+  @@unique([sessionKey, productId])
+  @@index([userId, viewedAt])
+  @@index([sessionKey, viewedAt])
+  @@index([productId])
 }
 
 model ProductPriceAlert {

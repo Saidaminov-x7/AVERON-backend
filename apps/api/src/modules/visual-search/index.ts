@@ -1,4 +1,4 @@
-import { AdminRole } from '@prisma/client';
+import { AdminRole, Prisma } from '@prisma/client';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from '../../config';
@@ -20,6 +20,53 @@ import {
   visualSimilarityService,
 } from './runtime';
 import { featureFlags } from '../features/feature-flags';
+import { publicProductDto } from '../commerce/public-product-dto';
+import {
+  isEligibleRecommendationProduct,
+  recommendationAvailability,
+} from '../commerce/recommendation-ranking';
+
+const similarProductInclude = {
+  images: { orderBy: { sortOrder: 'asc' as const }, take: 3 },
+  variants: { where: { active: true } },
+  category: true,
+} satisfies Prisma.CommerceProductInclude;
+
+type SimilarProduct = Prisma.CommerceProductGetPayload<{ include: typeof similarProductInclude }>;
+
+async function hydrateSimilarProducts(
+  app: FastifyRequest['server'],
+  candidates: VisualSearchCandidate[],
+  slug: string,
+): Promise<unknown[]> {
+  const candidateIds = [...new Set(candidates.map((candidate) => candidate.productId))];
+  if (!candidateIds.length) return [];
+  const current = await app.prisma.commerceProduct.findFirst({
+    where: { slug },
+    select: { id: true },
+  });
+  const products: SimilarProduct[] = await app.prisma.commerceProduct.findMany({
+    where: {
+      id: { in: candidateIds, ...(current ? { not: current.id } : {}) },
+      status: 'PUBLISHED',
+      category: { active: true },
+    },
+    include: similarProductInclude,
+  });
+  const productsById = new Map(products
+    .filter(isEligibleRecommendationProduct)
+    .map((product) => [product.id, product]));
+  const seen = new Set<string>();
+  return candidates.flatMap((candidate) => {
+    const product = productsById.get(candidate.productId);
+    if (!product || seen.has(product.id)) return [];
+    seen.add(product.id);
+    return [{
+      ...publicProductDto(product),
+      recommendationAvailability: recommendationAvailability(product),
+    }];
+  });
+}
 
 const publicSearchQuerySchema = z.object({
   country: productCountrySchema.optional(),
@@ -369,7 +416,7 @@ export function createVisualSearchModule(
           { country: query.data.country, limit: query.data.limit },
           dependencies.providerTimeoutMs,
         );
-        const items = candidates.filter((item) => item.status === 'PUBLISHED').map(publicProduct);
+        const items = await hydrateSimilarProducts(request.server, candidates, request.params.slug);
         request.log.info({
           requestId: request.id,
           operation: 'similar_products',

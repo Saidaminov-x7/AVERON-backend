@@ -36,4 +36,15 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     providerConfigured: catalogAiService.isConfigured(),
     timeoutMs: config.AI_TIMEOUT_MS,
   }));
+
+  app.get('/admin/recommendation-status', { preHandler: adminMiddleware }, async () => ({
+    flags: {
+      recommendations: featureFlags.isEnabled('RECOMMENDATIONS'),
+      personalized: featureFlags.isEnabled('PERSONALIZED_RECOMMENDATIONS'),
+      recentlyViewed: featureFlags.isEnabled('RECENTLY_VIEWED'),
+    },
+    embeddingAvailable: visualSimilarityService.isAvailable(),
+    sharedCacheEnabled: false,
+    personalizedResultsShared: false,
+  }));
 };
