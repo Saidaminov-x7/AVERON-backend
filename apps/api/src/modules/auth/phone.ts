@@ -7,7 +7,7 @@ export function normalizeUzbekPhone(value: string): string | null {
   return /^\d{9}$/.test(national) ? `+998${national}` : null;
 }
 
-export const uzbekPhoneSchema = z.string()
+export const uzbekPhoneSchema = z.string().max(32)
   .transform((value, context) => {
     const normalized = normalizeUzbekPhone(value);
     if (!normalized) {

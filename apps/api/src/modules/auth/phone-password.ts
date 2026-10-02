@@ -2,6 +2,7 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import argon2 from 'argon2';
 import crypto from 'crypto';
 import { z } from 'zod';
+import type { User } from '@prisma/client';
 import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
 import { sendSms } from './phone-otp';
@@ -16,11 +17,11 @@ import { dummyPasswordHash } from './dummy-password';
 
 const phone = uzbekPhoneSchema;
 const password = passwordValidation;
-const registrationSchema = z.object({ name: z.string().min(2).max(100), phone, password });
-const loginSchema = z.object({ phone, password: z.string().min(1).max(256) });
-const verifySchema = z.object({ phone, code: z.string().regex(/^\d{6}$/) });
-const resetSchema = verifySchema.extend({ password });
-const pendingKey = (kind: 'register' | 'login' | 'reset', normalizedPhone: string) => `phone-password:${kind}:${normalizedPhone}`;
+const registrationSchema = z.object({ name: z.string().min(2).max(100), phone, password }).strict();
+const loginSchema = z.object({ phone, password: z.string().min(1).max(256) }).strict();
+const verifySchema = z.object({ phone, code: z.string().regex(/^\d{6}$/) }).strict();
+const resetSchema = verifySchema.extend({ password }).strict();
+const pendingKey = (kind: 'register' | 'login' | 'reset', normalizedPhone: string) => `averon:v1:auth:phone-password:${kind}:${normalizedPhone}`;
 
 type Pending = { codeHash: string; attempts: number; userId?: string; name?: string; passwordHash?: string };
 const hashCode = (code: string) => crypto.createHash('sha256').update(code).digest('hex');
@@ -34,12 +35,12 @@ function smsFeatureDisabled(reply: FastifyReply) {
 async function issueCode(request: FastifyRequest, reply: FastifyReply, key: string, payload: Omit<Pending, 'codeHash' | 'attempts'>, action: string) {
   if (smsFeatureDisabled(reply)) return;
   const normalizedPhone = key.slice(key.lastIndexOf(':') + 1);
-  const cooldownKey = `phone-password-cooldown:${normalizedPhone}`;
-  if (await request.server.redis.exists(cooldownKey)) {
+  const cooldownKey = `averon:v1:auth:phone-password:cooldown:${normalizedPhone}`;
+  const cooldown = await request.server.redis.set(cooldownKey, '1', 'EX', 60, 'NX');
+  if (!cooldown) {
     return reply.status(429).send({ message: 'Подождите перед повторным запросом кода.' });
   }
   const code = crypto.randomInt(100000, 1_000_000).toString();
-  await request.server.redis.set(cooldownKey, '1', 'EX', 60);
   await request.server.redis.set(key, JSON.stringify({ ...payload, codeHash: hashCode(code), attempts: 0 }), 'EX', 300);
   let sent = config.NODE_ENV === 'test';
   if (config.NODE_ENV !== 'test') {
@@ -69,7 +70,7 @@ async function readVerified(request: FastifyRequest, reply: FastifyReply, key: s
   return JSON.parse(result.payload) as Pending;
 }
 
-async function completeLogin(request: FastifyRequest, reply: FastifyReply, user: any) {
+async function completeLogin(request: FastifyRequest, reply: FastifyReply, user: User) {
   const { accessToken, refreshToken, sessionId } = generateTokens(user, request);
   await Promise.all([
     saveAuthSession(request, user.id, sessionId, refreshToken),
@@ -82,7 +83,6 @@ async function completeLogin(request: FastifyRequest, reply: FastifyReply, user:
 export async function requestPhoneRegistration(request: FastifyRequest, reply: FastifyReply) {
   if (smsFeatureDisabled(reply)) return;
   const data = registrationSchema.parse(request.body);
-  if (await request.server.prisma.user.findUnique({ where: { phone: data.phone } })) return reply.status(409).send({ message: 'Этот номер уже зарегистрирован.' });
   return issueCode(request, reply, pendingKey('register', data.phone), { name: data.name, passwordHash: await argon2.hash(data.password) }, 'регистрации');
 }
 
@@ -91,6 +91,10 @@ export async function verifyPhoneRegistration(request: FastifyRequest, reply: Fa
   const data = verifySchema.parse(request.body);
   const pending = await readVerified(request, reply, pendingKey('register', data.phone), data.code);
   if (!pending) return;
+  const existingUser = await request.server.prisma.user.findUnique({ where: { phone: data.phone } });
+  if (existingUser) {
+    return reply.status(409).send({ code: 'PHONE_ALREADY_REGISTERED', message: 'Use phone login for this number.' });
+  }
   const digits = data.phone.replace(/\D/g, '');
   const user = await request.server.prisma.user.create({ data: { phone: data.phone, email: `phone-${digits}@users.averon.local`, name: pending.name!, passwordHash: pending.passwordHash!, verified: true } });
   return completeLogin(request, reply, user);

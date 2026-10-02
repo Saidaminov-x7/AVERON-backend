@@ -10,16 +10,16 @@ import { smsProvider } from '../integrations/sms-provider';
 import { saveAuthSession } from './sessions';
 import { consumeHashedOtp } from './otp-store';
 
-const phoneSchema = z.string().transform((value) => value.replace(/\D/g, '')).refine(
+const phoneSchema = z.string().trim().max(32).transform((value) => value.replace(/\D/g, '')).refine(
   (value) => /^998\d{9}$/.test(value),
   'Введите номер Узбекистана в формате +998 XX XXX XX XX',
 );
 
-const requestSchema = z.object({ phone: phoneSchema });
-const verifySchema = z.object({ phone: phoneSchema, code: z.string().regex(/^\d{6}$/) });
+const requestSchema = z.object({ phone: phoneSchema }).strict();
+const verifySchema = z.object({ phone: phoneSchema, code: z.string().regex(/^\d{6}$/) }).strict();
 
-const otpKey = (phone: string) => `phone-otp:${phone}`;
-const otpCooldownKey = (phone: string) => `phone-otp-cooldown:${phone}`;
+const otpKey = (phone: string) => `averon:v1:auth:phone-otp:code:${phone}`;
+const otpCooldownKey = (phone: string) => `averon:v1:auth:phone-otp:cooldown:${phone}`;
 const RESEND_COOLDOWN_SECONDS = 60;
 
 export async function sendSms(phone: string, code: string, action = 'входа') {

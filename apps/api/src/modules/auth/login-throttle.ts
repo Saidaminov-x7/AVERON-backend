@@ -7,7 +7,7 @@ export const LOGIN_FAILURE_TTL_SECONDS = 15 * 60;
 export function loginFailureKey(identifierType: 'email' | 'phone', identifier: string) {
   const normalized = identifier.trim().toLowerCase();
   const digest = createHash('sha256').update(`${identifierType}:${normalized}`).digest('hex');
-  return `auth:login-failures:${digest}`;
+  return `averon:v1:auth:login-failures:${digest}`;
 }
 
 export async function isLoginTemporarilyLocked(redis: Redis, key: string) {
