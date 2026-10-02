@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { config } from '../../config';
 import { featureFlags } from './feature-flags';
 import { visualSimilarityService } from '../visual-search/runtime';
+import { catalogAiService } from '../commerce/catalog-ai-service';
+import { adminMiddleware } from '../../lib/adminMiddleware';
 
 export const capabilitiesModule: FastifyPluginAsync = async (app) => {
   app.get('/capabilities', async () => {
@@ -22,4 +24,16 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       autoCurrency: false,
     };
   });
+
+  app.get('/admin/ai-status', { preHandler: adminMiddleware }, async () => ({
+    flags: {
+      aiSearch: featureFlags.isEnabled('AI_SEARCH'),
+      styleAssistant: featureFlags.isEnabled('STYLE_ASSISTANT'),
+      completeTheLook: featureFlags.isEnabled('COMPLETE_THE_LOOK'),
+    },
+    provider: config.AI_PROVIDER,
+    model: catalogAiService.safeModel(),
+    providerConfigured: catalogAiService.isConfigured(),
+    timeoutMs: config.AI_TIMEOUT_MS,
+  }));
 };

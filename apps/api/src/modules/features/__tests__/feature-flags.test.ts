@@ -6,6 +6,9 @@ import { capabilitiesModule } from '..';
 describe('feature flags', () => {
   it('keeps unfinished integrations disabled when configured with their defaults', () => {
     const flags = createFeatureFlags({
+      AI_SEARCH: false,
+      STYLE_ASSISTANT: false,
+      COMPLETE_THE_LOOK: false,
       AI_PRODUCT_FILL: false,
       PARSER_1688: false,
       PARSER_PINDUODUO: false,
@@ -20,6 +23,9 @@ describe('feature flags', () => {
     });
 
     expect(flags.capabilities()).toEqual({
+      aiSearch: false,
+      styleAssistant: false,
+      completeTheLook: false,
       aiProductFill: false,
       parser1688: false,
       parserPinduoduo: false,
@@ -43,7 +49,9 @@ describe('feature flags', () => {
     expect(response.statusCode).toBe(200);
     expect(Object.keys(response.json()).sort()).toEqual([
       'aiProductFill',
+      'aiSearch',
       'autoCurrency',
+      'completeTheLook',
       'imageEmbeddings',
       'ipost',
       'n8n',
@@ -51,6 +59,7 @@ describe('feature flags', () => {
       'parserPinduoduo',
       'similarProducts',
       'smsVerification',
+      'styleAssistant',
       'telegramProductPublish',
       'visualSearch',
     ]);

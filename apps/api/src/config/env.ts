@@ -52,8 +52,19 @@ const envSchema = z.object({
   ),
   AI_PRODUCT_API_KEY: z.string().optional(),
   AI_PRODUCT_MODEL: z.string().min(1).default('gpt-4o-mini'),
+  AI_PROVIDER: z.enum(['openai-compatible']).default('openai-compatible'),
+  AI_API_URL: z.preprocess(
+    (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+    z.string().url().optional(),
+  ),
+  AI_API_KEY: z.string().optional(),
+  AI_MODEL: z.string().trim().min(1).max(100).default('gpt-4o-mini'),
+  AI_TIMEOUT_MS: z.coerce.number().int().min(250).max(30_000).default(10_000),
 
   // Feature flags are explicit deployment opt-ins; unfinished capabilities default off.
+  FEATURE_AI_SEARCH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_STYLE_ASSISTANT: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_COMPLETE_THE_LOOK: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_AI_PRODUCT_FILL: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_1688_PARSER: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_PINDUODUO_PARSER: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
@@ -69,6 +80,8 @@ const envSchema = z.object({
   VISUAL_SEARCH_RATE_LIMIT_MAX: z.coerce.number().int().positive().max(20).default(5),
   VISUAL_SEARCH_RATE_LIMIT_WINDOW_SEC: z.coerce.number().int().positive().max(3600).default(60),
   VISUAL_SEARCH_PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().max(30_000).default(10_000),
+  AI_REQUEST_RATE_LIMIT_MAX: z.coerce.number().int().positive().max(20).default(5),
+  AI_REQUEST_RATE_LIMIT_WINDOW_SEC: z.coerce.number().int().positive().max(3600).default(60),
   ACTIVE_IMAGE_EMBEDDING_VERSION: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/).default('v1'),
   SMS_API_URL: z.preprocess(
     (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
@@ -108,6 +121,7 @@ const envSchema = z.object({
     });
   }
   for (const [key, endpoint] of [
+    ['AI_API_URL', values.AI_API_URL],
     ['AI_PRODUCT_API_URL', values.AI_PRODUCT_API_URL],
     ['SMS_API_URL', values.SMS_API_URL],
   ] as const) {

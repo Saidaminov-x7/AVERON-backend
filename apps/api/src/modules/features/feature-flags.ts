@@ -1,6 +1,9 @@
 import { config } from '../../config';
 
 export const featureFlagNames = [
+  'AI_SEARCH',
+  'STYLE_ASSISTANT',
+  'COMPLETE_THE_LOOK',
   'AI_PRODUCT_FILL',
   'PARSER_1688',
   'PARSER_PINDUODUO',
@@ -25,6 +28,9 @@ export function createFeatureFlags(values: FeatureFlagValues) {
     },
     capabilities() {
       return {
+        aiSearch: values.AI_SEARCH,
+        styleAssistant: values.STYLE_ASSISTANT,
+        completeTheLook: values.COMPLETE_THE_LOOK,
         aiProductFill: values.AI_PRODUCT_FILL,
         parser1688: values.PARSER_1688,
         parserPinduoduo: values.PARSER_PINDUODUO,
@@ -42,6 +48,9 @@ export function createFeatureFlags(values: FeatureFlagValues) {
 }
 
 export const featureFlags = createFeatureFlags({
+  AI_SEARCH: config.FEATURE_AI_SEARCH,
+  STYLE_ASSISTANT: config.FEATURE_STYLE_ASSISTANT,
+  COMPLETE_THE_LOOK: config.FEATURE_COMPLETE_THE_LOOK,
   AI_PRODUCT_FILL: config.FEATURE_AI_PRODUCT_FILL,
   PARSER_1688: config.FEATURE_1688_PARSER,
   PARSER_PINDUODUO: config.FEATURE_PINDUODUO_PARSER,

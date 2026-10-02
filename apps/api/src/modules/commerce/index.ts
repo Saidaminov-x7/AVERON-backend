@@ -11,6 +11,8 @@ import { cartCheckoutModule } from './cart-checkout';
 import { commerceOrdersModule } from './orders';
 import { telegramPublicationModule } from './telegram-publication';
 import { productReviewsModule } from './product-reviews';
+import { catalogAssistantModule } from './catalog-assistant';
+import { publicProductDto } from './public-product-dto';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -53,35 +55,6 @@ function productOrderBy(sort?: string): Prisma.CommerceProductOrderByWithRelatio
   if (sort === 'price_asc') return { salePriceUzs: 'asc' };
   if (sort === 'price_desc') return { salePriceUzs: 'desc' };
   return { publishedAt: 'desc' };
-}
-
-function publicProductDto<T extends {
-  stock: number;
-  preorderEnabled: boolean;
-  preorderLimit: number;
-  preorderReserved: number;
-  preorderEstimatedAt: Date | null;
-  variants?: Array<{ stock: number; active: boolean }>;
-}>(product: T) {
-  const {
-    preorderEnabled,
-    preorderLimit,
-    preorderReserved,
-    preorderEstimatedAt,
-    ...publicProduct
-  } = product;
-  const preorderAvailable = preorderEnabled ? Math.max(0, preorderLimit - preorderReserved) : 0;
-  return {
-    ...publicProduct,
-    availability: {
-      inStock: product.variants
-        ? product.variants.some((variant) => variant.active && variant.stock > 0)
-        : product.stock > 0,
-      preorderEligible: preorderAvailable > 0,
-      preorderAvailable,
-      estimatedAvailableAt: preorderEnabled ? preorderEstimatedAt : null,
-    },
-  };
 }
 
 async function withDiagnosticStage<T>(stage: string, operation: () => Promise<T>): Promise<T> {
@@ -157,6 +130,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(commerceOrdersModule);
   app.register(telegramPublicationModule);
   app.register(productReviewsModule);
+  app.register(catalogAssistantModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
