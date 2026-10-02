@@ -61,7 +61,7 @@ describe('Telegram product cards', () => {
       locale: 'en',
       captionOverride: '<b>Click</b> & "buy"',
     });
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) => new Response(JSON.stringify({
       ok: true,
       result: { message_id: 42 },
     }), { status: 200 }));

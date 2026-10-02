@@ -19,7 +19,7 @@ export const registerHandler = async (
       data: {
         type: 'NEW_USER',
         title: 'Новый пользователь',
-        message: `Зарегистрирован пользователь ${user.name} (${user.email})`,
+        message: 'Зарегистрирован новый пользователь.',
         link: '/users',
       },
     }).catch(() => {});
@@ -31,15 +31,11 @@ export const registerHandler = async (
         action: 'USER_REGISTERED',
         resource: 'user',
         resourceId: user.id,
-        meta: { email: user.email, name: user.name },
       },
     }).catch(() => {});
 
     const { logUserActivity } = await import('../../lib/activityLogger');
-    void logUserActivity(request.server.prisma, user.id, 'REGISTER', request, {
-      email: user.email,
-      name: user.name,
-    });
+    void logUserActivity(request.server.prisma, user.id, 'REGISTER', request);
 
     return reply.status(201).send({
       id: user.id,
@@ -48,11 +44,13 @@ export const registerHandler = async (
       role: user.role,
     });
   } catch (err) {
-    const error = err as Error;
-    request.log.warn({ email: dto.email }, `Registration failed: ${error.message}`);
+    request.log.warn({
+      requestId: request.id,
+      errorType: err instanceof Error ? err.name : 'unknown',
+    }, 'Registration failed');
 
     // Не утекаем детали — только "user already exists" — safe to expose
-    if (error.message.includes('already exists')) {
+    if (err instanceof Error && err.message.includes('already exists')) {
       return reply.status(409).send({ message: 'User with this email or phone already exists' });
     }
 

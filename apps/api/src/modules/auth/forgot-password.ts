@@ -70,9 +70,8 @@ export const forgotPasswordHandler = async (
       await sendTelegramMessage(
         adminChatId,
         `🔐 <b>Запрос на сброс пароля</b>\n\n` +
-        `👤 Пользователь: <b>${user.name}</b> (${user.email})\n` +
         `🌐 Локаль: <code>${userLocale}</code>\n` +
-        `<i>Письмо со ссылкой отправлено пользователю, если email-провайдер настроен.</i>`,
+        `<i>Письмо отправлено, если email-провайдер настроен.</i>`,
         'HTML',
         request.log,
       ).catch(() => {});
@@ -145,11 +144,15 @@ export const forgotPasswordHandler = async (
         }),
       });
     } catch (err) {
-      request.log.error({ err }, '[ForgotPassword] Error sending email via Resend');
+      request.log.error({
+        requestId: request.id,
+        userId: user.id,
+        errorType: err instanceof Error ? err.name : 'unknown',
+      }, '[ForgotPassword] Error sending email via Resend');
     }
   } else {
     request.log.warn(
-      { userId: user.id, email: user.email },
+      { userId: user.id },
       '[ForgotPassword] RESEND_API_KEY не настроен — email со ссылкой сброса НЕ отправлен пользователю!',
     );
   }
@@ -218,14 +221,13 @@ export const resetPasswordHandler = async (
       action: 'PASSWORD_RESET_COMPLETED',
       resource: 'user',
       resourceId: updatedUser.id,
-      meta: { email: updatedUser.email },
       ip: request.ip,
       userAgent: request.headers['user-agent'],
       timestamp: new Date(),
     },
   }).catch(() => {});
 
-  request.log.info({ userId: updatedUser.id, email: updatedUser.email }, 'Password successfully reset');
+  request.log.info({ userId: updatedUser.id }, 'Password successfully reset');
 
   return reply.send({
     message: 'Пароль успешно изменен. Теперь вы можете войти с новым паролем.',

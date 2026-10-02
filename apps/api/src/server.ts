@@ -49,7 +49,7 @@ const prisma = new PrismaClient({
 // C6: Предупреждение о медленных Prisma-запросах (> 500мс)
 prisma.$on('query', (e) => {
   if (e.duration > 500) {
-    console.warn(`[SLOW QUERY] ${e.duration}ms: ${e.query.slice(0, 200)}`);
+    server.log.warn({ durationMs: e.duration }, 'Slow Prisma query');
   }
 });
 
@@ -273,7 +273,7 @@ server.get('/health/live', {
 
 server.get('/health/ai', {
   schema: { tags: ['Health'] },
-}, async (_req, reply) => {
+}, async (request, reply) => {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
@@ -283,29 +283,29 @@ server.get('/health/ai', {
     }).finally(() => clearTimeout(timeout));
 
     if (res.ok) {
-      const data: any = await res.json().catch(() => ({}));
+      await res.body?.cancel();
       return reply.send({
         status: 'up',
         service: 'ollama',
-        url: config.OLLAMA_BASE_URL,
-        model: config.OLLAMA_MODEL,
-        models: data.models?.map((m: any) => m.name) || [],
         timestamp: new Date().toISOString(),
       });
     }
+    await res.body?.cancel();
     return reply.status(503).send({
       status: 'down',
       service: 'ollama',
-      url: config.OLLAMA_BASE_URL,
       statusCode: res.status,
       timestamp: new Date().toISOString(),
     });
-  } catch (err: any) {
+  } catch (error: unknown) {
+    request.log.warn({
+      requestId: request.id,
+      errorType: error instanceof Error ? error.name : 'unknown',
+    }, 'AI health check failed');
     return reply.status(503).send({
       status: 'down',
       service: 'ollama',
-      url: config.OLLAMA_BASE_URL,
-      error: err.message,
+      error: 'AI_SERVICE_UNAVAILABLE',
       timestamp: new Date().toISOString(),
     });
   }
@@ -392,27 +392,25 @@ server.addHook('onResponse', async (request, reply) => {
 
 server.setErrorHandler((error, request, reply) => {
   const isProduction = config.NODE_ENV === 'production';
-  const diagnosticStage = 'diagnosticStage' in error && typeof error.diagnosticStage === 'string'
-    ? error.diagnosticStage
+  const errorProperties: Record<string, unknown> = typeof error === 'object' && error !== null
+    ? error as Record<string, unknown>
+    : {};
+  const errorType = error instanceof Error ? error.name : 'UnknownError';
+  const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
+  const errorCode = typeof errorProperties.code === 'string' ? errorProperties.code : undefined;
+  const diagnosticStage = typeof errorProperties.diagnosticStage === 'string'
+    ? errorProperties.diagnosticStage
     : 'request_handler';
+  const statusCode = typeof errorProperties.statusCode === 'number' ? errorProperties.statusCode : 500;
 
-  // Логируем всегда — с деталями
+  // Keep request diagnostics useful without recording query strings or error payloads.
   request.log.error({
     requestId: request.id,
     diagnosticStage,
-    safeDescription: `Request failed during ${diagnosticStage}`,
-    err: {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-      code: error.code,
-      ...(error instanceof ZodError
-        ? { issues: error.issues.map(({ code, path, message }) => ({ code, path, message })) }
-        : {}),
-      ...('meta' in error ? { meta: error.meta } : {}),
-    },
+    errorType,
+    errorCode,
     method: request.method,
-    url: request.url,
+    route: request.routeOptions.url,
     userId: request.user?.userId,
   }, 'Request error');
 
@@ -429,31 +427,30 @@ server.setErrorHandler((error, request, reply) => {
   }
 
   // Fastify validation errors (400)
-  if (error.validation) {
+  if (Array.isArray(errorProperties.validation)) {
     return reply.status(400).send({
       statusCode: 400,
       error: 'Bad Request',
       message: 'Validation failed',
-      details: isProduction ? undefined : error.validation,
+      details: isProduction ? undefined : errorProperties.validation,
     });
   }
 
   // Rate limit (429)
-  if (error.statusCode === 429) {
+  if (statusCode === 429) {
     return reply.status(429).send({
       statusCode: 429,
       error: 'Too Many Requests',
-      message: error.message,
+      message: errorMessage,
     });
   }
 
   // Известные ошибки приложения
-  const statusCode = error.statusCode ?? 500;
   return reply.status(statusCode).send({
     statusCode,
-    error: statusCode === 500 ? 'Internal Server Error' : error.name,
+    error: statusCode === 500 ? 'Internal Server Error' : errorType,
     // В проде не отдаём детали 500-ых ошибок наружу
-    message: statusCode === 500 && isProduction ? 'An unexpected error occurred' : error.message,
+    message: statusCode === 500 && isProduction ? 'An unexpected error occurred' : errorMessage,
   });
 });
 
