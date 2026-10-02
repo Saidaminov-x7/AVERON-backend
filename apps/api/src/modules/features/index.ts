@@ -71,8 +71,8 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       degraded,
       lastSuccessfulOperation: null,
     });
-    return [
-      capability('1688', featureFlags.isEnabled('PARSER_1688'), featureFlags.isEnabled('PARSER_1688'), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
+    const diagnostics = [
+      capability('1688', featureFlags.isEnabled('PARSER_1688'), false, 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
       capability('Pinduoduo', featureFlags.isEnabled('PARSER_PINDUODUO'), false, 'BLOCKED_BY_PROVIDER', 'NOT_LIVE_VERIFIED'),
       capability('AI Product Fill', featureFlags.isEnabled('AI_PRODUCT_FILL'), Boolean(config.AI_PRODUCT_API_URL && config.AI_PRODUCT_API_KEY), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
       capability('iPost', featureFlags.isEnabled('IPOST'), false, 'NOT_CONFIGURED', 'NOT_LIVE_VERIFIED'),
@@ -82,5 +82,15 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       capability('SMS', featureFlags.isEnabled('SMS_VERIFICATION'), Boolean(config.SMS_API_URL && config.SMS_API_TOKEN), 'IMPLEMENTED', 'TESTED_WITH_MOCK'),
       capability('Redis', true, Boolean(config.REDIS_URL), 'IMPLEMENTED', redisHealthy ? 'LIVE_VERIFIED' : 'NOT_LIVE_VERIFIED', !redisHealthy),
     ];
+    return diagnostics.map((item) => item.name === 'Currency'
+      ? {
+        ...item,
+        rateProvider: null,
+        currentRate: null,
+        rateFetchedAt: null,
+        providerTimestamp: null,
+        stale: null,
+      }
+      : item);
   });
 };

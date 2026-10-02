@@ -53,7 +53,9 @@ function newShareToken(): string {
 }
 
 export const wishlistModule: FastifyPluginAsync = async (app) => {
-  app.get('/wishlist', { preHandler: authMiddleware }, async (request) => {
+  app.get('/wishlist', { preHandler: authMiddleware }, async (request, reply) => {
+    // Wishlist responses contain user-specific state and must not be cached by shared proxies.
+    reply.header('cache-control', 'private, no-store');
     const [favorites, owner] = await Promise.all([
       app.prisma.productFavorite.findMany({
         where: { userId: request.user.userId, product: { status: 'PUBLISHED' } },
@@ -147,6 +149,7 @@ export const wishlistModule: FastifyPluginAsync = async (app) => {
   });
 
   app.get<{ Params: { token: string } }>('/wishlists/shared/:token', async (request, reply) => {
+    reply.header('cache-control', 'private, no-store');
     const parsed = shareTokenParams.safeParse(request.params);
     if (!parsed.success) return reply.status(404).send({ code: 'SHARED_WISHLIST_NOT_FOUND', message: 'Shared wishlist not found' });
     const owner = await app.prisma.user.findFirst({

@@ -57,6 +57,8 @@ function createTestApp(options: {
   products?: Record<string, any>;
   cartItems?: Array<Record<string, any>>;
   initialOrders?: Array<Record<string, any>>;
+  promoCodes?: Array<Record<string, any>>;
+  failOrderCreation?: boolean;
 } = {}) {
   const products = new Map<string, any>(Object.entries(options.products ?? { [PRODUCT]: makeProduct() }));
   const carts = new Map<string, { id: string; userId: string }>();
@@ -64,6 +66,8 @@ function createTestApp(options: {
   if (cartItems.length > 0) carts.set(USER_A, { id: CART, userId: USER_A });
   if (cartItems.some((item) => item.cartId === CART_B)) carts.set(USER_B, { id: CART_B, userId: USER_B });
   const idempotency = new Map<string, Record<string, any>>();
+  const promos = new Map((options.promoCodes ?? []).map((promo) => [promo.normalizedCode, structuredClone(promo)]));
+  const promoUsages = new Map<string, Record<string, any>>();
   const orders = options.initialOrders ?? [];
   const statusHistory: Array<Record<string, unknown>> = [];
   let nextId = 20;
@@ -167,8 +171,23 @@ function createTestApp(options: {
       return row;
     }),
   };
+  const commercePromoCode = {
+    findUnique: vi.fn(async ({ where }: any) => promos.get(where.normalizedCode) ?? null),
+  };
+  const commercePromoCodeUsage = {
+    findUnique: vi.fn(async ({ where }: any) =>
+      promoUsages.get(`${where.promoCodeId_userId.promoCodeId}:${where.promoCodeId_userId.userId}`) ?? null),
+    create: vi.fn(async ({ data }: any) => {
+      const key = `${data.promoCodeId}:${data.userId}`;
+      if (promoUsages.has(key)) throw Object.assign(new Error('Promo already used'), { code: 'P2002' });
+      const usage = { id: id(), usedAt: new Date('2026-10-01T10:00:00Z'), ...data };
+      promoUsages.set(key, usage);
+      return usage;
+    }),
+  };
   const commerceOrder = {
     create: vi.fn(async ({ data }: any) => {
+      if (options.failOrderCreation) throw new Error('Synthetic order write failure');
       const order = {
         id: ORDER_ID,
         ...data,
@@ -221,12 +240,23 @@ function createTestApp(options: {
     }),
   };
   const tx = {
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(async (query: TemplateStringsArray, promoId?: string) => {
+      if (!query.join('').includes('UPDATE "CommercePromoCode"') || !promoId) return [];
+      const promo = [...promos.values()].find((candidate) => candidate.id === promoId);
+      if (!promo || !promo.isActive
+        || (promo.startsAt && promo.startsAt > new Date())
+        || (promo.expiresAt && promo.expiresAt <= new Date())
+        || (promo.maxActivations !== null && promo.usedActivations >= promo.maxActivations)) return [];
+      promo.usedActivations += 1;
+      return [{ id: promo.id }];
+    }),
     commerceCart,
     commerceCartItem,
     commerceProduct,
     commerceProductVariant,
     commerceCheckoutIdempotency,
+    commercePromoCode,
+    commercePromoCodeUsage,
     commerceOrder,
     commerceDelivery,
     commerceDeliveryStatusHistory,
@@ -266,6 +296,8 @@ function createTestApp(options: {
       const cartItemsSnapshot = structuredClone(cartItems);
       const ordersSnapshot = structuredClone(orders);
       const idempotencySnapshot = structuredClone([...idempotency.entries()]);
+      const promoSnapshot = structuredClone([...promos.entries()]);
+      const promoUsageSnapshot = structuredClone([...promoUsages.entries()]);
       const historySnapshot = structuredClone(statusHistory);
       try {
         return await callback(tx);
@@ -276,6 +308,10 @@ function createTestApp(options: {
         orders.splice(0, orders.length, ...ordersSnapshot);
         idempotency.clear();
         for (const [idempotencyKey, row] of idempotencySnapshot) idempotency.set(idempotencyKey, row);
+        promos.clear();
+        for (const [promoCode, promo] of promoSnapshot) promos.set(promoCode, promo);
+        promoUsages.clear();
+        for (const [usageKey, usage] of promoUsageSnapshot) promoUsages.set(usageKey, usage);
         statusHistory.splice(0, statusHistory.length, ...historySnapshot);
         throw error;
       } finally {
@@ -288,12 +324,35 @@ function createTestApp(options: {
   app.decorate('prisma', prisma as never);
   app.register(cartCheckoutModule, { prefix: '/api/v1' });
   app.register(commerceOrdersModule, { prefix: '/api/v1' });
-  return { app, prisma, products, cartItems, carts, orders, statusHistory, idempotency };
+  return { app, prisma, products, cartItems, carts, orders, statusHistory, idempotency, promos, promoUsages };
 }
 
 async function tokenFor(app: ReturnType<typeof Fastify>, userId: string) {
   await app.ready();
   return app.jwt.sign({ userId, role: userId === ADMIN ? 'ADMIN' : 'USER' });
+}
+
+function promoCode(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'promo-save-10',
+    code: 'SAVE10',
+    normalizedCode: 'SAVE10',
+    discountPercent: 10,
+    maxActivations: 5,
+    usedActivations: 0,
+    isActive: true,
+    startsAt: null,
+    expiresAt: null,
+    ...overrides,
+  };
+}
+
+function checkoutPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    contact: { name: 'Buyer', phone: '+998901234567' },
+    deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+    ...overrides,
+  };
 }
 
 describe('commerce cart and checkout API', () => {
@@ -576,6 +635,151 @@ describe('commerce cart and checkout API', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('rejects fake client discounts and stacked promo payloads without consuming a promo', async () => {
+    const { app, promos } = createTestApp({
+      cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 }],
+      promoCodes: [promoCode()],
+    });
+    const token = await tokenFor(app, USER_A);
+    const headers = { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-tamper-123' };
+    const fakeDiscount = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers,
+      payload: checkoutPayload({ promoCode: 'SAVE10', discountPercent: 100 }),
+    });
+    const stackedPromos = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { ...headers, 'idempotency-key': 'promo-stack-123' },
+      payload: checkoutPayload({ promoCodes: ['SAVE10', 'OTHER'] }),
+    });
+
+    expect(fakeDiscount.statusCode).toBe(400);
+    expect(stackedPromos.statusCode).toBe(400);
+    expect(promos.get('SAVE10')?.usedActivations).toBe(0);
+    await app.close();
+  });
+
+  it('consumes a promo once on successful order creation and preserves its order snapshot', async () => {
+    const { app, orders, promos, promoUsages } = createTestApp({
+      cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 2 }],
+      promoCodes: [promoCode()],
+    });
+    const token = await tokenFor(app, USER_A);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-success-123' },
+      payload: checkoutPayload({ promoCode: 'save10' }),
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json()).toMatchObject({
+      subtotal: 25000,
+      discount: 2500,
+      totalRevenue: 22500,
+    });
+    expect(promos.get('SAVE10')?.usedActivations).toBe(1);
+    expect(promoUsages.get('promo-save-10:' + USER_A)).toMatchObject({
+      discountPercentSnapshot: 10,
+      subtotal: 25000,
+      discountAmount: 2500,
+      finalTotal: 22500,
+    });
+
+    promos.get('SAVE10')!.discountPercent = 15;
+    expect(orders[0].discount).toBe(2500);
+    expect(promoUsages.get('promo-save-10:' + USER_A)?.discountPercentSnapshot).toBe(10);
+    await app.close();
+  });
+
+  it('rolls back a promo activation when order creation fails', async () => {
+    const { app, orders, promos, promoUsages } = createTestApp({
+      cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 }],
+      promoCodes: [promoCode()],
+      failOrderCreation: true,
+    });
+    const token = await tokenFor(app, USER_A);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-failure-123' },
+      payload: checkoutPayload({ promoCode: 'SAVE10' }),
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(promos.get('SAVE10')?.usedActivations).toBe(0);
+    expect(promoUsages.size).toBe(0);
+    expect(orders).toHaveLength(0);
+    await app.close();
+  });
+
+  it('allows only one checkout to consume the final promo activation', async () => {
+    const { app, orders, promos, promoUsages } = createTestApp({
+      cartItems: [
+        { id: 'cart-item-a', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 },
+        { id: 'cart-item-b', cartId: CART_B, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 },
+      ],
+      promoCodes: [promoCode({ maxActivations: 1 })],
+    });
+    const tokenA = await tokenFor(app, USER_A);
+    const tokenB = await tokenFor(app, USER_B);
+    const makeRequest = (token: string, key: string) => app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': key },
+      payload: checkoutPayload({ promoCode: 'SAVE10' }),
+    });
+    const [responseA, responseB] = await Promise.all([
+      makeRequest(tokenA, 'promo-last-a-123'),
+      makeRequest(tokenB, 'promo-last-b-123'),
+    ]);
+
+    expect([responseA.statusCode, responseB.statusCode].sort()).toEqual([201, 400]);
+    const rejected = [responseA, responseB].find((response) => response.statusCode !== 201);
+    expect(rejected?.json().code).toBe('PROMO_LIMIT_REACHED');
+    expect(orders).toHaveLength(1);
+    expect(promos.get('SAVE10')?.usedActivations).toBe(1);
+    expect(promoUsages.size).toBe(1);
+    await app.close();
+  });
+
+  it('prevents a customer from using the same promo a second time', async () => {
+    const { app, cartItems, promos, promoUsages } = createTestApp({
+      cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 }],
+      promoCodes: [promoCode()],
+    });
+    const token = await tokenFor(app, USER_A);
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-first-use-123' },
+      payload: checkoutPayload({ promoCode: 'SAVE10' }),
+    });
+    cartItems.push({
+      id: 'cart-item-second',
+      cartId: CART,
+      itemKey: `${PRODUCT}:none`,
+      productId: PRODUCT,
+      variantId: null,
+      quantity: 1,
+    });
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-second-use-123' },
+      payload: checkoutPayload({ promoCode: 'SAVE10' }),
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(400);
+    expect(second.json().code).toBe('PROMO_ALREADY_USED');
+    expect(promos.get('SAVE10')?.usedActivations).toBe(1);
+    expect(promoUsages.size).toBe(1);
     await app.close();
   });
 

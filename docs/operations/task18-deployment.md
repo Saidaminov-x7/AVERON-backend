@@ -7,9 +7,10 @@
 | Shared Redis rate limiting | `IMPLEMENTED`; shared store and fail-closed on store errors |
 | SMS provider boundary | `IMPLEMENTED`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; disabled by default |
 | n8n event delivery | `TESTED_WITH_MOCK`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; disabled by default |
-| 1688 Parser | `IMPLEMENTED`, `NOT_LIVE_VERIFIED`; existing outbound URL restrictions retained |
-| Pinduoduo provider | `BLOCKED`; no provider adapter is registered |
-| iPost and currency provider | `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; no live credentials/provider verification |
+| 1688 Parser | `IMPLEMENTED`, `NOT_LIVE_VERIFIED`; URL/DNS/redirect restrictions and a two-request Playwright concurrency bound are enforced |
+| Pinduoduo provider | `TESTED_WITH_MOCK`, `BLOCKED_BY_PROVIDER`, `NOT_LIVE_VERIFIED`; normalized adapter is tested, but no real transport is registered |
+| iPost shipping | `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; only the provider contract exists, and no official API contract or credentials are available to safely implement or verify shipment calls |
+| Currency rate core | `IMPLEMENTED`; provider-neutral CNY→UZS rate validation and a versioned Redis-compatible cache boundary are tested with a mock provider. No real rate provider is registered, so `FEATURE_AUTO_CURRENCY=false`, diagnostics show no current rate, and stale data is returned only when both the caller and business policy explicitly allow it |
 | Cloudflare edge/origin rules | `NOT_CONFIGURED`; deployer configuration is required |
 
 Credentials belong only in the server environment. `.env.example` intentionally leaves signing keys and provider credentials empty.

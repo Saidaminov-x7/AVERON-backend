@@ -137,8 +137,13 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
       const normalizedCode = parsed.data.code === undefined
         ? existing.normalizedCode
         : normalizePromoCode(parsed.data.code);
-      const promo = await app.prisma.commercePromoCode.update({
-        where: { id: existing.id },
+      const updated = await app.prisma.commercePromoCode.updateMany({
+        where: {
+          id: existing.id,
+          ...(parsed.data.maxActivations !== undefined && parsed.data.maxActivations !== null
+            ? { usedActivations: { lte: parsed.data.maxActivations } }
+            : {}),
+        },
         data: {
           ...(parsed.data.code !== undefined ? { code: normalizedCode, normalizedCode } : {}),
           ...(parsed.data.discountPercent !== undefined ? { discountPercent: parsed.data.discountPercent } : {}),
@@ -148,6 +153,11 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
           ...(parsed.data.expiresAt !== undefined ? { expiresAt } : {}),
         },
       });
+      if (updated.count !== 1) {
+        return reply.status(409).send({ code: 'PROMO_LIMIT_BELOW_USAGE', message: 'Activation limit cannot be lower than usage already consumed' });
+      }
+      const promo = await app.prisma.commercePromoCode.findUnique({ where: { id: existing.id } });
+      if (!promo) return reply.status(404).send({ code: 'PROMO_NOT_FOUND', message: 'Promo code was not found' });
       return {
         ...promo,
         remainingActivations: remainingActivations(promo.maxActivations, promo.usedActivations),

@@ -72,7 +72,11 @@ export interface TelegramProductPublisher {
 }
 
 export interface ExchangeRateProvider {
-  getRate(baseCurrency: 'CNY', quoteCurrency: 'UZS'): Promise<number>;
+  readonly id: string;
+  getRate(
+    baseCurrency: 'CNY',
+    quoteCurrency: 'UZS',
+  ): Promise<{ rate: number; providerTimestamp: string | null }>;
 }
 
 export interface SmsProvider {

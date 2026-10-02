@@ -17,6 +17,7 @@ const updateOutfitSchema = z.object({
   name: z.string().trim().min(1).max(80).optional(),
   items: itemListSchema.optional(),
 }).strict().refine((value) => value.name !== undefined || value.items !== undefined);
+const outfitParamsSchema = z.object({ outfitId: z.string().uuid() });
 
 type Db = PrismaClient | Prisma.TransactionClient;
 type ItemInput = z.infer<typeof outfitItemSchema>;
@@ -108,6 +109,7 @@ function itemDto(item: {
 
 const savedOutfitInclude = {
   items: {
+    where: { product: { is: { status: 'PUBLISHED' as const } } },
     orderBy: { sortOrder: 'asc' as const },
     include: {
       product: {
@@ -164,8 +166,10 @@ export const outfitsModule: FastifyPluginAsync = async (app) => {
   });
 
   app.get<{ Params: { outfitId: string } }>('/outfits/:outfitId', { preHandler: authMiddleware }, async (request, reply) => {
+    const params = outfitParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ code: 'INVALID_OUTFIT_ID', message: 'Invalid outfit ID' });
     const outfit = await app.prisma.outfit.findFirst({
-      where: { id: request.params.outfitId, userId: request.user.userId },
+      where: { id: params.data.outfitId, userId: request.user.userId },
       include: savedOutfitInclude,
     });
     if (!outfit) return reply.status(404).send({ code: 'OUTFIT_NOT_FOUND', message: 'Outfit not found' });
@@ -182,10 +186,12 @@ export const outfitsModule: FastifyPluginAsync = async (app) => {
   });
 
   app.patch<{ Params: { outfitId: string } }>('/outfits/:outfitId', { preHandler: authMiddleware }, async (request, reply) => {
+    const params = outfitParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ code: 'INVALID_OUTFIT_ID', message: 'Invalid outfit ID' });
     const parsed = updateOutfitSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_OUTFIT', message: 'Invalid outfit update' });
     const owned = await app.prisma.outfit.findFirst({
-      where: { id: request.params.outfitId, userId: request.user.userId },
+      where: { id: params.data.outfitId, userId: request.user.userId },
       select: { id: true },
     });
     if (!owned) return reply.status(404).send({ code: 'OUTFIT_NOT_FOUND', message: 'Outfit not found' });
@@ -210,8 +216,10 @@ export const outfitsModule: FastifyPluginAsync = async (app) => {
   });
 
   app.delete<{ Params: { outfitId: string } }>('/outfits/:outfitId', { preHandler: authMiddleware }, async (request, reply) => {
+    const params = outfitParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ code: 'INVALID_OUTFIT_ID', message: 'Invalid outfit ID' });
     const deleted = await app.prisma.outfit.deleteMany({
-      where: { id: request.params.outfitId, userId: request.user.userId },
+      where: { id: params.data.outfitId, userId: request.user.userId },
     });
     if (!deleted.count) return reply.status(404).send({ code: 'OUTFIT_NOT_FOUND', message: 'Outfit not found' });
     return reply.status(204).send();
@@ -221,8 +229,10 @@ export const outfitsModule: FastifyPluginAsync = async (app) => {
     preHandler: authMiddleware,
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
   }, async (request, reply) => {
+    const params = outfitParamsSchema.safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ code: 'INVALID_OUTFIT_ID', message: 'Invalid outfit ID' });
     const outfit = await app.prisma.outfit.findFirst({
-      where: { id: request.params.outfitId, userId: request.user.userId },
+      where: { id: params.data.outfitId, userId: request.user.userId },
       select: { items: { orderBy: { sortOrder: 'asc' }, select: { productId: true, variantId: true } } },
     });
     if (!outfit) return reply.status(404).send({ code: 'OUTFIT_NOT_FOUND', message: 'Outfit not found' });
@@ -273,9 +283,10 @@ export const outfitsModule: FastifyPluginAsync = async (app) => {
         });
         const stock = variant?.stock ?? product.stock;
         const preorderAvailable = Math.max(0, product.preorderLimit - product.preorderReserved);
-        if ((current?.quantity ?? 0) >= stock && (
-          !product.preorderEnabled || (current?.quantity ?? 0) >= stock + preorderAvailable
-        )) {
+        const nextQuantity = (current?.quantity ?? 0) + 1;
+        const availableFromStock = nextQuantity <= stock;
+        const availableAsPreorder = product.preorderEnabled && nextQuantity <= preorderAvailable;
+        if (!availableFromStock && !availableAsPreorder) {
           rejected.push({ ...item, code: 'INSUFFICIENT_STOCK' });
           continue;
         }
