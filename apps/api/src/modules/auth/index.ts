@@ -7,7 +7,7 @@ import { loginHandler } from './login';
 import { verify2faHandler, resend2faHandler } from './verify-2fa';
 import { refreshHandler } from './refresh';
 import { logoutHandler } from './logout';
-import { meHandler } from './me';
+import { meHandler, updateCatalogCountryPreferenceHandler } from './me';
 import { forgotPasswordHandler, resetPasswordHandler } from './forgot-password';
 import { exportUserDataHandler } from './export';
 import { authMiddleware } from '../../lib/authMiddleware';
@@ -110,6 +110,7 @@ export const authModule: FastifyPluginAsync = async (server) => {
 
   // Текущий пользователь (требует auth)
   server.get('/me', { preHandler: [authMiddleware] }, meHandler);
+  server.patch('/me/catalog-country', { preHandler: [authMiddleware] }, updateCatalogCountryPreferenceHandler);
   server.get('/sessions', { preHandler: [authMiddleware] }, listMySessions);
   server.delete<{ Params: { id: string } }>('/sessions/:id', { preHandler: [authMiddleware] }, revokeMySession);
   server.delete('/sessions', { preHandler: [authMiddleware] }, revokeOtherSessions);

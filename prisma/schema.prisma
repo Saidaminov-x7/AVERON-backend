@@ -127,6 +127,7 @@ model User {
   passwordHash     String
   name             String
   avatar           String?
+  defaultCatalogCountry ProductCountry?
   role             Role       @default(USER)
   adminRole        AdminRole? // Роль сотрудника в админке
   lastLoginAt      DateTime? // Дата последнего входа

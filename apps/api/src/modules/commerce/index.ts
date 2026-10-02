@@ -46,12 +46,18 @@ export function buildProductWhere(
     };
   }
   if (query.q?.trim()) {
-    const q = query.q.trim();
-    where.OR = [
-      { id: { equals: q } },
-      { slug: { contains: q, mode: 'insensitive' } },
-      { material: { contains: q, mode: 'insensitive' } },
-    ];
+    const tokens = query.q.trim().split(/\s+/).filter(Boolean).slice(0, 6);
+    where.AND = tokens.map((token) => ({
+      OR: [
+        { id: { equals: token } },
+        { slug: { contains: token, mode: 'insensitive' } },
+        { material: { contains: token, mode: 'insensitive' } },
+        ...(['ru', 'uz', 'en'] as const).flatMap((locale) => [
+          { translations: { path: [locale, 'title'], string_contains: token } },
+          { translations: { path: [locale], string_contains: token } },
+        ]),
+      ],
+    }));
   }
   return where;
 }
@@ -160,6 +166,33 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   });
 
   app.get('/categories', async () => app.prisma.commerceCategory.findMany({ where: { active: true }, orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }] }));
+
+  app.get('/catalog-facets', async () => {
+    const publishedVariants = {
+      active: true,
+      product: { is: { status: ProductPublicationStatus.PUBLISHED } },
+    };
+    const [sizes, colors] = await Promise.all([
+      app.prisma.commerceProductVariant.findMany({
+        where: { ...publishedVariants, size: { not: null } },
+        select: { size: true },
+        distinct: ['size'],
+        orderBy: { size: 'asc' },
+        take: 200,
+      }),
+      app.prisma.commerceProductVariant.findMany({
+        where: { ...publishedVariants, color: { not: null } },
+        select: { color: true },
+        distinct: ['color'],
+        orderBy: { color: 'asc' },
+        take: 200,
+      }),
+    ]);
+    return {
+      sizes: sizes.map((variant) => variant.size?.trim()).filter((value): value is string => Boolean(value)),
+      colors: colors.map((variant) => variant.color?.trim()).filter((value): value is string => Boolean(value)),
+    };
+  });
 
   app.get('/admin/categories', { preHandler: adminMiddleware }, async () =>
     app.prisma.commerceCategory.findMany({

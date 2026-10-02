@@ -3,23 +3,43 @@ import { ProductCountry, ProductPublicationStatus } from '@prisma/client';
 
 export const productCountrySchema = z.nativeEnum(ProductCountry);
 
-export const productListQuerySchema = z.object({
-  q: z.string().optional(),
-  country: productCountrySchema.optional(),
-  category: z.string().optional(),
-  audience: z.string().optional(),
-  size: z.string().optional(),
-  color: z.string().optional(),
-  minPrice: z.string().optional(),
-  maxPrice: z.string().optional(),
-  sort: z.string().optional(),
-  page: z.string().optional(),
-  limit: z.string().optional(),
+const productPriceQuerySchema = z.string()
+  .regex(/^\d{1,14}(?:\.\d{1,2})?$/, 'Price must be a nonnegative UZS amount');
+const optionalQueryValue = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((value) => value === '' ? undefined : value, schema.optional());
+
+const productListQueryBaseSchema = z.object({
+  q: z.string().trim().max(200).optional(),
+  country: optionalQueryValue(productCountrySchema),
+  category: optionalQueryValue(z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(120)),
+  audience: optionalQueryValue(z.enum(['everyone', 'women', 'men', 'kids'])),
+  size: optionalQueryValue(z.string().trim().min(1).max(32)),
+  color: optionalQueryValue(z.string().trim().min(1).max(48)),
+  minPrice: optionalQueryValue(productPriceQuerySchema),
+  maxPrice: optionalQueryValue(productPriceQuerySchema),
+  sort: z.enum(['newest', 'price_asc', 'price_desc']).optional(),
+  page: z.string().regex(/^[1-9]\d{0,5}$/).optional(),
+  limit: z.string().regex(/^[1-9]\d{0,2}$/).optional(),
 });
 
-export const adminProductListQuerySchema = productListQuerySchema.extend({
+function validateProductPriceRange(
+  query: { minPrice?: string; maxPrice?: string },
+  context: z.RefinementCtx,
+) {
+  if (query.minPrice && query.maxPrice && Number(query.minPrice) > Number(query.maxPrice)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['maxPrice'],
+      message: 'Maximum price must be greater than or equal to minimum price',
+    });
+  }
+}
+
+export const productListQuerySchema = productListQueryBaseSchema.superRefine(validateProductPriceRange);
+
+export const adminProductListQuerySchema = productListQueryBaseSchema.extend({
   status: z.nativeEnum(ProductPublicationStatus).optional(),
-});
+}).superRefine(validateProductPriceRange);
 
 export const adminImportListQuerySchema = z.object({
   status: z.enum(['PENDING_REVIEW', 'APPROVED', 'REJECTED']).optional(),

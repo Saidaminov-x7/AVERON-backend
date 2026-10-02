@@ -89,15 +89,19 @@ describe('commerce product country validation', () => {
   it.each(['CN', 'US', 'TR', 'IT', 'GB'])('builds a database filter for %s with other list params intact', (country) => {
     const query = productListQuerySchema.parse({ country, page: '2', limit: '15', q: 'coat' });
     const where = buildProductWhere(query, 'PUBLISHED');
+    const andConditions = Array.isArray(where.AND) ? where.AND : [];
 
-    expect(where).toMatchObject({
-      country,
-      status: 'PUBLISHED',
-      OR: [
+    expect(where).toMatchObject({ country, status: 'PUBLISHED' });
+    expect(andConditions).toHaveLength(1);
+    expect(andConditions[0]).toMatchObject({
+      OR: expect.arrayContaining([
         { id: { equals: 'coat' } },
         { slug: { contains: 'coat', mode: 'insensitive' } },
         { material: { contains: 'coat', mode: 'insensitive' } },
-      ],
+        { translations: { path: ['ru', 'title'], string_contains: 'coat' } },
+        { translations: { path: ['uz', 'title'], string_contains: 'coat' } },
+        { translations: { path: ['en', 'title'], string_contains: 'coat' } },
+      ]),
     });
     expect(query.page).toBe('2');
     expect(query.limit).toBe('15');
@@ -105,6 +109,54 @@ describe('commerce product country validation', () => {
 
   it('does not add a country condition when no country was selected', () => {
     expect(buildProductWhere(productListQuerySchema.parse({}))).not.toHaveProperty('country');
+  });
+
+  it('validates and combines supported catalog filters', () => {
+    const query = productListQuerySchema.parse({
+      q: 'coat',
+      country: 'CN',
+      category: 'outerwear',
+      audience: 'women',
+      size: 'M',
+      color: 'black',
+      minPrice: '100000',
+      maxPrice: '500000',
+      sort: 'price_asc',
+      page: '2',
+      limit: '12',
+    });
+    expect(query).toMatchObject({
+      country: 'CN',
+      category: 'outerwear',
+      audience: 'women',
+      size: 'M',
+      color: 'black',
+      minPrice: '100000',
+      maxPrice: '500000',
+      sort: 'price_asc',
+    });
+    expect(buildProductWhere(query, 'PUBLISHED')).toMatchObject({
+      country: 'CN',
+      status: 'PUBLISHED',
+      category: { slug: 'outerwear', active: true },
+      attributes: { path: ['audience'], equals: 'women' },
+      variants: {
+        some: { active: true, size: 'M', color: { equals: 'black', mode: 'insensitive' } },
+      },
+      salePriceUzs: { gte: '100000', lte: '500000' },
+    });
+  });
+
+  it.each([
+    { audience: 'unrecognized' },
+    { sort: 'random' },
+    { country: 'FR' },
+    { minPrice: '-1' },
+    { minPrice: '1e6' },
+    { minPrice: '200', maxPrice: '100' },
+    { page: '0' },
+  ])('rejects invalid catalog query values %#', (query) => {
+    expect(productListQuerySchema.safeParse(query).success).toBe(false);
   });
 
   it('does not restrict admin products to published status unless a status is selected', () => {

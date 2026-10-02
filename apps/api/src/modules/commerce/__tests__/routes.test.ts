@@ -65,6 +65,12 @@ function createTestApp({
       findUnique: vi.fn(async () => manualProduct),
       count: vi.fn(async () => 0),
     },
+    commerceProductVariant: {
+      findMany: vi.fn(async ({ select }: { select: { size?: boolean; color?: boolean } }) =>
+        select.size
+          ? [{ size: 'M' }, { size: 'One size' }, { size: null }]
+          : [{ color: 'Black' }, { color: 'Navy' }, { color: null }]),
+    },
     commerceCategory: {
       findMany: vi.fn(async () => [category]),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === categoryId && category.active ? category : null),
@@ -97,6 +103,27 @@ async function start(app: ReturnType<typeof Fastify>) {
   await app.register(commerceModule, { prefix: '/api/v1' });
   await app.ready();
 }
+
+describe('public catalog filters', () => {
+  it('returns only distinct facets for active variants of published products', async () => {
+    const { app, prisma } = createTestApp();
+    await start(app);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/catalog-facets' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ sizes: ['M', 'One size'], colors: ['Black', 'Navy'] });
+    expect(prisma.commerceProductVariant.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        active: true,
+        product: { is: { status: 'PUBLISHED' } },
+        size: { not: null },
+      },
+      distinct: ['size'],
+      take: 200,
+    }));
+    await app.close();
+  });
+});
 
 describe('commerce admin routes', () => {
   beforeEach(() => vi.clearAllMocks());
