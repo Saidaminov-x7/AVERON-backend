@@ -14,6 +14,9 @@ import { productReviewsModule } from './product-reviews';
 import { catalogAssistantModule } from './catalog-assistant';
 import { publicProductDto } from './public-product-dto';
 import { createRecommendationsModule } from './recommendations';
+import { outfitsModule } from './outfits';
+import { wishlistModule } from './wishlist';
+import { commercePromosModule } from './commerce-promos';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -133,6 +136,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(telegramPublicationModule);
   app.register(productReviewsModule);
   app.register(catalogAssistantModule);
+  app.register(outfitsModule);
+  app.register(wishlistModule);
+  app.register(commercePromosModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);

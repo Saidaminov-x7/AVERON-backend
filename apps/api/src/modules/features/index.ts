@@ -47,4 +47,40 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     sharedCacheEnabled: false,
     personalizedResultsShared: false,
   }));
+
+  app.get('/admin/integration-diagnostics', { preHandler: adminMiddleware }, async () => {
+    let redisHealthy = false;
+    try {
+      redisHealthy = await app.redis.ping() === 'PONG';
+    } catch {
+      redisHealthy = false;
+    }
+    const capability = (
+      name: string,
+      featureEnabled: boolean,
+      configured: boolean,
+      implementationStatus: string,
+      verificationStatus: string,
+      degraded = false,
+    ) => ({
+      name,
+      featureEnabled,
+      configured,
+      implementationStatus,
+      verificationStatus,
+      degraded,
+      lastSuccessfulOperation: null,
+    });
+    return [
+      capability('1688', featureFlags.isEnabled('PARSER_1688'), featureFlags.isEnabled('PARSER_1688'), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
+      capability('Pinduoduo', featureFlags.isEnabled('PARSER_PINDUODUO'), false, 'BLOCKED_BY_PROVIDER', 'NOT_LIVE_VERIFIED'),
+      capability('AI Product Fill', featureFlags.isEnabled('AI_PRODUCT_FILL'), Boolean(config.AI_PRODUCT_API_URL && config.AI_PRODUCT_API_KEY), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
+      capability('iPost', featureFlags.isEnabled('IPOST'), false, 'NOT_CONFIGURED', 'NOT_LIVE_VERIFIED'),
+      capability('n8n', featureFlags.isEnabled('N8N'), Boolean(config.N8N_WEBHOOK_URL && config.N8N_WEBHOOK_SECRET), 'IMPLEMENTED', 'TESTED_WITH_MOCK'),
+      capability('Telegram', featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'), Boolean(config.TELEGRAM_MINI_APP_BOT_TOKEN && config.TELEGRAM_CHANNEL_ID), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
+      capability('Currency', featureFlags.isEnabled('AUTO_CURRENCY'), false, 'NOT_CONFIGURED', 'NOT_LIVE_VERIFIED'),
+      capability('SMS', featureFlags.isEnabled('SMS_VERIFICATION'), Boolean(config.SMS_API_URL && config.SMS_API_TOKEN), 'IMPLEMENTED', 'TESTED_WITH_MOCK'),
+      capability('Redis', true, Boolean(config.REDIS_URL), 'IMPLEMENTED', redisHealthy ? 'LIVE_VERIFIED' : 'NOT_LIVE_VERIFIED', !redisHealthy),
+    ];
+  });
 };

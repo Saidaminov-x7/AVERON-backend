@@ -173,6 +173,10 @@ model User {
   commerceProductReviews CommerceProductReview[] @relation("CommerceProductReviewAuthor")
   moderatedCommerceProductReviews CommerceProductReview[] @relation("CommerceProductReviewModerator")
   recentlyViewedProducts CommerceRecentlyViewedProduct[]
+  productFavorites    ProductFavorite[]
+  outfits             Outfit[]
+  commercePromoUsages CommercePromoCodeUsage[]
+  wishlistShareToken  String?    @unique
 
   @@index([email])
   @@index([phone])
@@ -912,6 +916,7 @@ model CommerceProduct {
   orderItems        CommerceOrderItem[]
   favoriteLinks     ProductFavorite[]
   alerts            ProductPriceAlert[]
+  outfitItems       OutfitItem[]
   importedFrom      ImportedProduct?         @relation(fields: [importedFromId], references: [id], onDelete: SetNull)
   importedFromId    String?                  @unique
   createdAt         DateTime                 @default(now())
@@ -1046,6 +1051,7 @@ model CommerceProductVariant {
   active          Boolean             @default(true)
   cartItems       CommerceCartItem[]
   orderItems      CommerceOrderItem[]
+  outfitItems     OutfitItem[]
 
   @@index([productId, active])
 }
@@ -1111,6 +1117,7 @@ model CommerceOrder {
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
   checkoutIdempotency CommerceCheckoutIdempotency?
+  promoCodeUsage  CommercePromoCodeUsage?
 
   @@index([userId, createdAt])
   @@index([status, createdAt])
@@ -1175,6 +1182,71 @@ model CommerceOrderItem {
 
   @@index([orderId])
   @@index([productId])
+}
+
+model CommercePromoCode {
+  id               String                    @id @default(uuid())
+  code             String
+  normalizedCode   String                    @unique
+  discountPercent Int
+  maxActivations   Int?
+  usedActivations  Int                       @default(0)
+  isActive         Boolean                   @default(true)
+  startsAt         DateTime?
+  expiresAt        DateTime?
+  usages           CommercePromoCodeUsage[]
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+
+  @@index([isActive, startsAt, expiresAt])
+  @@index([createdAt])
+}
+
+model CommercePromoCodeUsage {
+  id                     String           @id @default(uuid())
+  promoCodeId            String
+  promoCode              CommercePromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Restrict)
+  userId                 String
+  user                   User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  orderId                String           @unique
+  order                  CommerceOrder    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  discountPercentSnapshot Int
+  subtotal               Decimal          @db.Decimal(16, 2)
+  discountAmount         Decimal          @db.Decimal(16, 2)
+  finalTotal             Decimal          @db.Decimal(16, 2)
+  usedAt                 DateTime         @default(now())
+
+  @@unique([promoCodeId, userId])
+  @@index([promoCodeId, usedAt])
+  @@index([userId, usedAt])
+}
+
+model Outfit {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String       @default("My outfit") @db.VarChar(80)
+  items     OutfitItem[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model OutfitItem {
+  id        String                  @id @default(uuid())
+  outfitId  String
+  outfit    Outfit                  @relation(fields: [outfitId], references: [id], onDelete: Cascade)
+  productId String
+  product   CommerceProduct         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId String?
+  variant   CommerceProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  sortOrder Int                     @default(0)
+  createdAt DateTime                @default(now())
+
+  @@index([outfitId, sortOrder])
+  @@index([productId])
+  @@index([variantId])
 }
 
 model CommerceOrderStatusHistory {
@@ -1312,6 +1384,7 @@ model CommerceExpense {
 
 model ProductFavorite {
   userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   productId String
   product   CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
   createdAt DateTime        @default(now())

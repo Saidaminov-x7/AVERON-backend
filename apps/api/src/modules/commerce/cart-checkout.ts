@@ -4,6 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../lib/authMiddleware';
+import { normalizePromoCode, promoFailureCode } from './commerce-promos';
 
 const quantitySchema = z.number().int().min(1).max(99);
 const cartItemSchema = z.object({
@@ -14,6 +15,7 @@ const cartItemSchema = z.object({
 const updateCartItemSchema = z.object({ quantity: quantitySchema }).strict();
 const checkoutSchema = z.object({
   deliveryMethod: z.enum(['COURIER', 'PICKUP']).default('COURIER'),
+  promoCode: z.string().trim().min(3).max(40).regex(/^[A-Za-z0-9_-]+$/).optional(),
   contact: z.object({
     name: z.string().trim().min(1).max(100),
     phone: z.string().trim().min(7).max(32).regex(/^[+0-9 ()-]+$/),
@@ -585,6 +587,39 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
           }
         }
 
+        let discountCents = 0;
+        let promoSnapshot: { id: string; discountPercent: number } | null = null;
+        if (input.promoCode) {
+          const normalizedCode = normalizePromoCode(input.promoCode);
+          const promo = await tx.commercePromoCode.findUnique({
+            where: { normalizedCode },
+          });
+          if (!promo) throw new CheckoutFailure('PROMO_NOT_FOUND');
+          const promoError = promoFailureCode(promo);
+          if (promoError) throw new CheckoutFailure(promoError);
+          const existingUsage = await tx.commercePromoCodeUsage.findUnique({
+            where: { promoCodeId_userId: { promoCodeId: promo.id, userId } },
+            select: { id: true },
+          });
+          if (existingUsage) throw new CheckoutFailure('PROMO_ALREADY_USED');
+
+          const claimed = await tx.$queryRaw<Array<{ id: string }>>`
+            UPDATE "CommercePromoCode"
+            SET "usedActivations" = "usedActivations" + 1,
+                "updatedAt" = NOW()
+            WHERE "id" = ${promo.id}
+              AND "isActive" = TRUE
+              AND ("startsAt" IS NULL OR "startsAt" <= NOW())
+              AND ("expiresAt" IS NULL OR "expiresAt" > NOW())
+              AND ("maxActivations" IS NULL OR "usedActivations" < "maxActivations")
+            RETURNING "id"
+          `;
+          if (claimed.length !== 1) throw new CheckoutFailure('PROMO_LIMIT_REACHED');
+          promoSnapshot = { id: promo.id, discountPercent: promo.discountPercent };
+          discountCents = Math.floor((subtotalCents * promo.discountPercent) / 100);
+        }
+        const finalTotalCents = subtotalCents - discountCents;
+
         const orderNumber = `AV-${Date.now().toString(36).toUpperCase()}-${randomBytes(4).toString('hex').toUpperCase()}`;
         const order = await tx.commerceOrder.create({
           data: {
@@ -594,9 +629,9 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             inventoryCommitted: true,
             currency: 'UZS',
             subtotal: centsToNumber(subtotalCents),
-            discount: 0,
+            discount: centsToNumber(discountCents),
             deliveryCost: 0,
-            totalRevenue: centsToNumber(subtotalCents),
+            totalRevenue: centsToNumber(finalTotalCents),
             contact: input.contact as Prisma.InputJsonObject,
             deliveryAddress: input.deliveryAddress as Prisma.InputJsonObject,
             items: { create: snapshots },
@@ -614,6 +649,19 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
           },
           select: { id: true },
         });
+        if (promoSnapshot) {
+          await tx.commercePromoCodeUsage.create({
+            data: {
+              promoCodeId: promoSnapshot.id,
+              userId,
+              orderId: order.id,
+              discountPercentSnapshot: promoSnapshot.discountPercent,
+              subtotal: centsToNumber(subtotalCents),
+              discountAmount: centsToNumber(discountCents),
+              finalTotal: centsToNumber(finalTotalCents),
+            },
+          });
+        }
         await tx.commerceCartItem.deleteMany({ where: { cartId: cart.id } });
         await tx.commerceCheckoutIdempotency.create({
           data: { userId, key, requestHash, orderId: order.id },
@@ -632,10 +680,17 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       return reply.status(result.replayed ? 200 : 201).send(safeOrder(order));
     } catch (error) {
       if (error instanceof CheckoutFailure) {
-        const status = error.code === 'CART_EMPTY' ? 400 : error.code === 'INVALID_PRICE' ? 409 : 409;
+        const status = error.code === 'CART_EMPTY' ? 400 : error.code === 'INVALID_PRICE' ? 409 :
+          error.code.startsWith('PROMO_') ? 400 : 409;
         return reply.status(status).send({ code: error.code, message: error.code });
       }
       if (errorCode(error) === 'P2002') {
+        const target = typeof error === 'object' && error !== null && 'meta' in error
+          ? (error as { meta?: { target?: unknown } }).meta?.target
+          : undefined;
+        if (Array.isArray(target) && target.some((field) => String(field).includes('promoCodeId'))) {
+          return reply.status(409).send({ code: 'PROMO_ALREADY_USED', message: 'PROMO_ALREADY_USED' });
+        }
         try {
           const concurrent = await app.prisma.commerceCheckoutIdempotency.findUnique({
             where: { userId_key: { userId, key } },
