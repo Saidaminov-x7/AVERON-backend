@@ -9,7 +9,7 @@
 | n8n event delivery | `TESTED_WITH_MOCK`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; disabled by default |
 | 1688 Parser | `IMPLEMENTED`, `NOT_LIVE_VERIFIED`; URL/DNS/redirect restrictions and a two-request Playwright concurrency bound are enforced |
 | Pinduoduo provider | `TESTED_WITH_MOCK`, `BLOCKED_BY_PROVIDER`, `NOT_LIVE_VERIFIED`; normalized adapter is tested, but no real transport is registered |
-| iPost shipping | `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; only the provider contract exists, and no official API contract or credentials are available to safely implement or verify shipment calls |
+| iPost shipping | `TESTED_WITH_MOCK`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; the admin-only provider boundary enforces DB row locking, stable provider idempotency keys, bounded retries/timeouts, and records normalized status as provider evidence without mutating internal delivery status. No official iPost API contract, transport adapter, or credentials are available to safely make live calls |
 | Currency rate core | `IMPLEMENTED`; provider-neutral CNY→UZS rate validation and a versioned Redis-compatible cache boundary are tested with a mock provider. No real rate provider is registered, so `FEATURE_AUTO_CURRENCY=false`, diagnostics show no current rate, and stale data is returned only when both the caller and business policy explicitly allow it |
 | Cloudflare edge/origin rules | `NOT_CONFIGURED`; deployer configuration is required |
 

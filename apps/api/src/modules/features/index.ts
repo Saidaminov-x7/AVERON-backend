@@ -75,7 +75,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       capability('1688', featureFlags.isEnabled('PARSER_1688'), false, 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
       capability('Pinduoduo', featureFlags.isEnabled('PARSER_PINDUODUO'), false, 'BLOCKED_BY_PROVIDER', 'NOT_LIVE_VERIFIED'),
       capability('AI Product Fill', featureFlags.isEnabled('AI_PRODUCT_FILL'), Boolean(config.AI_PRODUCT_API_URL && config.AI_PRODUCT_API_KEY), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
-      capability('iPost', featureFlags.isEnabled('IPOST'), false, 'NOT_CONFIGURED', 'NOT_LIVE_VERIFIED'),
+      capability('iPost', featureFlags.isEnabled('IPOST'), false, 'TESTED_WITH_MOCK', 'NOT_LIVE_VERIFIED'),
       capability('n8n', featureFlags.isEnabled('N8N'), Boolean(config.N8N_WEBHOOK_URL && config.N8N_WEBHOOK_SECRET), 'IMPLEMENTED', 'TESTED_WITH_MOCK'),
       capability('Telegram', featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'), Boolean(config.TELEGRAM_MINI_APP_BOT_TOKEN && config.TELEGRAM_CHANNEL_ID), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
       capability('Currency', featureFlags.isEnabled('AUTO_CURRENCY'), false, 'NOT_CONFIGURED', 'NOT_LIVE_VERIFIED'),

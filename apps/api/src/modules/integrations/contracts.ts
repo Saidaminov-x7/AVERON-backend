@@ -48,9 +48,27 @@ export interface ShippingProvider {
   getShipment(trackingNumber: string): Promise<Shipment>;
 }
 
-export interface IPostProvider extends ShippingProvider {
+export type IPostShipmentRequest = {
+  orderId: string;
+  idempotencyKey: string;
+  recipientName: string;
+  phone: string;
+  destination: Record<string, unknown>;
+};
+
+export type IPostShipmentResult = {
+  providerReference: string;
+  trackingNumber: string | null;
+  status: ShipmentStatus;
+  estimatedDeliveryAt: string | null;
+};
+
+export interface IPostProvider {
   readonly id: 'ipost';
-  quote(address: ShippingAddress, weightGrams: number): Promise<ShippingQuote>;
+  isEnabled(): boolean;
+  supportsIdempotentShipmentCreation(): boolean;
+  createShipment(request: IPostShipmentRequest, signal: AbortSignal): Promise<IPostShipmentResult>;
+  getShipment(providerReference: string, signal: AbortSignal): Promise<IPostShipmentResult>;
 }
 
 export interface TelegramSecurityProvider {

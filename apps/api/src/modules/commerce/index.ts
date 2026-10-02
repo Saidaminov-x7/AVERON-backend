@@ -17,6 +17,7 @@ import { createRecommendationsModule } from './recommendations';
 import { outfitsModule } from './outfits';
 import { wishlistModule } from './wishlist';
 import { commercePromosModule } from './commerce-promos';
+import { ipostShippingModule } from './ipost-shipping';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -139,6 +140,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(outfitsModule);
   app.register(wishlistModule);
   app.register(commercePromosModule);
+  app.register(ipostShippingModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);

@@ -1272,6 +1272,7 @@ model CommerceDelivery {
   status               CommerceDeliveryStatus  @default(PENDING)
   trackingNumber       String?                 @unique
   provider             String?
+  providerReference    String?                 @unique
   estimatedDeliveryAt  DateTime?
   shippedAt            DateTime?
   deliveredAt          DateTime?

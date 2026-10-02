@@ -67,11 +67,11 @@ false пока не появятся реальные реализованные
 |---|---|---:|---|---|---|
 | AI Product Fill | `FEATURE_AI_PRODUCT_FILL` | `false` | Backend/Admin | Foundation; endpoint disabled | Approved OpenAI-compatible endpoint/model and backend-only `AI_PRODUCT_API_KEY` + `AI_PRODUCT_API_URL`; security and quality verification |
 | 1688 parser/import | `FEATURE_1688_PARSER` | `false` | Parser/Backend | Prepared; import endpoint gated | Explicit activation, parser operational verification, import/review verification |
-| Pinduoduo parser | `FEATURE_PINDUODUO_PARSER` | `false` | Parser/Backend | Disabled-provider foundation only | Official/authorized provider contract and explicit activation |
-| iPost shipping | `FEATURE_IPOST` | `false` | Backend | Interface only; not production-ready | Official iPost API specification, credentials, and integration testing |
-| n8n events | `FEATURE_N8N` | `false` | Backend | Event contracts only | Approved webhook/workflow design and backend-only credentials |
+| Pinduoduo parser | `FEATURE_PINDUODUO_PARSER` | `false` | Parser/Backend | `TESTED_WITH_MOCK`, `BLOCKED_BY_PROVIDER`; normalized adapter is tested, but no real transport is registered | Official/authorized provider contract and explicit activation |
+| iPost shipping | `FEATURE_IPOST` | `false` | Backend | `TESTED_WITH_MOCK`; server-side shipment boundary is ready for an idempotent provider adapter, but no iPost transport is registered | Official iPost API specification, credentials, and live integration testing |
+| n8n events | `FEATURE_N8N` | `false` | Backend | `TESTED_WITH_MOCK`; signed outbound event publisher is implemented and remains disabled by default | Approved webhook/workflow design, receiver-side event-ID deduplication, and backend-only credentials |
 | Telegram product publishing | `FEATURE_TELEGRAM_PRODUCT_PUBLISH` | `false` | Backend | Existing publisher gated; no API calls while disabled | Explicit activation, verified channel/bot configuration, and human publication workflow review |
-| Automatic currency | `FEATURE_AUTO_CURRENCY` | `false` | Backend | Interface only | Approved rate provider, source/quality policy, and explicit activation |
+| Automatic currency | `FEATURE_AUTO_CURRENCY` | `false` | Backend | `IMPLEMENTED`, `TESTED_WITH_MOCK`; provider-neutral rate validation/cache core exists, but no real rate provider is registered | Approved rate provider, source/quality policy, and explicit activation |
 | SMS verification | `FEATURE_SMS_VERIFICATION` | `false` | Backend | Existing OTP paths gated; provider adapter retained | Approved SMS provider/configuration and end-to-end OTP verification |
 
 ### Parser import API
