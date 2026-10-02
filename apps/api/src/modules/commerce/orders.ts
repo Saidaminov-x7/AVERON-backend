@@ -121,6 +121,9 @@ const customerOrderSelect = {
   createdAt: true,
   items: {
     select: {
+      id: true,
+      product: { select: { slug: true } },
+      review: { select: { status: true, deletedAt: true } },
       title: true,
       variantSnapshot: true,
       quantity: true,
@@ -206,6 +209,8 @@ function shipmentDtos(
 }
 
 function customerOrderDto(order: CustomerOrderSource) {
+  const reviewEligible = ['DELIVERED', 'COMPLETED'].includes(order.status) &&
+    (!order.delivery || order.delivery.status === 'DELIVERED');
   return {
     orderNumber: order.orderNumber,
     status: order.status,
@@ -216,6 +221,10 @@ function customerOrderDto(order: CustomerOrderSource) {
     totalRevenue: amount(order.totalRevenue),
     createdAt: order.createdAt,
     items: order.items.map((item) => ({
+      productSlug: item.product.slug,
+      reviewStatus: item.review?.deletedAt ? null : item.review?.status ?? null,
+      reviewEligible,
+      ...(reviewEligible ? { reviewToken: item.id } : {}),
       title: item.title,
       ...(item.variantSnapshot ? { variantSnapshot: item.variantSnapshot } : {}),
       quantity: item.quantity,

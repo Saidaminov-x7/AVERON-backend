@@ -170,6 +170,8 @@ model User {
   checkoutIdempotency CommerceCheckoutIdempotency[]
   createdTelegramPublications CommerceTelegramPublication[] @relation("CommerceTelegramPublicationCreator")
   telegramPublicationAttempts CommerceTelegramPublication[] @relation("CommerceTelegramPublicationActor")
+  commerceProductReviews CommerceProductReview[] @relation("CommerceProductReviewAuthor")
+  moderatedCommerceProductReviews CommerceProductReview[] @relation("CommerceProductReviewModerator")
 
   @@index([email])
   @@index([phone])
@@ -395,6 +397,7 @@ model Media {
   listingId String?
   listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Cascade)
   productImages CommerceProductImage[]
+  commerceReviewMedia CommerceProductReviewMedia[]
   mimeType  String
   size      Int
   width     Int?
@@ -770,6 +773,18 @@ enum TelegramPublicationStatus {
   FAILED
 }
 
+enum CommerceProductReviewStatus {
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
+enum CommerceProductReviewFit {
+  RUNS_SMALL
+  TRUE_TO_SIZE
+  RUNS_LARGE
+}
+
 enum AveronOrderStatus {
   CREATED
   PAID
@@ -889,6 +904,7 @@ model CommerceProduct {
   imageEmbeddings   ProductImageEmbedding[]
   variants          CommerceProductVariant[]
   telegramPublications CommerceTelegramPublication[]
+  reviews           CommerceProductReview[]
   stock             Int                      @default(0)
   cartItems         CommerceCartItem[]
   orderItems        CommerceOrderItem[]
@@ -927,6 +943,47 @@ model CommerceTelegramPublication {
 
   @@unique([productId, channelId])
   @@index([status, updatedAt])
+}
+
+model CommerceProductReview {
+  id                String                       @id @default(uuid())
+  productId         String
+  product           CommerceProduct              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  userId            String
+  user              User                         @relation("CommerceProductReviewAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  orderId           String
+  order             CommerceOrder                @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItemId       String                       @unique
+  orderItem         CommerceOrderItem            @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  rating            Int
+  title             String?
+  comment           String
+  status            CommerceProductReviewStatus  @default(PENDING)
+  verifiedPurchase  Boolean                      @default(false)
+  fitFeedback       CommerceProductReviewFit?
+  media             CommerceProductReviewMedia[]
+  moderatedAt       DateTime?
+  moderatedById     String?
+  moderatedBy       User?                        @relation("CommerceProductReviewModerator", fields: [moderatedById], references: [id], onDelete: SetNull)
+  deletedAt         DateTime?
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+
+  @@index([productId, status, createdAt])
+  @@index([userId, createdAt])
+  @@index([orderId])
+  @@index([rating, status])
+}
+
+model CommerceProductReviewMedia {
+  id        String                 @id @default(uuid())
+  reviewId  String
+  review    CommerceProductReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  mediaId   String                 @unique
+  media     Media                  @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  createdAt DateTime               @default(now())
+
+  @@index([reviewId, createdAt])
 }
 
 model CommerceProductImage {
@@ -1043,6 +1100,7 @@ model CommerceOrder {
   deliveryAddress Json
   notes           String?
   items           CommerceOrderItem[]
+  reviews         CommerceProductReview[]
   statusHistory   CommerceOrderStatusHistory[]
   payments        CommercePayment[]
   purchases       SupplierPurchase[]
@@ -1111,6 +1169,7 @@ model CommerceOrderItem {
   totalPrice Decimal                 @db.Decimal(16, 2)
   isPreorder Boolean                 @default(false)
   preorderEstimatedAt DateTime?
+  review     CommerceProductReview?
 
   @@index([orderId])
   @@index([productId])

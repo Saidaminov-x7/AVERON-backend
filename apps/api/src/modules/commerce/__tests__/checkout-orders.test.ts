@@ -985,6 +985,8 @@ describe('commerce order ownership and admin workflow', () => {
         items: [{
           id: 'customer-cancel-item',
           productId: PRODUCT,
+          product: { slug: 'jacket' },
+          review: null,
           variantId: null,
           variantSnapshot: null,
           quantity: 2,

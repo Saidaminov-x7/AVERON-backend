@@ -10,6 +10,7 @@ import { dispatchDomainEvent } from '../integrations/domain-events';
 import { cartCheckoutModule } from './cart-checkout';
 import { commerceOrdersModule } from './orders';
 import { telegramPublicationModule } from './telegram-publication';
+import { productReviewsModule } from './product-reviews';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -155,6 +156,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(cartCheckoutModule);
   app.register(commerceOrdersModule);
   app.register(telegramPublicationModule);
+  app.register(productReviewsModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);

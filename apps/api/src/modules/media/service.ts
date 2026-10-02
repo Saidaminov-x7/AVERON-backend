@@ -134,6 +134,10 @@ export class MediaService {
     if (productImageReferences > 0) {
       throw Object.assign(new Error('Media is still in use by a product'), { statusCode: 409 });
     }
+    const reviewMediaReferences = await this.prisma.commerceProductReviewMedia.count({ where: { mediaId: id } });
+    if (reviewMediaReferences > 0) {
+      throw Object.assign(new Error('Media is still in use by a review'), { statusCode: 409 });
+    }
     if (onlyIfUnattached && media.listingId) {
       throw Object.assign(new Error('Media is still attached to a listing'), { statusCode: 409 });
     }
