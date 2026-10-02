@@ -168,6 +168,8 @@ model User {
   adminRecoveryCodes   AdminRecoveryCode[]
   commerceCart         CommerceCart?
   checkoutIdempotency CommerceCheckoutIdempotency[]
+  createdTelegramPublications CommerceTelegramPublication[] @relation("CommerceTelegramPublicationCreator")
+  telegramPublicationAttempts CommerceTelegramPublication[] @relation("CommerceTelegramPublicationActor")
 
   @@index([email])
   @@index([phone])
@@ -761,6 +763,13 @@ enum ProductPublicationStatus {
   ARCHIVED
 }
 
+enum TelegramPublicationStatus {
+  NOT_PUBLISHED
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
 enum AveronOrderStatus {
   CREATED
   PAID
@@ -879,6 +888,7 @@ model CommerceProduct {
   images            CommerceProductImage[]
   imageEmbeddings   ProductImageEmbedding[]
   variants          CommerceProductVariant[]
+  telegramPublications CommerceTelegramPublication[]
   stock             Int                      @default(0)
   cartItems         CommerceCartItem[]
   orderItems        CommerceOrderItem[]
@@ -894,6 +904,29 @@ model CommerceProduct {
   @@index([country, status, createdAt])
   @@index([categoryId, status])
   @@index([salePriceUzs])
+}
+
+model CommerceTelegramPublication {
+  id                 String                    @id @default(uuid())
+  productId          String
+  product            CommerceProduct           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  channelId          String
+  status             TelegramPublicationStatus @default(NOT_PUBLISHED)
+  captionOverride    String?
+  telegramMessageId  String?
+  publishedAt        DateTime?
+  lastAttemptAt      DateTime?
+  errorCode          String?
+  attemptCount       Int                       @default(0)
+  createdById        String?
+  createdBy          User?                     @relation("CommerceTelegramPublicationCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  lastAttemptById    String?
+  lastAttemptBy      User?                     @relation("CommerceTelegramPublicationActor", fields: [lastAttemptById], references: [id], onDelete: SetNull)
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  @@unique([productId, channelId])
+  @@index([status, updatedAt])
 }
 
 model CommerceProductImage {

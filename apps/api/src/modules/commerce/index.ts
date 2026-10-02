@@ -4,12 +4,12 @@ import { Prisma, ProductPublicationStatus } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
-import { publishProductToTelegram } from './telegram-publisher';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
 import { cartCheckoutModule } from './cart-checkout';
 import { commerceOrdersModule } from './orders';
+import { telegramPublicationModule } from './telegram-publication';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -154,6 +154,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(parserImportModule);
   app.register(cartCheckoutModule);
   app.register(commerceOrdersModule);
+  app.register(telegramPublicationModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
@@ -392,7 +393,6 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
       throw error;
     }
-    if (input.publish) publishProductToTelegram(product, product.images[0]?.url).catch((error) => app.log.error({ error, productId: product.id }, 'Telegram product publication failed'));
     return reply.status(201).send(product);
   });
 
@@ -745,7 +745,6 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         actorId: request.user.userId,
         occurredAt,
       });
-      publishProductToTelegram(result, result.images[0]?.url).catch((error) => app.log.error({ error, productId: result.id }, 'Telegram product publication failed'));
     }
     return result;
   });

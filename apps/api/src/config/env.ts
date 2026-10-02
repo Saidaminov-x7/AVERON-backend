@@ -77,6 +77,8 @@ const envSchema = z.object({
   SMS_API_TOKEN: z.string().optional(),
   SMS_SENDER: z.string().optional(),
   TELEGRAM_ADMIN_BOT: z.string().optional(),
+  TELEGRAM_MINI_APP_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_MINI_APP_URL: z.union([z.string().url(), z.literal('')]).optional().transform((value) => value || undefined),
   TELEGRAM_CHANNEL_ID: z.string().optional(),
 
   // Media storage

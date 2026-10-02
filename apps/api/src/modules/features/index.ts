@@ -14,7 +14,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       aiProductFill: capabilities.aiProductFill && Boolean(config.AI_PRODUCT_API_URL && config.AI_PRODUCT_API_KEY),
       smsVerification: capabilities.smsVerification && Boolean(config.SMS_API_URL && config.SMS_API_TOKEN),
       telegramProductPublish: capabilities.telegramProductPublish && Boolean(
-        config.TELEGRAM_ADMIN_BOT && config.TELEGRAM_CHANNEL_ID,
+        config.TELEGRAM_MINI_APP_BOT_TOKEN && config.TELEGRAM_CHANNEL_ID,
       ),
       parserPinduoduo: false,
       ipost: false,
