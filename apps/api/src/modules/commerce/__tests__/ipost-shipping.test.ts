@@ -8,7 +8,7 @@ import { createIpostShippingModule } from '../ipost-shipping';
 const USER_ID = '00000000-0000-4000-8000-000000000001';
 const ORDER_ID = '00000000-0000-4000-8000-000000000002';
 const DELIVERY_ID = '00000000-0000-4000-8000-000000000003';
-const JWT_SECRET = 'ipost-shipping-route-test-secret-at-least-32-characters';
+const JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
 const initialDelivery = () => ({
   id: DELIVERY_ID,
   method: 'COURIER',

@@ -15,7 +15,7 @@ const CART = '00000000-0000-4000-8000-000000000005';
 const CART_B = '00000000-0000-4000-8000-000000000009';
 const ORDER_ID = '00000000-0000-4000-8000-000000000006';
 const VARIANT = '00000000-0000-4000-8000-000000000007';
-const JWT_SECRET = 'checkout-orders-test-secret-that-is-at-least-32-characters';
+const JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
 
 function makeProduct({
   id = PRODUCT,

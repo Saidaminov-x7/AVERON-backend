@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { findByEmail, verifyPassword } = vi.hoisted(() => {
   process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
   process.env.REDIS_URL = 'redis://127.0.0.1:6379';
-  process.env.JWT_SECRET = 'test-jwt-secret-with-more-than-32-characters';
-  process.env.REFRESH_SECRET = 'test-refresh-secret-with-more-than-32-characters';
+  process.env.JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
+  process.env.REFRESH_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
   process.env.NODE_ENV = 'test';
   return { findByEmail: vi.fn(), verifyPassword: vi.fn() };
 });

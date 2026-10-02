@@ -29,7 +29,9 @@ function flags(enabled: boolean) {
 async function buildApp(prisma: object, enabled = true) {
   const app = Fastify();
   app.decorate('prisma', prisma as never);
-  await app.register(fastifyJwt, { secret: 'recommendations-test-secret-at-least-32-chars' });
+  await app.register(fastifyJwt, {
+    secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
+  });
   await app.register(fastifyCookie);
   await app.register(createRecommendationsModule({ flags: flags(enabled) }), { prefix: '/api/v1' });
   await app.ready();

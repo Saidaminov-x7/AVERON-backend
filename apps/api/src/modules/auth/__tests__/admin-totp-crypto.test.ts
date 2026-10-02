@@ -7,10 +7,9 @@ let consumeRecoveryCode: typeof import("../admin-totp").consumeRecoveryCode;
 beforeAll(async () => {
   process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:5432/test";
   process.env.REDIS_URL = "redis://127.0.0.1:6379";
-  process.env.JWT_SECRET = "unit-test-jwt-secret-do-not-use-outside-tests-123";
-  process.env.REFRESH_SECRET =
-    "unit-test-refresh-secret-do-not-use-outside-tests-456";
-  process.env.TOTP_ENCRYPTION_KEY = "a".repeat(64);
+  process.env.JWT_SECRET = globalThis.crypto.randomUUID().replaceAll("-", "").repeat(2);
+  process.env.REFRESH_SECRET = globalThis.crypto.randomUUID().replaceAll("-", "").repeat(2);
+  process.env.TOTP_ENCRYPTION_KEY = globalThis.crypto.randomUUID().replaceAll("-", "").repeat(2);
   totpCrypto = await import("../admin-totp-crypto");
   ({ consumeRecoveryCode } = await import("../admin-totp"));
 });

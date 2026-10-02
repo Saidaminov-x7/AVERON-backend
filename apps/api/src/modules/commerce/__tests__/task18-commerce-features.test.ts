@@ -9,7 +9,7 @@ import { capabilitiesModule } from '../../features';
 const USER_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_USER_ID = '00000000-0000-4000-8000-000000000002';
 const PRODUCT_ID = '00000000-0000-4000-8000-000000000003';
-const JWT_SECRET = 'task18-feature-routes-test-secret-at-least-32-characters';
+const JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
 
 function makeApp(prisma: Record<string, unknown>, modules: Array<unknown>) {
   const app = Fastify();

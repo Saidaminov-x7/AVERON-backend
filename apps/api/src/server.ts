@@ -119,18 +119,11 @@ server.register(fastifyHelmet, {
   },
 });
 
-const trustedProductionOrigins = new Set([
-  ...config.CORS_ORIGINS,
-  'https://averon-frontend-three.vercel.app',
-  'https://averon-admin-panel.vercel.app',
-]);
+const allowedOrigins = new Set(config.CORS_ORIGINS);
 
 server.register(fastifyCors, {
   origin(origin, callback) {
-    // Requests without Origin are server-to-server/health checks. Browser origins
-    // stay allow-listed; this also prevents a stale Railway variable from breaking
-    // the two official Vercel applications.
-    if (!origin || trustedProductionOrigins.has(origin)) {
+    if (!origin || allowedOrigins.has(origin)) {
       callback(null, true);
       return;
     }
@@ -145,9 +138,17 @@ server.register(fastifyRateLimit, {
   global: true,
   max: async (req) => {
     if (await isAdaptiveRateLimitEnabled()) {
-      // При включенном адаптивном лимите: снижаем лимит для публичных страниц каталога и поиска
-      if (req.url.startsWith('/listings') || req.url.startsWith('/analytics/search-queries')) {
-        return 40; // 40 запросов в минуту при строгом режиме
+      const routePath = req.url.split('?', 1)[0];
+      const adaptiveLimitPaths = [
+        '/api/v1/products',
+        '/api/v1/products/visual-search',
+        '/ai-chat/chat',
+        '/ai-chat/stream',
+      ];
+      if (adaptiveLimitPaths.some((route) =>
+        routePath === route || routePath.startsWith(`${route}/`),
+      )) {
+        return 40;
       }
     }
     return config.RATE_LIMIT_MAX;

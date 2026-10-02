@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 vi.hoisted(() => {
   process.env.DATABASE_URL = 'postgresql://127.0.0.1:5432/test';
   process.env.REDIS_URL = 'redis://127.0.0.1:6379';
-  process.env.JWT_SECRET = 'test-jwt-secret-with-more-than-32-characters';
-  process.env.REFRESH_SECRET = 'test-refresh-secret-with-more-than-32-characters';
+  process.env.JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
+  process.env.REFRESH_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
   process.env.NODE_ENV = 'test';
 });
 
@@ -19,7 +19,7 @@ describe('n8n event publisher', () => {
       occurredAt: '2026-10-01T08:00:00.000Z',
     };
     const body = JSON.stringify(event);
-    const secret = 'test-webhook-secret-that-is-at-least-32-characters';
+    const secret = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
     const publisher = new N8nEventPublisher({
       endpoint: 'https://n8n.example.test/webhook/averon',
@@ -46,7 +46,7 @@ describe('n8n event publisher', () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 503 }));
     const publisher = new N8nEventPublisher({
       endpoint: 'https://n8n.example.test/webhook/averon',
-      secret: 'test-webhook-secret-that-is-at-least-32-characters',
+      secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
       fetcher,
     });
 

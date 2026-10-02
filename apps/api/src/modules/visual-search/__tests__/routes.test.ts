@@ -99,7 +99,9 @@ async function buildApp(
     user: { findUnique: userFind },
     commerceProduct,
   } as never);
-  await app.register(fastifyJwt, { secret: 'visual-search-test-secret-at-least-32-chars' });
+  await app.register(fastifyJwt, {
+    secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
+  });
   await app.register(fastifyMultipart);
   const dependencies = createVisualSearchDependencies({
     service,

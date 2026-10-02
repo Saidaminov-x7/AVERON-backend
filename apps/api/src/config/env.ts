@@ -3,6 +3,7 @@
 import 'dotenv/config';
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { isDeniedRefreshSecret } from './secret-validation';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -40,12 +41,19 @@ const envSchema = z.object({
   // Public Site URL (for reset links, verification links etc)
   PUBLIC_SITE_URL: z.string().url('PUBLIC_SITE_URL must be a valid URL').default('http://localhost:3000'),
 
-  // CORS — список доменов через запятую, например: https://ijarauz.uz,https://www.ijarauz.uz
+  // CORS origins are configured explicitly for each deployment environment.
   CORS_ORIGINS: z
     .string()
     .min(1, 'CORS_ORIGINS is required')
     .default('http://localhost:3000')
-    .transform((val) => val.split(',').map((s) => s.trim()).filter(Boolean)),
+    .transform((val) => val.split(',').map((s) => s.trim()).filter(Boolean))
+    .refine((origins) => origins.length > 0 && origins.every((origin) => {
+      try {
+        return origin !== '*' && new URL(origin).origin === origin;
+      } catch {
+        return false;
+      }
+    }), 'CORS_ORIGINS must contain explicit origins without paths or wildcards'),
 
   // AI
   OLLAMA_BASE_URL: z.string().url('OLLAMA_BASE_URL must be a valid URL').default('http://localhost:11434'),
@@ -215,18 +223,11 @@ function parseConfig() {
 
   const parsed = result.data;
 
-  if (
-    parsed.JWT_SECRET === 'your_jwt_secret' ||
-    parsed.JWT_SECRET === 'your_jwt_secret_min_32_characters_long_super_secure'
-  ) {
+  if (/^your_jwt_secret(?:_|$)/i.test(parsed.JWT_SECRET)) {
     throw new Error('FATAL: JWT_SECRET использует значение-заглушку из .env.example!');
   }
 
-  if (
-    parsed.REFRESH_SECRET === 'your_refresh_secret' ||
-    parsed.REFRESH_SECRET === 'your_refresh_secret_min_32_characters_long_super_secure' ||
-    parsed.REFRESH_SECRET === 'e7a2b9c4f1d8e3a5c7f2b6a9d1e4f8c2b5e7a1d3f9c4b8e2a6d1f5c7b3e9a4f2'
-  ) {
+  if (isDeniedRefreshSecret(parsed.REFRESH_SECRET)) {
     throw new Error(
       'FATAL: REFRESH_SECRET использует скомпрометированное значение по умолчанию или плейсхолдер! Сгенерируйте уникальный ключ через `openssl rand -hex 32`.'
     );

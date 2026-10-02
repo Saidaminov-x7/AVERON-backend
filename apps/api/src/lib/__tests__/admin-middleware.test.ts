@@ -13,7 +13,9 @@ describe('admin authorization', () => {
       isDeleted: true,
     }));
     const app = Fastify();
-    await app.register(fastifyJwt, { secret: 'a-test-only-jwt-secret-that-is-long-enough' });
+    await app.register(fastifyJwt, {
+      secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
+    });
     app.decorate('prisma', { user: { findUnique } } as never);
     app.get('/admin', { preHandler: adminMiddleware }, async () => ({ ok: true }));
     await app.ready();
