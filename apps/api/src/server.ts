@@ -35,6 +35,7 @@ import { capabilitiesModule } from './modules/features';
 import { productAiModule } from './modules/commerce/product-ai';
 import { visualSearchModule } from './modules/visual-search';
 import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
+import { trustProxyOption } from './lib/trust-proxy';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
@@ -71,7 +72,7 @@ const server = fastify({
       ? { transport: { target: 'pino-pretty', options: { colorize: true } } }
       : {}),
   },
-  trustProxy: true, // Обязательно для Railway (за nginx/proxy)
+  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES),
   ajv: {
     customOptions: {
       strict: 'log',
@@ -79,6 +80,12 @@ const server = fastify({
     },
   },
 });
+
+if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0) {
+  server.log.warn(
+    'TRUST_PROXY_ADDRESSES is empty; forwarded client IP headers are ignored and rate limits use the direct peer address',
+  );
+}
 
 const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
   async () => {

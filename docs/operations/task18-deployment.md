@@ -7,7 +7,7 @@
 | Shared Redis rate limiting | `IMPLEMENTED`; shared store and fail-closed on store errors |
 | SMS provider boundary | `IMPLEMENTED`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; disabled by default |
 | n8n event delivery | `TESTED_WITH_MOCK`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; disabled by default |
-| 1688 Parser | `IMPLEMENTED`, `NOT_LIVE_VERIFIED`; URL/DNS/redirect restrictions and a two-request Playwright concurrency bound are enforced |
+| 1688 Parser | `IMPLEMENTED`, `NOT_LIVE_VERIFIED`; URL checks, a pinned-IP egress proxy for Chromium tunnels, per-connection DNS/IP validation, and a two-request Playwright concurrency bound are enforced in source |
 | Pinduoduo provider | `TESTED_WITH_MOCK`, `BLOCKED_BY_PROVIDER`, `NOT_LIVE_VERIFIED`; normalized adapter is tested, but no real transport is registered |
 | iPost shipping | `TESTED_WITH_MOCK`, `NOT_CONFIGURED`, `NOT_LIVE_VERIFIED`; the admin-only provider boundary enforces DB row locking, stable provider idempotency keys, bounded retries/timeouts, and records normalized status as provider evidence without mutating internal delivery status. No official iPost API contract, transport adapter, or credentials are available to safely make live calls |
 | Currency rate core | `IMPLEMENTED`; provider-neutral CNY→UZS rate validation and a versioned Redis-compatible cache boundary are tested with a mock provider. No real rate provider is registered, so `FEATURE_AUTO_CURRENCY=false`, diagnostics show no current rate, and stale data is returned only when both the caller and business policy explicitly allow it |
@@ -18,6 +18,8 @@ Credentials belong only in the server environment. `.env.example` intentionally 
 ## Railway environments and scaling
 
 Use separate Railway project environments for development, test, staging, and production. Each environment needs its own PostgreSQL, Redis, secrets, public URLs, Telegram destination, and provider configuration. Never copy production credentials into test variables.
+
+Fastify does not trust forwarded client-IP headers unless `TRUST_PROXY_ADDRESSES` lists verified proxy IPs/CIDRs. Leave it empty until the deployed Cloudflare/Railway chain and trusted source ranges are confirmed. Do not use `true`, `*`, or caller-controlled `X-Forwarded-For` values. An empty setting uses the direct TCP peer address and may aggregate requests behind an ingress proxy; validate rate-limit behavior in staging before launch.
 
 The backend is configured in `railway.json` with `/health/live` for process liveness. `/health/ready` reports dependency readiness using booleans; `/health` returns only coarse dependency state and does not return exception text. PostgreSQL migrations run through the container entrypoint with `prisma migrate deploy`; do not substitute `db push` or a reset command.
 

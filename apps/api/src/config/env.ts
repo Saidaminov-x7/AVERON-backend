@@ -1,12 +1,17 @@
 // apps/api/src/config/env.ts
 
 import 'dotenv/config';
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  TRUST_PROXY_ADDRESSES: z
+    .string()
+    .default('')
+    .transform((value) => value.split(',').map((entry) => entry.trim()).filter(Boolean)),
 
   // Database
   DATABASE_URL: z.string().url('DATABASE_URL must be a valid PostgreSQL URL'),
@@ -123,6 +128,32 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
 }).superRefine((values, context) => {
+  for (const entry of values.TRUST_PROXY_ADDRESSES) {
+    const slash = entry.indexOf('/');
+    const address = slash === -1 ? entry : entry.slice(0, slash);
+    const prefix = slash === -1 ? undefined : entry.slice(slash + 1);
+    const family = isIP(address);
+    const prefixValue = prefix === undefined ? undefined : Number(prefix);
+    const maximumPrefix = family === 4 ? 32 : 128;
+    const invalidPrefix = prefix !== undefined && (
+      !/^\d+$/.test(prefix)
+      || !Number.isInteger(prefixValue)
+      || prefixValue === undefined
+      || prefixValue < 1
+      || prefixValue > maximumPrefix
+    );
+    if (
+      family === 0
+      || invalidPrefix
+      || entry.indexOf('/', slash + 1) !== -1
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TRUST_PROXY_ADDRESSES'],
+        message: 'TRUST_PROXY_ADDRESSES must contain IP addresses or valid CIDRs',
+      });
+    }
+  }
   if (values.NODE_ENV !== 'production') return;
   if (new URL(values.PUBLIC_SITE_URL).protocol !== 'https:') {
     context.addIssue({
