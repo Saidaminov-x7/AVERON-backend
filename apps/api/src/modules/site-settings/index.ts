@@ -33,7 +33,6 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         googleAuthEnabled: true,
         autoModerationEnabled: true,
         maxImagesPerListing: true,
-        listingsPerPage: true,
         logoUrl: true,
         navLinks: true,
         yandexMetrikaId: true,
@@ -54,7 +53,6 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         googleAuthEnabled: true,
         autoModerationEnabled: false,
         maxImagesPerListing: 10,
-        listingsPerPage: 10,
         logoUrl: null,
         navLinks: null,
         yandexMetrikaId: '112059980',
@@ -134,7 +132,7 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
     });
 
     const tokens = {
-      primaryColor: theme?.primaryColor ?? '#14b8a6',
+      primaryColor: theme?.primaryColor ?? '#2563eb',
       secondaryColor: theme?.secondaryColor ?? '#0f766e',
       backgroundColor: theme?.backgroundColor ?? '#f9fafb',
       textColor: theme?.textColor ?? '#111827',

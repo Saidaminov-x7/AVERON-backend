@@ -99,7 +99,6 @@ export class AdminService {
         include: {
           owner: { select: { id: true, name: true, email: true, phone: true, avatar: true } },
           images: { select: { id: true, url: true }, take: 3 },
-          _count: { select: { favorites: true } },
         },
       }),
       this.prisma.listing.count({ where }),
@@ -384,9 +383,7 @@ export class AdminService {
       AND: and,
     };
 
-    const orderBy: Prisma.UserOrderByWithRelationInput = sortBy === 'listingsCount'
-      ? { listings: { _count: effectiveOrder } }
-      : { [sortBy]: effectiveOrder };
+    const orderBy: Prisma.UserOrderByWithRelationInput = { [sortBy]: effectiveOrder };
 
     const [items, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({
@@ -408,7 +405,6 @@ export class AdminService {
           createdAt: true,
           avatar: true,
           lastLoginAt: true,
-          _count: { select: { listings: true } },
         },
       }),
       this.prisma.user.count({ where }),
@@ -436,18 +432,12 @@ export class AdminService {
         createdAt: true,
         updatedAt: true,
         avatar: true,
-        listings: {
-          where: { status: { not: ListingStatus.DELETED } },
-          orderBy: { createdAt: 'desc' },
-          take: 10,
-          select: { id: true, title: true, status: true, moderationStatus: true, price: true, createdAt: true },
-        },
         auditLogs: {
           orderBy: { timestamp: 'desc' },
           take: 20,
           select: { id: true, action: true, resource: true, timestamp: true, meta: true },
         },
-        _count: { select: { listings: true, favorites: true } },
+        _count: { select: { favorites: true } },
       },
     });
 
@@ -621,9 +611,7 @@ export class AdminService {
       ],
     };
 
-    const orderBy: Prisma.UserOrderByWithRelationInput = sortBy === 'listingsCount'
-      ? { listings: { _count: sortOrder } }
-      : { [sortBy]: sortOrder };
+    const orderBy: Prisma.UserOrderByWithRelationInput = { [sortBy]: sortOrder };
 
     return this.prisma.user.findMany({
       where,
@@ -637,7 +625,6 @@ export class AdminService {
         verified: true,
         isBlocked: true,
         createdAt: true,
-        _count: { select: { listings: true } },
       },
     });
   }
@@ -811,7 +798,7 @@ export class AdminService {
     const now = new Date();
     const dateFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
-    const [visits, users, listings] = await Promise.all([
+    const [visits, users, products] = await Promise.all([
       this.prisma.visitLog.groupBy({
         by: ['dayKey'],
         where: { createdAt: { gte: dateFrom } },
@@ -822,19 +809,19 @@ export class AdminService {
         where: { createdAt: { gte: dateFrom } },
         select: { createdAt: true },
       }),
-      this.prisma.listing.findMany({
+      this.prisma.commerceProduct.findMany({
         where: { createdAt: { gte: dateFrom } },
         select: { createdAt: true },
       }),
     ]);
 
     // Группируем по дням без рандома
-    const dayMap = new Map<string, { date: string; registrations: number; listings: number; visitors: number }>();
+    const dayMap = new Map<string, { date: string; registrations: number; products: number; visitors: number }>();
 
     for (let i = 0; i < days; i++) {
       const date = new Date(now.getTime() - (days - 1 - i) * 24 * 60 * 60 * 1000);
       const key = date.toISOString().split('T')[0];
-      dayMap.set(key, { date: key, registrations: 0, listings: 0, visitors: 0 });
+      dayMap.set(key, { date: key, registrations: 0, products: 0, visitors: 0 });
     }
 
     for (const v of visits) {
@@ -848,10 +835,10 @@ export class AdminService {
       if (entry) entry.registrations++;
     }
 
-    for (const l of listings) {
-      const key = l.createdAt.toISOString().split('T')[0];
+    for (const product of products) {
+      const key = product.createdAt.toISOString().split('T')[0];
       const entry = dayMap.get(key);
-      if (entry) entry.listings++;
+      if (entry) entry.products++;
     }
 
     return Array.from(dayMap.values());
@@ -1176,7 +1163,7 @@ export class AdminService {
       update: {},
       create: {
         id: 'singleton',
-        primaryColor: '#14b8a6',
+        primaryColor: '#2563eb',
         secondaryColor: '#0f766e',
         backgroundColor: '#f9fafb',
         textColor: '#111827',
@@ -1202,7 +1189,7 @@ export class AdminService {
       update: { ...dto, updatedById: adminId },
       create: {
         id: 'singleton',
-        primaryColor: dto.primaryColor ?? '#14b8a6',
+        primaryColor: dto.primaryColor ?? '#2563eb',
         secondaryColor: dto.secondaryColor ?? '#0f766e',
         backgroundColor: dto.backgroundColor ?? '#f9fafb',
         textColor: dto.textColor ?? '#111827',

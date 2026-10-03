@@ -499,7 +499,7 @@ model AdminThemeSettings {
 /// Дизайн-токены для темы сайта
 model ThemeSettings {
   id              String   @id @default("singleton")
-  primaryColor    String   @default("#a97724")
+  primaryColor    String   @default("#2563eb")
   secondaryColor  String   @default("#151812")
   backgroundColor String   @default("#f8f7f2")
   textColor       String   @default("#171712")

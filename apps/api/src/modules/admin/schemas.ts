@@ -44,7 +44,7 @@ export const adminUsersFilterSchema = z.object({
   lastActiveDays: z.coerce.number().int().positive().optional(), // для метрики активных
   createdAfterDays: z.coerce.number().int().positive().optional(), // для метрики новых
   createdBeforeDays: z.coerce.number().int().positive().optional(),
-  sortBy: z.enum(['createdAt', 'name', 'email', 'listingsCount']).default('createdAt'),
+  sortBy: z.enum(['createdAt', 'name', 'email']).default('createdAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
   order: z.enum(['asc', 'desc']).optional(),
 });
@@ -87,10 +87,7 @@ export const updateSiteSettingsSchema = z.object({
   maxImagesPerListing: z.coerce.number().int().min(1).max(50).optional(),
   maxProductPhotos: z.coerce.number().int().min(1).max(15).optional(),
   maxProductPhotoSizeMb: z.coerce.number().int().min(1).max(25).optional(),
-  listingsPerPage: z.coerce.number().int().min(1).max(100).optional(),
   logoUrl: z.string().url().optional().nullable(),
-  vipBoostEnabled: z.boolean().optional(),
-  verificationEnabled: z.boolean().optional(),
 
   // Feature Flags & Integrations
   deviceIpBanEnabled: z.boolean().optional(),
@@ -108,7 +105,6 @@ export const updateSiteSettingsSchema = z.object({
   watermarkDetectorEnabled: z.boolean().optional(),
   webPushEnabled: z.boolean().optional(),
   oneIdAuthEnabled: z.boolean().optional(),
-  yandexRealtyXmlEnabled: z.boolean().optional(),
   openTelemetryEnabled: z.boolean().optional(),
   yandexMetrikaId: z.string().max(50).optional(),
   yandexMetrikaEnabled: z.boolean().optional(),

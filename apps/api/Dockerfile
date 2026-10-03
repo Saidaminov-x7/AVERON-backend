@@ -1,5 +1,5 @@
 # apps/api/Dockerfile
-# Multi-stage production build для монорепо ijarauz_backend
+# Multi-stage production build for the AVERON backend monorepo
 
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
@@ -76,6 +76,9 @@ RUN chown -R apiuser:nodejs /app
 USER apiuser
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:8080/health/live').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
 # dumb-init для правильного forwarding сигналов в Node.js
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
