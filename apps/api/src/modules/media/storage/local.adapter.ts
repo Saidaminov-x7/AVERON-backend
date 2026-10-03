@@ -1,6 +1,6 @@
 import { IStorageAdapter, StorageUploadResult } from './storage.interface';
 import { join, relative, resolve, isAbsolute, sep } from 'path';
-import { writeFile, unlink, mkdir } from 'fs/promises';
+import { readFile, stat, writeFile, unlink, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { config } from '../../../config';
@@ -74,6 +74,21 @@ export class LocalStorageAdapter implements IStorageAdapter {
         this.logger.warn({ err, key }, '[LocalStorageAdapter] Failed to delete file');
       }
     }
+  }
+
+  async read(url: string): Promise<Buffer> {
+    if (!/^\/uploads\/[0-9]{4}-[0-9]{2}\/[0-9a-f-]{36}\.webp$/i.test(url)) {
+      throw new Error('MEDIA_STORAGE_URL_INVALID');
+    }
+    const key = url.slice('/uploads/'.length);
+    const resolvedPath = resolve(this.storagePath, key);
+    const relativePath = relative(resolve(this.storagePath), resolvedPath);
+    if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+      throw new Error('MEDIA_STORAGE_PATH_INVALID');
+    }
+    const info = await stat(resolvedPath);
+    if (info.size > 10 * 1024 * 1024) throw new Error('MEDIA_STORAGE_FILE_TOO_LARGE');
+    return readFile(resolvedPath);
   }
 
   getTransformedUrl(publicIdOrUrl: string): string {

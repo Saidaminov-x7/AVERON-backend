@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
-import { productAiInputSchema, productAiSuggestionSchema } from '../product-ai.schemas';
+import { productAiInputSchema, productAiRequestSchema, productAiSuggestionSchema } from '../product-ai.schemas';
 import { OpenAiCompatibleProductAiProvider } from '../product-ai-provider';
 import { productAiModule } from '../product-ai';
 
@@ -42,12 +42,49 @@ describe('product AI draft contract', () => {
   });
 
   it('rejects protected factual values in AI input and output', () => {
+    expect(productAiRequestSchema.safeParse({
+      mediaIds: ['00000000-0000-4000-8000-000000000001'],
+      country: 'GB',
+    }).success).toBe(true);
+    expect(productAiRequestSchema.safeParse({
+      mediaIds: [],
+      country: 'GB',
+    }).success).toBe(false);
     expect(productAiInputSchema.safeParse({ ...input, salePriceUzs: 1000 }).success).toBe(false);
     expect(productAiSuggestionSchema.safeParse({
       ...suggestion,
       status: 'PUBLISHED',
       price: 1000,
     }).success).toBe(false);
+  });
+
+  it('sends verified image bytes to the vision provider without requiring a source title', async () => {
+    let providerRequest: Record<string, unknown> | undefined;
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      providerRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(suggestion) } }],
+        }),
+      };
+    }) as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleProductAiProvider(
+      { apiUrl: 'https://ai.example/v1/chat/completions', apiKey: 'test-key', model: 'test-model' },
+      fetcher,
+    );
+    const visionInput = productAiInputSchema.parse({
+      country: 'CN',
+      images: [{ mimeType: 'image/png', data: Buffer.from('verified image bytes') }],
+    });
+
+    await provider.generateProductContent(visionInput);
+    const messages = providerRequest?.messages as Array<{ content?: unknown }>;
+    const userContent = messages[1].content as Array<{ image_url?: { url?: string } }>;
+    expect(userContent[1].image_url?.url).toBe(
+      `data:image/png;base64,${Buffer.from('verified image bytes').toString('base64')}`,
+    );
+    expect(visionInput.sourceTitle).toBeUndefined();
   });
 
   it('validates structured output and drops characteristics not present in source facts', async () => {
@@ -89,6 +126,6 @@ describe('product AI draft contract', () => {
       fetcher,
     );
 
-    await expect(provider.generateProductContent(input)).rejects.toThrow();
+    await expect(provider.generateProductContent(productAiInputSchema.parse(input))).rejects.toThrow();
   });
 });

@@ -110,6 +110,7 @@ export class MediaService {
     if (!isAdmin && media.ownerId !== ownerId) {
       throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
     }
+
     const productImageReferences = await this.prisma.commerceProductImage.count({ where: { mediaId: id } });
     if (productImageReferences > 0) {
       throw Object.assign(new Error('Media is still in use by a product'), { statusCode: 409 });
@@ -123,6 +124,35 @@ export class MediaService {
 
     // Удаляем запись из БД
     await this.prisma.media.delete({ where: { id } });
+  }
+
+  async readVerifiedImages(ids: string[]): Promise<Array<{ mimeType: string; data: Buffer }>> {
+    if (ids.length < 1 || ids.length > 5) {
+      throw Object.assign(new Error('AI_IMAGE_COUNT_INVALID'), { statusCode: 400 });
+    }
+    const media = await this.prisma.media.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, url: true, mimeType: true, size: true },
+    });
+    if (
+      media.length !== ids.length ||
+      media.reduce((total, item) => total + item.size, 0) > 10 * 1024 * 1024 ||
+      media.some(({ mimeType, size }) =>
+        !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mimeType) ||
+        size < 1 ||
+        size > 10 * 1024 * 1024)
+    ) {
+      throw Object.assign(new Error('AI_IMAGE_MEDIA_INVALID'), { statusCode: 400 });
+    }
+    const results = await Promise.all(media.map(async ({ url, mimeType }) => {
+      const data = await this.storage.read(url);
+      const detected = await fileTypeFromBuffer(data);
+      if (!detected || detected.mime !== mimeType || data.length > 10 * 1024 * 1024) {
+        throw Object.assign(new Error('AI_IMAGE_MEDIA_INVALID'), { statusCode: 400 });
+      }
+      return { mimeType, data };
+    }));
+    return ids.map((id) => results[media.findIndex((item) => item.id === id)]);
   }
 
   /**

@@ -172,6 +172,28 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.delete<{ Params: { promoId: string } }>('/admin/commerce/promo-codes/:promoId', {
+    preHandler: adminMiddleware,
+  }, async (request, reply) => {
+    const promo = await app.prisma.commercePromoCode.findUnique({
+      where: { id: request.params.promoId },
+      select: { id: true },
+    });
+    if (!promo) return reply.status(404).send({ code: 'PROMO_NOT_FOUND', message: 'Promo code was not found' });
+    const usageCount = await app.prisma.commercePromoCodeUsage.count({
+      where: { promoCodeId: promo.id },
+    });
+    if (usageCount > 0) {
+      await app.prisma.commercePromoCode.update({
+        where: { id: promo.id },
+        data: { isActive: false },
+      });
+      return { deleted: false, archived: true };
+    }
+    await app.prisma.commercePromoCode.delete({ where: { id: promo.id } });
+    return { deleted: true, archived: false };
+  });
+
   app.get<{ Params: { promoId: string } }>('/admin/commerce/promo-codes/:promoId/usages', {
     preHandler: adminMiddleware,
   }, async (request, reply) => {

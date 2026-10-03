@@ -545,6 +545,21 @@ model VisitLog {
   @@index([path])
 }
 
+model CommerceAnalyticsEvent {
+  id          String   @id @default(uuid())
+  eventId     String   @unique
+  eventName   String
+  deviceId    String
+  path        String
+  metadata    Json?
+  orderId     String?  @unique
+  revenueUzs  Decimal? @db.Decimal(16, 2)
+  createdAt   DateTime @default(now())
+
+  @@index([eventName, createdAt])
+  @@index([deviceId, createdAt])
+}
+
 /// Секции конструктора страниц (Page Builder / CMS)
 model PageSection {
   id                 String   @id @default(uuid())

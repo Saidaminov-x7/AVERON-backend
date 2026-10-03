@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ProductCountry, ProductPublicationStatus } from '@prisma/client';
+import { ProductCountry, ProductPublicationStatus, ProductSource } from '@prisma/client';
 
 export const productCountrySchema = z.nativeEnum(ProductCountry);
 
@@ -17,7 +17,7 @@ const productListQueryBaseSchema = z.object({
   color: optionalQueryValue(z.string().trim().min(1).max(48)),
   minPrice: optionalQueryValue(productPriceQuerySchema),
   maxPrice: optionalQueryValue(productPriceQuerySchema),
-  sort: z.enum(['newest', 'price_asc', 'price_desc']).optional(),
+  sort: z.enum(['newest', 'price_asc', 'price_desc', 'popular']).optional(),
   page: z.string().regex(/^[1-9]\d{0,5}$/).optional(),
   limit: z.string().regex(/^[1-9]\d{0,2}$/).optional(),
 });
@@ -26,7 +26,7 @@ function validateProductPriceRange(
   query: { minPrice?: string; maxPrice?: string },
   context: z.RefinementCtx,
 ) {
-  if (query.minPrice && query.maxPrice && Number(query.minPrice) > Number(query.maxPrice)) {
+  if (query.minPrice !== undefined && query.maxPrice !== undefined && Number(query.minPrice) > Number(query.maxPrice)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['maxPrice'],
@@ -39,6 +39,7 @@ export const productListQuerySchema = productListQueryBaseSchema.superRefine(val
 
 export const adminProductListQuerySchema = productListQueryBaseSchema.extend({
   status: z.nativeEnum(ProductPublicationStatus).optional(),
+  source: z.nativeEnum(ProductSource).optional(),
 }).superRefine(validateProductPriceRange);
 
 export const adminImportListQuerySchema = z.object({
@@ -249,6 +250,7 @@ export const updateManualProductSchema = z.object({
   categoryId: z.string().uuid().nullable().optional(),
   color: z.string().max(80).optional(),
   size: z.string().max(80).optional(),
+  publish: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one product field must be provided',
 });
@@ -260,7 +262,7 @@ const localizedCategoryNameSchema = z.object({
 });
 
 export const createCategorySchema = z.object({
-  slug: z.string().trim().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  slug: z.string().trim().min(1).max(100).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
   name: localizedCategoryNameSchema,
   parentId: z.string().uuid().nullable().optional(),
   sortOrder: z.coerce.number().int().min(0).max(10000).optional(),

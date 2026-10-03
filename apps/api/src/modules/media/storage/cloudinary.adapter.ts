@@ -105,6 +105,43 @@ export class CloudinaryStorageAdapter implements IStorageAdapter {
     });
   }
 
+  async read(url: string): Promise<Buffer> {
+    const parsedUrl = new URL(url);
+    const expectedPathPrefix = `/${config.CLOUDINARY_CLOUD_NAME}/image/upload/`;
+    if (
+      parsedUrl.protocol !== 'https:' ||
+      parsedUrl.hostname !== 'res.cloudinary.com' ||
+      parsedUrl.port ||
+      parsedUrl.username ||
+      parsedUrl.password ||
+      !parsedUrl.pathname.startsWith(expectedPathPrefix)
+    ) {
+      throw new Error('MEDIA_STORAGE_URL_INVALID');
+    }
+    const response = await fetch(parsedUrl, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error('MEDIA_STORAGE_READ_FAILED');
+    const declaredLength = Number(response.headers.get('content-length') ?? 0);
+    if (declaredLength > 10 * 1024 * 1024) throw new Error('MEDIA_STORAGE_FILE_TOO_LARGE');
+    if (!response.body) throw new Error('MEDIA_STORAGE_READ_FAILED');
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > 10 * 1024 * 1024) {
+        await reader.cancel();
+        throw new Error('MEDIA_STORAGE_FILE_TOO_LARGE');
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+  }
+
   /**
    * Строит URL с Cloudinary-трансформацией на лету, без повторной загрузки.
    */

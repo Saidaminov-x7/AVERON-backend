@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, ProductPublicationStatus } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
-import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError } from './rules';
+import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError, slugifyProduct } from './rules';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
@@ -39,7 +39,7 @@ export function buildProductWhere(
       },
     };
   }
-  if (query.minPrice || query.maxPrice) {
+  if (query.minPrice !== undefined || query.maxPrice !== undefined) {
     where.salePriceUzs = {
       ...(query.minPrice ? { gte: query.minPrice } : {}),
       ...(query.maxPrice ? { lte: query.maxPrice } : {}),
@@ -152,6 +152,58 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
     const where = buildProductWhere(query, ProductPublicationStatus.PUBLISHED);
+    if (query.sort === 'popular') {
+      const eligibleWhere: Prisma.CommerceProductWhereInput = {
+        AND: [where, { category: { is: { active: true } } }],
+      };
+      const [candidates, total] = await Promise.all([
+        app.prisma.commerceProduct.findMany({
+          where: eligibleWhere,
+          select: { id: true, publishedAt: true },
+        }),
+        app.prisma.commerceProduct.count({ where: eligibleWhere }),
+      ]);
+      const candidateIds = candidates.map(({ id }) => id);
+      if (!candidateIds.length) {
+        return { items: [], pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+      }
+      const [favorites, views] = await Promise.all([
+        app.prisma.productFavorite.groupBy({
+          by: ['productId'],
+          where: { productId: { in: candidateIds } },
+          _count: { _all: true },
+        }),
+        app.prisma.commerceRecentlyViewedProduct.groupBy({
+          by: ['productId'],
+          where: { productId: { in: candidateIds } },
+          _count: { _all: true },
+        }),
+      ]);
+      const engagement = new Map<string, number>();
+      for (const { productId, _count } of [...favorites, ...views]) {
+        engagement.set(productId, (engagement.get(productId) ?? 0) + _count._all);
+      }
+      const orderedIds = candidates
+        .sort((left, right) =>
+          (engagement.get(right.id) ?? 0) - (engagement.get(left.id) ?? 0) ||
+          (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0) ||
+          left.id.localeCompare(right.id),
+        )
+        .slice((page - 1) * limit, page * limit)
+        .map(({ id }) => id);
+      const pageProducts = await app.prisma.commerceProduct.findMany({
+        where: { id: { in: orderedIds } },
+        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true },
+      });
+      const productsById = new Map(pageProducts.map((product) => [product.id, product]));
+      return {
+        items: orderedIds.flatMap((id) => {
+          const product = productsById.get(id);
+          return product ? [publicProductDto(product)] : [];
+        }),
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+      };
+    }
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),
@@ -206,16 +258,21 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const parent = await app.prisma.commerceCategory.findUnique({ where: { id: input.parentId }, select: { id: true, active: true } });
       if (!parent || !parent.active) return reply.status(400).send({ message: 'Parent category must be active' });
     }
-    try {
-      return reply.status(201).send(await app.prisma.commerceCategory.create({
-        data: { ...input, name: input.name as Prisma.InputJsonValue },
-      }));
-    } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') {
-        return reply.status(409).send({ message: 'Category slug already exists' });
+    const baseSlug = slugifyProduct(input.name.en || input.name.ru || input.name.uz).slice(0, 90);
+    const generatedSlug = !input.slug;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const slug = input.slug ?? (attempt === 0 ? baseSlug : `${baseSlug}-${randomUUID().slice(0, 6)}`);
+      try {
+        return reply.status(201).send(await app.prisma.commerceCategory.create({
+          data: { ...input, slug, name: input.name as Prisma.InputJsonValue },
+        }));
+      } catch (error) {
+        if ((error as { code?: string }).code !== 'P2002') throw error;
+        if (!generatedSlug) return reply.status(409).send({ message: 'Category slug already exists' });
+        if (attempt === 4) return reply.status(409).send({ message: 'Could not generate a unique category slug' });
       }
-      throw error;
     }
+    return reply.status(409).send({ message: 'Could not generate a unique category slug' });
   });
 
   app.put<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: adminMiddleware }, async (request, reply) => {
@@ -292,10 +349,16 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
     const where = buildProductWhere(query, query.status);
+    if (query.source) where.source = query.source;
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({
         where,
-        include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true },
+        include: {
+          images: { orderBy: { sortOrder: 'asc' } },
+          variants: { where: { active: true } },
+          category: true,
+          importedFrom: { select: { originalTitle: true, status: true, source: true } },
+        },
         orderBy: productOrderBy(query.sort),
         skip: (page - 1) * limit,
         take: limit,
@@ -423,6 +486,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       select: {
         id: true,
         source: true,
+        status: true,
+        publishedAt: true,
         categoryId: true,
         preorderEnabled: true,
         preorderLimit: true,
@@ -522,6 +587,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             ? { stock: input.stock }
             : {}),
           ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
+          ...(input.publish !== undefined ? {
+            status: input.publish ? ProductPublicationStatus.PUBLISHED
+              : product.status === ProductPublicationStatus.ARCHIVED
+                ? ProductPublicationStatus.ARCHIVED
+                : ProductPublicationStatus.DRAFT,
+            publishedAt: input.publish ? (product.publishedAt ?? new Date())
+              : product.status === ProductPublicationStatus.ARCHIVED ? product.publishedAt : null,
+          } : {}),
         },
       });
       const changedFields = Object.keys(input);

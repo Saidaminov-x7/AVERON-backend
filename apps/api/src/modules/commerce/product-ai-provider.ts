@@ -48,12 +48,28 @@ export class OpenAiCompatibleProductAiProvider implements ProductAiProvider {
             content: [
               'Create draft localized product copy only in strict JSON with keys ru, uz, en.',
               'Each locale has title, description, and characteristics (string-to-string object).',
+              'Analyze attached product images for visible appearance, category, and colors; do not claim hidden material or technical facts unless supplied as text.',
               'Use only facts contained in the supplied product data. Never infer or invent specifications.',
               'Leave unavailable title, description, or characteristic values as empty strings.',
               'Do not output prices, country, images, sizes, SKU, inventory, delivery, URLs, status, or publication actions.',
             ].join(' '),
           },
-          { role: 'user', content: JSON.stringify(input) },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ...input,
+                  images: input.images.map(({ mimeType }) => ({ mimeType, supplied: true })),
+                }),
+              },
+              ...input.images.map(({ mimeType, data }) => ({
+                type: 'image_url' as const,
+                image_url: { url: `data:${mimeType};base64,${data.toString('base64')}` },
+              })),
+            ],
+          },
         ],
       }),
     });

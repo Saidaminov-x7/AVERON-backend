@@ -31,6 +31,8 @@ export interface IStorageAdapter {
    */
   delete(key: string): Promise<void>;
 
+  read(url: string): Promise<Buffer>;
+
   /**
    * Строит URL с трансформацией (для Cloudinary) или возвращает исходный
    */

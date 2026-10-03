@@ -19,6 +19,10 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       telegramProductPublish: capabilities.telegramProductPublish && Boolean(
         config.TELEGRAM_MINI_APP_BOT_TOKEN && config.TELEGRAM_CHANNEL_ID,
       ),
+      telegramProductPublishFeatureEnabled: featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'),
+      telegramProductPublishConfigured: Boolean(
+        config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim() && config.TELEGRAM_CHANNEL_ID?.trim(),
+      ),
       parserPinduoduo: false,
       ipost: false,
       n8n: capabilities.n8n,

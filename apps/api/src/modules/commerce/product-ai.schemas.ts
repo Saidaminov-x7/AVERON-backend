@@ -6,7 +6,28 @@ const factsSchema = z.record(z.string().trim().min(1).max(120), z.string().trim(
   .default({});
 
 export const productAiInputSchema = z.object({
-  sourceTitle: z.string().trim().min(1).max(500),
+  sourceTitle: z.string().trim().max(500).optional(),
+  sourceDescription: z.string().max(5000).optional(),
+  images: z.array(z.object({
+    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']),
+    data: z.instanceof(Buffer),
+  }).strict()).max(5).default([]),
+  country: z.nativeEnum(ProductCountry),
+  categoryName: z.string().trim().max(120).optional(),
+  characteristics: factsSchema,
+  variants: z.array(z.object({
+    size: z.string().max(80).optional(),
+    color: z.string().max(80).optional(),
+  }).strict()).max(100).default([]),
+}).strict().refine((value) =>
+  value.images.length > 0 || Boolean(value.sourceTitle?.trim() || value.sourceDescription?.trim()),
+  'Provide uploaded images or product text',
+);
+
+export const productAiRequestSchema = z.object({
+  mediaIds: z.array(z.string().uuid()).min(1).max(5)
+    .refine((ids) => new Set(ids).size === ids.length, 'Image media IDs must be unique'),
+  sourceTitle: z.string().trim().max(500).optional(),
   sourceDescription: z.string().max(5000).optional(),
   country: z.nativeEnum(ProductCountry),
   categoryName: z.string().trim().max(120).optional(),

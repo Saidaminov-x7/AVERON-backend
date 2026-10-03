@@ -72,6 +72,8 @@ describe('feature flags', () => {
       'smsVerification',
       'styleAssistant',
       'telegramProductPublish',
+      'telegramProductPublishConfigured',
+      'telegramProductPublishFeatureEnabled',
       'visualSearch',
     ]);
     expect(Object.values(response.json()).every((value) => typeof value === 'boolean')).toBe(true);

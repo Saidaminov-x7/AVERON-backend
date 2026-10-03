@@ -4,6 +4,7 @@ import {
   createCategorySchema,
   createImportSchema,
   createManualProductSchema,
+  adminProductListQuerySchema,
   productListQuerySchema,
   updateManualProductSchema,
 } from '../schemas';
@@ -84,6 +85,11 @@ describe('commerce product country validation', () => {
       page: '2',
     });
     expect(productListQuerySchema.safeParse({ country: 'FR' }).success).toBe(false);
+  });
+
+  it('accepts Admin product source filters and rejects unsupported providers', () => {
+    expect(adminProductListQuerySchema.parse({ source: 'SOURCE_1688' }).source).toBe('SOURCE_1688');
+    expect(adminProductListQuerySchema.safeParse({ source: 'UNKNOWN' }).success).toBe(false);
   });
 
   it.each(['CN', 'US', 'TR', 'IT', 'GB'])('builds a database filter for %s with other list params intact', (country) => {
@@ -187,6 +193,9 @@ describe('commerce product country validation', () => {
   it('validates localized category fields and slug format', () => {
     expect(createCategorySchema.safeParse({
       slug: 'outerwear',
+      name: { ru: 'Верхняя одежда', uz: 'Ustki kiyim', en: 'Outerwear' },
+    }).success).toBe(true);
+    expect(createCategorySchema.safeParse({
       name: { ru: 'Верхняя одежда', uz: 'Ustki kiyim', en: 'Outerwear' },
     }).success).toBe(true);
     expect(createCategorySchema.safeParse({

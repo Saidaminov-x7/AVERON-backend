@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma, TelegramPublicationStatus } from '@prisma/client';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { config } from '../../config';
@@ -36,6 +37,21 @@ async function getPublishedProduct(app: Parameters<FastifyPluginAsync>[0], id: s
 }
 
 export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
+  const recordTelegramTransition = async (request: FastifyRequest, productId: string) => {
+    try {
+      await app.prisma.commerceAnalyticsEvent.create({
+        data: {
+          eventId: randomUUID(),
+          eventName: 'telegram_transition',
+          deviceId: randomUUID(),
+          path: '/en/catalog',
+          metadata: { productId },
+        },
+      });
+    } catch (error) {
+      request.log.warn({ err: error, productId }, 'Telegram transition analytics could not be recorded');
+    }
+  };
   app.get('/admin/products/:id/telegram-publication', { preHandler: adminMiddleware }, async (request, reply) => {
     const { id } = productParams.parse(request.params);
     const product = await getPublishedProduct(app, id);
@@ -183,6 +199,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
           meta: { productId: id, channelId, errorCode },
         },
       });
+      await recordTelegramTransition(request, id);
       request.log.error({ publicationId: publication.id, errorCode }, 'Telegram product publication failed');
       return reply.status(502).send({ code: errorCode, status: TelegramPublicationStatus.FAILED });
     }
@@ -209,6 +226,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
         meta: { productId: id, channelId, telegramMessageId: messageId },
       },
     });
+    await recordTelegramTransition(request, id);
     return updated;
   });
 };

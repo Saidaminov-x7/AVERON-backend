@@ -1,10 +1,76 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 
 const visitSchema = z.object({
   deviceId: z.string().uuid(),
   path: z.string().regex(/^\/(?:ru|uz|en)(?:\/[a-zA-Z0-9._~!$&'()*+,;=:@%-]*)*$/).max(512),
+});
+
+const commerceEventNames = [
+  'page_view',
+  'product_view',
+  'catalog_search',
+  'catalog_filter',
+  'favorite_add',
+  'favorite_remove',
+  'compare_add',
+  'compare_remove',
+  'cart_add',
+  'cart_remove',
+  'begin_checkout',
+  'promo_apply',
+  'promo_reject',
+  'purchase',
+  'review_submit',
+  'outfit_save',
+  'outfit_add_to_cart',
+  'wishlist_share_enable',
+  'wishlist_share_open',
+  'wishlist_share_disable',
+  'telegram_transition',
+] as const;
+
+export const commerceEventSchema = z.object({
+  eventId: z.string().uuid(),
+  deviceId: z.string().uuid(),
+  eventName: z.enum(commerceEventNames),
+  path: visitSchema.shape.path,
+  orderId: z.string().uuid().optional(),
+  metadata: z.object({
+    productId: z.string().uuid().optional(),
+    categorySlug: z.string().max(100).optional(),
+    country: z.enum(['CN', 'US', 'TR', 'IT', 'GB']).optional(),
+    audience: z.enum(['all', 'women', 'men', 'kids']).optional(),
+    queryLength: z.number().int().min(0).max(200).optional(),
+    resultCount: z.number().int().min(0).max(10000).optional(),
+    sort: z.enum(['popular', 'newest', 'price_asc', 'price_desc']).optional(),
+    size: z.string().max(40).optional(),
+    color: z.string().max(40).optional(),
+    minPrice: z.number().int().min(0).max(100000000).optional(),
+    maxPrice: z.number().int().min(0).max(100000000).optional(),
+    quantity: z.number().int().min(1).max(100).optional(),
+  }).strict().optional(),
+}).strict().superRefine((event, context) => {
+  if (event.eventName === 'purchase' && !event.orderId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['orderId'], message: 'Purchase events require an order ID' });
+  }
+  if (event.eventName !== 'purchase' && event.orderId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['orderId'], message: 'Order IDs are only valid for purchase events' });
+  }
+  if (
+    event.eventName === 'wishlist_share_open'
+    && !/^\/(?:ru|uz|en)\/wishlist\/shared$/.test(event.path)
+  ) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['path'], message: 'Shared wishlist paths must not contain access tokens' });
+  }
+  if (
+    (event.eventName === 'wishlist_share_enable' || event.eventName === 'wishlist_share_disable')
+    && !/^\/(?:ru|uz|en)\/favorites$/.test(event.path)
+  ) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['path'], message: 'Wishlist sharing events require a sanitized favorites path' });
+  }
 });
 
 const dateRangeQuerySchema = z.object({
@@ -53,6 +119,53 @@ function asNumber(value: { toString(): string } | number) {
 }
 
 export const analyticsModule: FastifyPluginAsync = async (server) => {
+  server.post('/events', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const parsed = commerceEventSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ANALYTICS_EVENT' });
+    const event = parsed.data;
+    const isWishlistSharingEvent = event.eventName.startsWith('wishlist_share_');
+    if ((isPrivatePath(event.path) && !isWishlistSharingEvent) || event.path.startsWith('/admin/') || event.path.startsWith('/api/')) {
+      return reply.status(204).send();
+    }
+
+    let revenueUzs: Prisma.Decimal | undefined;
+    if (event.eventName === 'purchase' && event.orderId) {
+      const order = await server.prisma.commerceOrder.findUnique({
+        where: { id: event.orderId },
+        select: { status: true, totalRevenue: true, refundAmount: true },
+      });
+      if (!order || !PAID_ORDER_STATUSES.includes(order.status as typeof PAID_ORDER_STATUSES[number])) {
+        return reply.status(204).send();
+      }
+      revenueUzs = new Prisma.Decimal(
+        Math.max(0, asNumber(order.totalRevenue) - asNumber(order.refundAmount)),
+      );
+    }
+
+    try {
+      await server.prisma.commerceAnalyticsEvent.create({
+        data: {
+          eventId: event.eventId,
+          eventName: event.eventName,
+          deviceId: event.deviceId,
+          path: event.path,
+          metadata: event.metadata as Prisma.InputJsonValue | undefined,
+          ...(event.orderId ? { orderId: event.orderId } : {}),
+          ...(revenueUzs ? { revenueUzs } : {}),
+        },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return reply.status(204).send();
+      }
+      request.log.warn({ err: error }, 'Commerce analytics event could not be recorded');
+      return reply.status(503).send({ code: 'ANALYTICS_UNAVAILABLE' });
+    }
+    return reply.status(204).send();
+  });
+
   server.post('/visit', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
