@@ -8,7 +8,7 @@ import {
   productListQuerySchema,
   updateManualProductSchema,
 } from '../schemas';
-import { buildProductWhere } from '../index';
+import { buildPopularProductWhere, buildProductWhere, rankPopularProductIds } from '../index';
 
 const manualProduct = {
   title: 'Test product',
@@ -19,6 +19,29 @@ const manualProduct = {
 };
 
 describe('commerce product country validation', () => {
+  it('keeps uncategorized products and active-category products eligible for popularity', () => {
+    expect(buildPopularProductWhere({ status: 'PUBLISHED' })).toMatchObject({
+      AND: [
+        { status: 'PUBLISHED' },
+        { OR: [{ categoryId: null }, { category: { is: { active: true } } }] },
+      ],
+    });
+  });
+
+  it('ranks popularity using favorites and views with deterministic date and ID tie-breakers', () => {
+    const candidates = [
+      { id: 'uncategorized', publishedAt: new Date('2026-01-01') },
+      { id: 'viewed', publishedAt: new Date('2026-01-01') },
+      { id: 'favored', publishedAt: new Date('2026-01-01') },
+      { id: 'newer-tie', publishedAt: new Date('2026-02-01') },
+      { id: 'older-tie', publishedAt: new Date('2026-01-01') },
+      { id: 'same-date-b', publishedAt: new Date('2026-01-01') },
+      { id: 'same-date-a', publishedAt: new Date('2026-01-01') },
+    ];
+    expect(rankPopularProductIds(candidates, new Map([['favored', 2]]), new Map([['viewed', 3]])))
+      .toEqual(['favored', 'viewed', 'newer-tie', 'older-tie', 'same-date-a', 'same-date-b', 'uncategorized']);
+  });
+
   it.each(['CN', 'US', 'TR', 'IT', 'GB'])('accepts %s for manual products', (country) => {
     expect(createManualProductSchema.safeParse({ ...manualProduct, country }).success).toBe(true);
   });
@@ -56,6 +79,31 @@ describe('commerce product country validation', () => {
       country: 'CN',
       titleUz: '',
     }).success).toBe(false);
+  });
+
+  it('accepts public HTTPS source URLs and rejects unsafe schemes or hosts', () => {
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      sourceUrl: 'https://detail.1688.com/offer/123.html',
+    }).success).toBe(true);
+    for (const sourceUrl of [
+      'http://shop.example/item',
+      'javascript:alert(1)',
+      'data:text/plain,test',
+      'file:///etc/passwd',
+      'https://localhost/item',
+      'https://127.0.0.1/item',
+      'https://shop.internal/item',
+    ]) {
+      expect(createManualProductSchema.safeParse({
+        ...manualProduct,
+        country: 'CN',
+        sourceUrl,
+      }).success).toBe(false);
+    }
+    expect(updateManualProductSchema.safeParse({ sourceUrl: null }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ sourceUrl: 'http://shop.example/item' }).success).toBe(false);
   });
 
   it('rejects more than the hard system maximum of 15 photos', () => {
@@ -209,7 +257,7 @@ describe('commerce product country validation', () => {
       source: 'SOURCE_1688',
       sourceProvider: 'SOURCE_1688',
       sourceProductId: 'source-123',
-      sourceUrl: 'https://example.test/item/123',
+      sourceUrl: 'https://detail.1688.com/offer/123.html',
       sourceMetadata: { seller: 'seller-1' },
       deduplicationKey: 'SOURCE_1688:source-123',
       originalTitle: 'Cotton jacket',
@@ -220,5 +268,6 @@ describe('commerce product country validation', () => {
     expect(createImportSchema.safeParse(payload).success).toBe(true);
     expect(createImportSchema.safeParse({ ...payload, sourceProvider: 'TAOBAO' }).success).toBe(false);
     expect(createImportSchema.safeParse({ ...payload, deduplicationKey: 'arbitrary-key' }).success).toBe(false);
+    expect(createImportSchema.safeParse({ ...payload, sourceUrl: 'https://example.test/item/123' }).success).toBe(false);
   });
 });

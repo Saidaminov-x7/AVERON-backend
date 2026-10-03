@@ -68,6 +68,27 @@ function productOrderBy(sort?: string): Prisma.CommerceProductOrderByWithRelatio
   return { publishedAt: 'desc' };
 }
 
+export function buildPopularProductWhere(where: Prisma.CommerceProductWhereInput): Prisma.CommerceProductWhereInput {
+  return {
+    AND: [where, { OR: [{ categoryId: null }, { category: { is: { active: true } } }] }],
+  };
+}
+
+export function rankPopularProductIds(
+  candidates: Array<{ id: string; publishedAt: Date | null }>,
+  favoriteCounts: Map<string, number>,
+  viewCounts: Map<string, number>,
+) {
+  return candidates
+    .sort((left, right) =>
+      ((favoriteCounts.get(right.id) ?? 0) * 2 + (viewCounts.get(right.id) ?? 0))
+        - ((favoriteCounts.get(left.id) ?? 0) * 2 + (viewCounts.get(left.id) ?? 0)) ||
+      (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0) ||
+      left.id.localeCompare(right.id),
+    )
+    .map(({ id }) => id);
+}
+
 async function withDiagnosticStage<T>(stage: string, operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
@@ -153,9 +174,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
     const where = buildProductWhere(query, ProductPublicationStatus.PUBLISHED);
     if (query.sort === 'popular') {
-      const eligibleWhere: Prisma.CommerceProductWhereInput = {
-        AND: [where, { category: { is: { active: true } } }],
-      };
+      const eligibleWhere = buildPopularProductWhere(where);
       const [candidates, total] = await Promise.all([
         app.prisma.commerceProduct.findMany({
           where: eligibleWhere,
@@ -173,24 +192,27 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           where: { productId: { in: candidateIds } },
           _count: { _all: true },
         }),
-        app.prisma.commerceRecentlyViewedProduct.groupBy({
+        app.prisma.commerceAnalyticsEvent.groupBy({
           by: ['productId'],
-          where: { productId: { in: candidateIds } },
+          where: {
+            productId: { in: candidateIds },
+            eventName: 'product_view',
+            createdAt: { gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) },
+            productViewDayKey: { not: null },
+          },
           _count: { _all: true },
         }),
       ]);
-      const engagement = new Map<string, number>();
-      for (const { productId, _count } of [...favorites, ...views]) {
-        engagement.set(productId, (engagement.get(productId) ?? 0) + _count._all);
+      const favoriteCounts = new Map<string, number>();
+      const viewCounts = new Map<string, number>();
+      for (const { productId, _count } of favorites) {
+        favoriteCounts.set(productId, _count._all);
       }
-      const orderedIds = candidates
-        .sort((left, right) =>
-          (engagement.get(right.id) ?? 0) - (engagement.get(left.id) ?? 0) ||
-          (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0) ||
-          left.id.localeCompare(right.id),
-        )
+      for (const { productId, _count } of views) {
+        if (productId) viewCounts.set(productId, _count._all);
+      }
+      const orderedIds = rankPopularProductIds(candidates, favoriteCounts, viewCounts)
         .slice((page - 1) * limit, page * limit)
-        .map(({ id }) => id);
       const pageProducts = await app.prisma.commerceProduct.findMany({
         where: { id: { in: orderedIds } },
         include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true },
@@ -366,6 +388,20 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       app.prisma.commerceProduct.count({ where }),
     ]);
     return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
+  });
+
+  app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: adminMiddleware }, async (request, reply) => {
+    const identifier = request.params.identifier;
+    const product = await app.prisma.commerceProduct.findFirst({
+      where: { OR: [{ id: identifier }, { slug: identifier }] },
+      include: {
+        images: { orderBy: { sortOrder: 'asc' } },
+        variants: { where: { active: true } },
+        category: true,
+        importedFrom: { select: { originalTitle: true, status: true, source: true } },
+      },
+    });
+    return product ?? reply.status(404).send({ message: 'Product not found' });
   });
 
   app.get('/admin/imports', { preHandler: adminMiddleware }, async (request) => {

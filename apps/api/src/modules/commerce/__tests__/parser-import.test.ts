@@ -175,6 +175,7 @@ describe('authenticated Parser import API', () => {
         provider: 'PINDUODUO',
         sourceProductId: 'pdd-1',
         deduplicationKey: 'PINDUODUO:pdd-1',
+        sourceUrl: 'https://mobile.yangkeduo.com/goods.html?goods_id=123',
       }),
     });
     expect(unavailableResponse.statusCode).toBe(503);

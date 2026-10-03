@@ -47,11 +47,13 @@ export class OpenAiCompatibleProductAiProvider implements ProductAiProvider {
             role: 'system',
             content: [
               'Create draft localized product copy only in strict JSON with keys ru, uz, en.',
+              'Also return suggestedCategory as {slug, confidence} only when one supplied category candidate is a strong match; otherwise return null.',
               'Each locale has title, description, and characteristics (string-to-string object).',
               'Analyze attached product images for visible appearance, category, and colors; do not claim hidden material or technical facts unless supplied as text.',
               'Use only facts contained in the supplied product data. Never infer or invent specifications.',
               'Leave unavailable title, description, or characteristic values as empty strings.',
               'Do not output prices, country, images, sizes, SKU, inventory, delivery, URLs, status, or publication actions.',
+              'Category suggestions must use an exact slug from categoryCandidates; never create or rename a category.',
             ].join(' '),
           },
           {

@@ -56,6 +56,9 @@ export const commerceEventSchema = z.object({
   if (event.eventName === 'purchase' && !event.orderId) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['orderId'], message: 'Purchase events require an order ID' });
   }
+  if (event.eventName === 'product_view' && !event.metadata?.productId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['metadata', 'productId'], message: 'Product views require a product ID' });
+  }
   if (event.eventName !== 'purchase' && event.orderId) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['orderId'], message: 'Order IDs are only valid for purchase events' });
   }
@@ -150,6 +153,12 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
           eventId: event.eventId,
           eventName: event.eventName,
           deviceId: event.deviceId,
+          ...(event.eventName === 'product_view' && event.metadata?.productId
+            ? {
+              productId: event.metadata.productId,
+              productViewDayKey: new Date().toISOString().slice(0, 10),
+            }
+            : {}),
           path: event.path,
           metadata: event.metadata as Prisma.InputJsonValue | undefined,
           ...(event.orderId ? { orderId: event.orderId } : {}),

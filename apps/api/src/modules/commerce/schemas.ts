@@ -1,7 +1,31 @@
 import { z } from 'zod';
 import { ProductCountry, ProductPublicationStatus, ProductSource } from '@prisma/client';
+import { isIP } from 'node:net';
 
 export const productCountrySchema = z.nativeEnum(ProductCountry);
+
+const safeSourceUrlSchema = z.string().url().max(2048).refine((value) => {
+  const url = new URL(value);
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+  return url.protocol === 'https:'
+    && !url.username
+    && !url.password
+    && !isIP(hostname.replace(/^\[|\]$/g, ''))
+    && !/(?:^|\.)localhost$/.test(hostname)
+    && !/(?:^|\.)(?:local|internal|lan|home\.arpa)$/.test(hostname);
+}, 'Source URL must be a public HTTPS URL');
+
+const sourceDomains: Partial<Record<ProductSource, string[]>> = {
+  SOURCE_1688: ['1688.com'],
+  TAOBAO: ['taobao.com', 'tmall.com'],
+  ALIBABA: ['alibaba.com'],
+  ALIEXPRESS: ['aliexpress.com'],
+};
+
+function isHostForProvider(hostname: string, provider: ProductSource): boolean {
+  const domains = sourceDomains[provider];
+  return !domains || domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+}
 
 const productPriceQuerySchema = z.string()
   .regex(/^\d{1,14}(?:\.\d{1,2})?$/, 'Price must be a nonnegative UZS amount');
@@ -64,7 +88,7 @@ export const parserImportProductV1Schema = z.object({
   provider: z.enum(['SOURCE_1688', 'PINDUODUO']),
   sourceProductId: z.string().trim().min(1).max(160),
   deduplicationKey: z.string().trim().min(1).max(320),
-  sourceUrl: z.string().url().max(2048).refine((value) => new URL(value).protocol === 'https:', 'Source URL must use HTTPS'),
+  sourceUrl: safeSourceUrlSchema,
   sourceTitle: z.string().trim().min(1).max(500),
   sourceDescription: z.string().max(8000).optional(),
   sourceImages: z.array(z.string().url().max(2048).refine((value) => new URL(value).protocol === 'https:', 'Image URL must use HTTPS')).max(15).default([]),
@@ -102,6 +126,27 @@ export const parserImportProductV1Schema = z.object({
       message: 'Unsupported parser import schema version',
     });
   }
+  const hostname = new URL(value.sourceUrl).hostname.toLowerCase().replace(/\.$/, '');
+  if (value.provider === 'SOURCE_1688') {
+    if (hostname !== 'detail.1688.com' || !/^\/offer\/[^/]+\.html$/i.test(new URL(value.sourceUrl).pathname)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceUrl'],
+        message: 'SOURCE_1688 imports must use a supported product detail URL',
+      });
+    }
+  } else if (
+    hostname !== 'pinduoduo.com'
+    && !hostname.endsWith('.pinduoduo.com')
+    && hostname !== 'yangkeduo.com'
+    && !hostname.endsWith('.yangkeduo.com')
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceUrl'],
+      message: 'PINDUODUO imports must use a supported marketplace domain',
+    });
+  }
   if (value.rawMetadata && Buffer.byteLength(JSON.stringify(value.rawMetadata), 'utf8') > 12 * 1024) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['rawMetadata'], message: 'Source metadata exceeds the 12 KB limit' });
   }
@@ -111,7 +156,7 @@ export const createImportSchema = z.object({
   source: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']),
   sourceProvider: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS', 'MANUAL']).optional(),
   sourceProductId: z.string().min(1).max(160),
-  sourceUrl: z.string().url(),
+  sourceUrl: safeSourceUrlSchema,
   sourceMetadata: z.record(z.string(), z.unknown()).optional(),
   deduplicationKey: z.string().min(1).max(320).optional(),
   sellerId: z.string().max(160).optional(),
@@ -124,6 +169,16 @@ export const createImportSchema = z.object({
   expectedCostUzs: z.coerce.number().nonnegative().optional(),
   categoryId: z.string().uuid().optional(),
 }).superRefine((value, context) => {
+  if (value.source !== 'MANUAL') {
+    const hostname = new URL(value.sourceUrl).hostname.toLowerCase().replace(/\.$/, '');
+    if (!isHostForProvider(hostname, value.source)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['sourceUrl'],
+        message: 'Source URL does not match the selected provider',
+      });
+    }
+  }
   if (value.sourceProvider && value.sourceProvider !== value.source) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -207,7 +262,7 @@ export const createManualProductSchema = z.object({
   description: z.string().max(5000).optional(),
   descriptionUz: z.string().max(5000).optional(),
   descriptionEn: z.string().max(5000).optional(),
-  sourceUrl: z.string().url().optional().nullable(),
+  sourceUrl: safeSourceUrlSchema.optional().nullable(),
   images: createProductImagesSchema,
   sourcePriceCny: z.coerce.number().finite().nonnegative().optional(),
   exchangeRate: z.coerce.number().finite().positive().optional(),
@@ -239,7 +294,7 @@ export const updateManualProductSchema = z.object({
   description: z.string().max(5000).optional(),
   descriptionUz: z.string().max(5000).optional(),
   descriptionEn: z.string().max(5000).optional(),
-  sourceUrl: z.string().url().nullable().optional(),
+  sourceUrl: safeSourceUrlSchema.nullable().optional(),
   images: productImagesSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).optional(),
@@ -280,7 +335,7 @@ export const updateCategorySchema = z.object({
 
 export const customOrderSchema = z.object({
   source: z.enum(['SOURCE_1688', 'TAOBAO', 'ALIBABA', 'ALIEXPRESS']).default('SOURCE_1688'),
-  sourceUrl: z.string().url(),
+  sourceUrl: safeSourceUrlSchema,
   selectedVariant: z.record(z.string(), z.unknown()).optional(),
   quantity: z.coerce.number().int().min(1).max(100).default(1),
   contact: z.object({ name: z.string().min(2), phone: z.string().min(7), note: z.string().max(1000).optional() }),

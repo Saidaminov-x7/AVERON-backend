@@ -128,6 +128,38 @@ describe('public catalog filters', () => {
 describe('commerce admin routes', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it.each(['product-id', 'existing-product-slug'])('looks up an editable product directly by identifier: %s', async (identifier) => {
+    const product = {
+      id: 'product-id',
+      slug: 'existing-product-slug',
+      status: 'DRAFT',
+      sourceUrl: 'https://detail.1688.com/offer/1.html',
+      images: [],
+      variants: [],
+      category: null,
+    };
+    const { app, prisma } = createTestApp({ publicProduct: product });
+    await start(app);
+
+    const response = await app.inject({ method: 'GET', url: `/api/v1/admin/products/${identifier}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: product.id, slug: product.slug, status: 'DRAFT', sourceUrl: product.sourceUrl });
+    expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { OR: [{ id: identifier }, { slug: identifier }] },
+    }));
+    await app.close();
+  });
+
+  it('returns not found for an unknown admin product identifier', async () => {
+    const { app } = createTestApp();
+    await start(app);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/admin/products/missing' });
+
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
   it('creates a manual UZS-only product with multiple-photo references and no source URL', async () => {
     const { app, prisma, tx } = createTestApp();
     await start(app);
@@ -361,7 +393,7 @@ describe('commerce admin routes', () => {
       payload: {
         source: 'SOURCE_1688',
         sourceProductId: 'source-123',
-        sourceUrl: 'https://example.test/item/123',
+        sourceUrl: 'https://detail.1688.com/offer/123.html',
         originalTitle: 'Cotton jacket',
         sourcePriceCny: 25,
         normalizedPayload: { title: 'Cotton jacket' },
@@ -382,7 +414,7 @@ describe('commerce admin routes', () => {
       payload: {
         source: 'TAOBAO',
         sourceProductId: 'source-456',
-        sourceUrl: 'https://example.test/item/456',
+        sourceUrl: 'https://item.taobao.com/item.htm?id=456',
         sourceMetadata: { seller: 'seller-2' },
         deduplicationKey: 'TAOBAO:source-456',
         originalTitle: 'Cotton jacket',
@@ -421,7 +453,7 @@ describe('commerce admin routes', () => {
       payload: {
         source: 'TAOBAO',
         sourceProductId: 'source-456',
-        sourceUrl: 'https://example.test/item/456',
+        sourceUrl: 'https://item.taobao.com/item.htm?id=456',
         originalTitle: 'Cotton jacket',
         sourcePriceCny: 25,
         normalizedPayload: { title: 'Cotton jacket' },
@@ -448,7 +480,7 @@ describe('commerce admin routes', () => {
       payload: {
         source: 'TAOBAO',
         sourceProductId: 'source-456',
-        sourceUrl: 'https://example.test/item/456',
+        sourceUrl: 'https://item.taobao.com/item.htm?id=456',
         originalTitle: 'Cotton jacket',
         sourcePriceCny: 25,
         normalizedPayload: { title: 'Cotton jacket' },

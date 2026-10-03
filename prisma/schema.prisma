@@ -550,6 +550,8 @@ model CommerceAnalyticsEvent {
   eventId     String   @unique
   eventName   String
   deviceId    String
+  productId   String?
+  productViewDayKey String?
   path        String
   metadata    Json?
   orderId     String?  @unique
@@ -557,7 +559,9 @@ model CommerceAnalyticsEvent {
   createdAt   DateTime @default(now())
 
   @@index([eventName, createdAt])
+  @@index([eventName, productId, createdAt])
   @@index([deviceId, createdAt])
+  @@unique([deviceId, productId, productViewDayKey])
 }
 
 /// Секции конструктора страниц (Page Builder / CMS)

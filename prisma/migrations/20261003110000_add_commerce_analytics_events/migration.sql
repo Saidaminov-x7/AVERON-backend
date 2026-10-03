@@ -3,6 +3,8 @@ CREATE TABLE "CommerceAnalyticsEvent" (
     "eventId" TEXT NOT NULL,
     "eventName" TEXT NOT NULL,
     "deviceId" TEXT NOT NULL,
+    "productId" TEXT,
+    "productViewDayKey" TEXT,
     "path" TEXT NOT NULL,
     "metadata" JSONB,
     "orderId" TEXT,
@@ -15,4 +17,6 @@ CREATE TABLE "CommerceAnalyticsEvent" (
 CREATE UNIQUE INDEX "CommerceAnalyticsEvent_eventId_key" ON "CommerceAnalyticsEvent"("eventId");
 CREATE UNIQUE INDEX "CommerceAnalyticsEvent_orderId_key" ON "CommerceAnalyticsEvent"("orderId");
 CREATE INDEX "CommerceAnalyticsEvent_eventName_createdAt_idx" ON "CommerceAnalyticsEvent"("eventName", "createdAt");
+CREATE INDEX "CommerceAnalyticsEvent_eventName_productId_createdAt_idx" ON "CommerceAnalyticsEvent"("eventName", "productId", "createdAt");
 CREATE INDEX "CommerceAnalyticsEvent_deviceId_createdAt_idx" ON "CommerceAnalyticsEvent"("deviceId", "createdAt");
+CREATE UNIQUE INDEX "CommerceAnalyticsEvent_deviceId_productId_productViewDayKey_key" ON "CommerceAnalyticsEvent"("deviceId", "productId", "productViewDayKey");

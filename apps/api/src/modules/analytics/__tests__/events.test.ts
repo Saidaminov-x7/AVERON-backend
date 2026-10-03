@@ -8,12 +8,14 @@ const validEvent = {
   deviceId: '00000000-0000-4000-8000-000000000002',
   eventName: 'product_view',
   path: '/ru/catalog/test-product',
+  metadata: { productId: '00000000-0000-4000-8000-000000000003' },
 };
 
 describe('commerce analytics event contract', () => {
   it('accepts allowlisted events with bounded metadata', () => {
     expect(commerceEventSchema.safeParse({
       ...validEvent,
+      eventName: 'catalog_search',
       metadata: { country: 'CN', queryLength: 20, resultCount: 12 },
     }).success).toBe(true);
   });
@@ -38,12 +40,17 @@ describe('commerce analytics event contract', () => {
       const response = await app.inject({
         method: 'POST',
         url: '/analytics/events',
-        payload: { ...validEvent, metadata: { country: 'CN' } },
+        payload: { ...validEvent, metadata: { productId: validEvent.metadata.productId, country: 'CN' } },
       });
 
       expect(response.statusCode).toBe(204);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({ eventName: 'product_view', metadata: { country: 'CN' } }),
+        data: expect.objectContaining({
+          eventName: 'product_view',
+          metadata: { productId: validEvent.metadata.productId, country: 'CN' },
+          productId: validEvent.metadata.productId,
+          productViewDayKey: expect.any(String),
+        }),
       }));
       expect(response.body).toBe('');
       await app.close();

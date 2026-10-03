@@ -4,6 +4,7 @@ import 'dotenv/config';
 import fastify from 'fastify';
 import { fastifyHelmet } from '@fastify/helmet';
 import { fastifyCors } from '@fastify/cors';
+import { createCorsOriginAllowlist, isCorsOriginAllowed } from './lib/cors-origins';
 import { fastifyRateLimit } from '@fastify/rate-limit';
 import fastifyCompress from '@fastify/compress';
 import { fastifySwagger } from '@fastify/swagger';
@@ -119,15 +120,11 @@ server.register(fastifyHelmet, {
   },
 });
 
-const allowedOrigins = new Set(config.CORS_ORIGINS);
+const allowedOrigins = createCorsOriginAllowlist(config.CORS_ORIGINS);
 
 server.register(fastifyCors, {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.has(origin)) {
-      callback(null, true);
-      return;
-    }
-    callback(new Error('Origin is not allowed by CORS'), false);
+    callback(null, isCorsOriginAllowed(origin, allowedOrigins));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

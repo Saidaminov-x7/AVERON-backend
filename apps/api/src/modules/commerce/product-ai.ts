@@ -23,9 +23,41 @@ export const productAiModule: FastifyPluginAsync = async (app) => {
       const mediaService = new MediaService(app.prisma, undefined, request.log);
       const images = await mediaService.readVerifiedImages(parsed.data.mediaIds);
       const { mediaIds: _mediaIds, ...textInput } = parsed.data;
-      const input = productAiInputSchema.parse({ ...textInput, images });
+      const categories = await app.prisma.commerceCategory.findMany({
+        where: { active: true },
+        select: { id: true, slug: true, name: true },
+        orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }],
+        take: 200,
+      });
+      const categoryCandidates = categories.map((category) => ({
+        id: category.id,
+        slug: category.slug,
+        names: Object.fromEntries(
+          (['ru', 'uz', 'en'] as const).map((locale) => {
+            const name = category.name && typeof category.name === 'object' && !Array.isArray(category.name)
+              ? (category.name as Record<string, unknown>)[locale]
+              : undefined;
+            return [locale, typeof name === 'string' ? name : category.slug];
+          }),
+        ),
+      }));
+      const input = productAiInputSchema.parse({ ...textInput, categoryCandidates, images });
       const suggestion = await productAiProvider.generateProductContent(input);
-      return reply.send({ suggestions: suggestion });
+      const categorySuggestion = suggestion.suggestedCategory;
+      const matchedCategory = categorySuggestion && categorySuggestion.confidence >= 0.8
+        ? categories.find((category) => category.slug === categorySuggestion.slug)
+        : undefined;
+      const { suggestedCategory: _suggestedCategory, ...suggestions } = suggestion;
+      return reply.send({
+        suggestions,
+        suggestedCategory: matchedCategory
+          ? {
+            id: matchedCategory.id,
+            slug: matchedCategory.slug,
+            name: categoryCandidates.find((category) => category.id === matchedCategory.id)?.names,
+          }
+          : null,
+      });
     } catch (error) {
       if (error instanceof Error && 'statusCode' in error) {
         const statusCode = (error as Error & { statusCode: number }).statusCode;

@@ -12,8 +12,13 @@ export const productAiInputSchema = z.object({
     mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']),
     data: z.instanceof(Buffer),
   }).strict()).max(5).default([]),
-  country: z.nativeEnum(ProductCountry),
+  country: z.nativeEnum(ProductCountry).optional(),
   categoryName: z.string().trim().max(120).optional(),
+  categoryCandidates: z.array(z.object({
+    id: z.string().uuid(),
+    slug: z.string().max(120),
+    names: z.record(z.enum(['ru', 'uz', 'en']), z.string().max(120)),
+  }).strict()).max(200).default([]),
   characteristics: factsSchema,
   variants: z.array(z.object({
     size: z.string().max(80).optional(),
@@ -29,7 +34,7 @@ export const productAiRequestSchema = z.object({
     .refine((ids) => new Set(ids).size === ids.length, 'Image media IDs must be unique'),
   sourceTitle: z.string().trim().max(500).optional(),
   sourceDescription: z.string().max(5000).optional(),
-  country: z.nativeEnum(ProductCountry),
+  country: z.nativeEnum(ProductCountry).optional(),
   categoryName: z.string().trim().max(120).optional(),
   characteristics: factsSchema,
   variants: z.array(z.object({
@@ -48,6 +53,10 @@ export const productAiSuggestionSchema = z.object({
   ru: localizedSuggestionSchema,
   uz: localizedSuggestionSchema,
   en: localizedSuggestionSchema,
+  suggestedCategory: z.object({
+    slug: z.string().trim().min(1).max(120),
+    confidence: z.number().min(0).max(1),
+  }).nullable().optional(),
 }).strict();
 
 export type ProductAiInput = z.infer<typeof productAiInputSchema>;
