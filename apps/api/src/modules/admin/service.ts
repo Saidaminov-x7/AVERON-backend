@@ -13,6 +13,45 @@ import {
   UpdateSiteSettingsDto,
 } from './schemas';
 
+const SITE_SETTINGS_ADMIN_SELECT = {
+  id: true,
+  maintenanceMode: true,
+  maintenanceMessage: true,
+  siteName: true,
+  contactEmail: true,
+  contactPhone: true,
+  googleAuthEnabled: true,
+  autoModerationEnabled: true,
+  maxProductPhotos: true,
+  maxProductPhotoSizeMb: true,
+  logoUrl: true,
+  navLinks: true,
+  deviceIpBanEnabled: true,
+  adaptiveRateLimitEnabled: true,
+  twoFactorAuthEnabled: true,
+  geoIpValidationEnabled: true,
+  tokenRotationEnabled: true,
+  fieldEncryptionEnabled: true,
+  sessionQuarantineEnabled: true,
+  thunderingHerdEnabled: true,
+  fullTextSearchEnabled: true,
+  paymeClickEnabled: true,
+  autoFiscalizationEnabled: true,
+  smsGatewayEnabled: true,
+  watermarkDetectorEnabled: true,
+  webPushEnabled: true,
+  oneIdAuthEnabled: true,
+  openTelemetryEnabled: true,
+  yandexMetrikaId: true,
+  yandexMetrikaEnabled: true,
+  maintenanceBypassPassword: true,
+  maintenancePasswordEnabled: true,
+  mobilePinchZoomEnabled: true,
+  updatedAt: true,
+  updatedById: true,
+  updatedBy: { select: { id: true, name: true } },
+} satisfies Prisma.SiteSettingsSelect;
+
 export class AdminService {
   constructor(public readonly prisma: PrismaClient) { }
 
@@ -1099,11 +1138,10 @@ export class AdminService {
         contactPhone: '',
         googleAuthEnabled: true,
         autoModerationEnabled: false,
-        maxImagesPerListing: 10,
         maxProductPhotos: 15,
         maxProductPhotoSizeMb: 10,
       },
-      include: { updatedBy: { select: { id: true, name: true } } },
+      select: SITE_SETTINGS_ADMIN_SELECT,
     });
   }
 
@@ -1124,7 +1162,6 @@ export class AdminService {
       contactPhone: dto.contactPhone ?? '',
       googleAuthEnabled: dto.googleAuthEnabled ?? true,
       autoModerationEnabled: dto.autoModerationEnabled ?? false,
-      maxImagesPerListing: dto.maxImagesPerListing ?? 10,
       maxProductPhotos: dto.maxProductPhotos ?? 15,
       maxProductPhotoSizeMb: dto.maxProductPhotoSizeMb ?? 10,
       updatedById: adminId,
@@ -1137,9 +1174,7 @@ export class AdminService {
       where: { id: 'singleton' },
       update: updateData,
       create: createData,
-      include: {
-        updatedBy: { select: { id: true, name: true } },
-      },
+      select: SITE_SETTINGS_ADMIN_SELECT,
     });
 
     await this.log({
@@ -1285,7 +1320,7 @@ export class AdminService {
     });
 
     const mediaService = new MediaService(this.prisma);
-    const media = await mediaService.upload(file, adminId, undefined, true);
+    const media = await mediaService.upload(file, adminId);
 
     // Если был старый логотип и он отличается от нового, удаляем старый из Media и хранилища
     if (currentSettings?.logoUrl && currentSettings.logoUrl !== media.url) {

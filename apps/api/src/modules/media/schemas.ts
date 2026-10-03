@@ -3,9 +3,8 @@
 import { z } from 'zod';
 
 export const uploadQuerySchema = z.object({
-  listingId: z.string().uuid().optional(),
   purpose: z.enum(['productPhoto']).optional(),
-});
+}).strict();
 
 export type UploadQueryDto = z.infer<typeof uploadQuerySchema>;
 

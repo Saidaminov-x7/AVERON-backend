@@ -84,7 +84,6 @@ export const updateSiteSettingsSchema = z.object({
   contactPhone: z.union([z.string().min(5).max(30), z.literal('')]).optional(),
   googleAuthEnabled: z.boolean().optional(),
   autoModerationEnabled: z.boolean().optional(),
-  maxImagesPerListing: z.coerce.number().int().min(1).max(50).optional(),
   maxProductPhotos: z.coerce.number().int().min(1).max(15).optional(),
   maxProductPhotoSizeMb: z.coerce.number().int().min(1).max(25).optional(),
   logoUrl: z.string().url().optional().nullable(),

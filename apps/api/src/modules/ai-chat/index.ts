@@ -5,7 +5,6 @@ import { authMiddleware } from '../../lib/authMiddleware';
 import { AIChatService } from './service';
 import { PublicAIService } from './public-service';
 import { sendMessageSchema, createSessionSchema, SendMessageDto, CreateSessionDto } from './schemas';
-import { config } from '../../config';
 
 export const aiChatModule: FastifyPluginAsync = async (server) => {
   const getService = (req: FastifyRequest) => new AIChatService(req.server.prisma);
@@ -173,61 +172,4 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
     }
   });
 
-  /**
-   * GET /chats/:listingId/summary — AI-суммаризация переписки по объявлению
-   */
-  server.get<{ Params: { listingId: string } }>('/chats/:listingId/summary', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    const userId = request.user.userId;
-    const { listingId } = request.params;
-
-    const messages = await request.server.prisma.chatMessage.findMany({
-      where: {
-        listingId,
-        OR: [{ senderId: userId }, { recipientId: userId }],
-      },
-      include: {
-        sender: { select: { name: true } },
-      },
-      orderBy: { createdAt: 'asc' },
-      take: 50,
-    });
-
-    if (messages.length === 0) {
-      return reply.send({ summary: 'Переписка по данному объявлению пока пуста.' });
-    }
-
-    const transcript = messages.map((m) => `${m.sender.name}: ${m.message}`).join('\n');
-
-    try {
-      const response = await fetch(`${config.OLLAMA_BASE_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        signal: AbortSignal.timeout(15_000),
-        body: JSON.stringify({
-          model: config.OLLAMA_MODEL,
-          messages: [
-            { role: 'system', content: 'Кратко суммируй переписку между арендодателем и арендатором в 2-3 предложениях на русском языке.' },
-            { role: 'user', content: transcript },
-          ],
-          stream: false,
-        }),
-      });
-
-      if (response.ok) {
-        const data = (await response.json()) as { message?: { content?: string } };
-        if (data.message?.content) {
-          return reply.send({ summary: data.message.content });
-        }
-      }
-    } catch {
-      // Fallback при отсутствии связки с Ollama
-    }
-
-    const uniqueSenders = Array.from(new Set(messages.map((m) => m.sender.name)));
-    return reply.send({
-      summary: `Диалог из ${messages.length} сообщений между ${uniqueSenders.join(' и ')}. Обсуждаются вопросы аренды и условий заезда.`,
-    });
-  });
 };

@@ -54,7 +54,7 @@ export const forgotPasswordHandler = async (
   await redis.set(redisKey, JSON.stringify(payload), 'EX', RESET_TOKEN_TTL_SECONDS);
 
   // Формируем ссылку на страницу сброса пароля с использованием PUBLIC_SITE_URL и локали пользователя
-  const siteBase = (config.PUBLIC_SITE_URL || 'https://ijarauz.uz').replace(/\/+$/, '');
+  const siteBase = config.PUBLIC_SITE_URL.replace(/\/+$/, '');
   const userLocale = dto.locale || 'ru';
   const resetLink = `${siteBase}/${userLocale}/reset-password?token=${resetToken}`;
 

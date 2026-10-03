@@ -15,8 +15,14 @@ export interface UploadedFile {
   data: Buffer;
 }
 
-export interface MediaWithThumbnail extends Media {
+export type MediaWithThumbnail = Omit<Media, 'listingId'> & {
   thumbnailUrl?: string;
+};
+
+function withoutLegacyListingId(media: Media): Omit<Media, 'listingId'> {
+  const currentMedia = { ...media };
+  Reflect.deleteProperty(currentMedia, 'listingId');
+  return currentMedia;
 }
 
 export class MediaService {
@@ -36,10 +42,8 @@ export class MediaService {
   async upload(
     file: UploadedFile,
     ownerId: string,
-    listingId?: string,
-    isAdmin = false,
     maxFileSizeBytes = config.MAX_FILE_SIZE,
-  ): Promise<Media & { isNewUpload: boolean }> {
+  ): Promise<Omit<Media, 'listingId'> & { isNewUpload: boolean }> {
     const { data, filename } = file;
 
     // 1. Проверяем сигнатуру (magic bytes) реального содержимого
@@ -65,36 +69,13 @@ export class MediaService {
       );
     }
 
-    // 3. IDOR проверка: если указан listingId, проверяем, что объявление принадлежит пользователю
-    if (listingId) {
-      const listing = await this.prisma.listing.findUnique({ where: { id: listingId } });
-      if (!listing) {
-        throw Object.assign(new Error('Listing not found'), { statusCode: 404 });
-      }
-      if (!isAdmin && listing.ownerId !== ownerId) {
-        throw Object.assign(new Error('Forbidden: You do not own this listing'), { statusCode: 403 });
-      }
-      const settings = await this.prisma.siteSettings.findUnique({ where: { id: 'singleton' }, select: { maxImagesPerListing: true } });
-      const imageCount = await this.prisma.media.count({ where: { listingId } });
-      if (imageCount >= (settings?.maxImagesPerListing ?? 10)) {
-        throw Object.assign(new Error(`Maximum ${settings?.maxImagesPerListing ?? 10} images per listing`), { statusCode: 400 });
-      }
-    }
-
     // 4. Вычисляем SHA-256 хэш исходного файла (для дедупликации)
     const hash = createHash('sha256').update(data).digest('hex');
 
     // 5. Проверяем дедупликацию в базе данных
     const existing = await this.prisma.media.findUnique({ where: { hash } });
     if (existing) {
-      if (listingId && existing.listingId !== listingId) {
-        const updated = await this.prisma.media.update({
-          where: { id: existing.id },
-          data: { listingId },
-        });
-        return { ...updated, isNewUpload: false };
-      }
-      return { ...existing, isNewUpload: false };
+      return { ...withoutLegacyListingId(existing), isNewUpload: false };
     }
 
     // 6. Сохраняем файл через выбранный адаптер (Local или Cloudinary)
@@ -110,7 +91,6 @@ export class MediaService {
       data: {
         url: uploadResult.url,
         ownerId,
-        listingId,
         mimeType: uploadResult.mimeType,
         size: uploadResult.size,
         width: uploadResult.width,
@@ -118,13 +98,13 @@ export class MediaService {
         hash,
       },
     });
-    return { ...created, isNewUpload: true };
+    return { ...withoutLegacyListingId(created), isNewUpload: true };
   }
 
   /**
    * Удалить медиафайл (только владелец или ADMIN)
    */
-  async delete(id: string, ownerId: string, isAdmin = false, onlyIfUnattached = false): Promise<void> {
+  async delete(id: string, ownerId: string, isAdmin = false): Promise<void> {
     const media = await this.prisma.media.findUnique({ where: { id } });
     if (!media) throw Object.assign(new Error('Media not found'), { statusCode: 404 });
     if (!isAdmin && media.ownerId !== ownerId) {
@@ -138,58 +118,11 @@ export class MediaService {
     if (reviewMediaReferences > 0) {
       throw Object.assign(new Error('Media is still in use by a review'), { statusCode: 409 });
     }
-    if (onlyIfUnattached && media.listingId) {
-      throw Object.assign(new Error('Media is still attached to a listing'), { statusCode: 409 });
-    }
-
     // Удаляем из хранилища (Local или Cloudinary)
     await this.storage.delete(media.url);
 
     // Удаляем запись из БД
     await this.prisma.media.delete({ where: { id } });
-  }
-
-  /**
-   * Получить медиафайлы объявления
-   */
-  async getListingMedia(listingId: string): Promise<MediaWithThumbnail[]> {
-    const items = await this.prisma.media.findMany({
-      where: { listingId },
-      orderBy: { createdAt: 'asc' },
-    });
-    return items.map((item) => ({
-      ...item,
-      thumbnailUrl: this.storage.getTransformedUrl
-        ? this.storage.getTransformedUrl(item.url, { width: 400 })
-        : item.url,
-    }));
-  }
-
-  /**
-   * Привязать медиафайл к объявлению с IDOR проверкой
-   */
-  async attachToListing(
-    mediaId: string,
-    listingId: string,
-    ownerId: string,
-    isAdmin = false,
-  ): Promise<Media> {
-    const media = await this.prisma.media.findUnique({ where: { id: mediaId } });
-    if (!media) throw Object.assign(new Error('Media not found'), { statusCode: 404 });
-    if (!isAdmin && media.ownerId !== ownerId) {
-      throw Object.assign(new Error('Forbidden: You do not own this media'), { statusCode: 403 });
-    }
-
-    const listing = await this.prisma.listing.findUnique({ where: { id: listingId } });
-    if (!listing) throw Object.assign(new Error('Listing not found'), { statusCode: 404 });
-    if (!isAdmin && listing.ownerId !== ownerId) {
-      throw Object.assign(new Error('Forbidden: You do not own this listing'), { statusCode: 403 });
-    }
-
-    return this.prisma.media.update({
-      where: { id: mediaId },
-      data: { listingId },
-    });
   }
 
   /**
@@ -206,6 +139,17 @@ export class MediaService {
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          url: true,
+          ownerId: true,
+          mimeType: true,
+          size: true,
+          width: true,
+          height: true,
+          hash: true,
+          createdAt: true,
+        },
       }),
       this.prisma.media.count({ where }),
       this.prisma.media.aggregate({ where, _sum: { size: true } }),

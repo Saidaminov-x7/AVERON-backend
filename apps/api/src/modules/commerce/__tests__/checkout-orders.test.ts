@@ -2,6 +2,7 @@
 
 import Fastify from 'fastify';
 import { fastifyJwt } from '@fastify/jwt';
+import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cartCheckoutModule } from '../cart-checkout';
 import { commerceOrdersModule } from '../orders';
@@ -16,6 +17,7 @@ const CART_B = '00000000-0000-4000-8000-000000000009';
 const ORDER_ID = '00000000-0000-4000-8000-000000000006';
 const VARIANT = '00000000-0000-4000-8000-000000000007';
 const JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
+const testIdempotencyKey = (label: string) => `test-${label}-${randomUUID()}`;
 
 function makeProduct({
   id = PRODUCT,
@@ -428,7 +430,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: `Bearer ${tokenB}`, 'idempotency-key': 'foreign-cart-key-123' },
+      headers: { authorization: `Bearer ${tokenB}`, 'idempotency-key': testIdempotencyKey('foreign-cart-key') },
       payload: {
         contact: { name: 'Buyer B', phone: '+998901234568' },
         deliveryAddress: { city: 'Tashkent', address: 'Street 2' },
@@ -567,7 +569,7 @@ describe('commerce cart and checkout API', () => {
     const checkout = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'preorder-checkout-123' },
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('preorder-checkout') },
       payload: {
         contact: { name: 'Buyer', phone: '+998901234567' },
         deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
@@ -626,7 +628,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'price-tamper-123' },
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('price-tamper') },
       payload: {
         contact: { name: 'Buyer', phone: '+998901234567' },
         deliveryAddress: { city: 'Tashkent', address: 'Main street 1' },
@@ -644,7 +646,7 @@ describe('commerce cart and checkout API', () => {
       promoCodes: [promoCode()],
     });
     const token = await tokenFor(app, USER_A);
-    const headers = { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-tamper-123' };
+    const headers = { authorization: ['Bearer', token].join(' '), 'idempotency-key': testIdempotencyKey('promo-tamper') };
     const fakeDiscount = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
@@ -654,7 +656,7 @@ describe('commerce cart and checkout API', () => {
     const stackedPromos = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { ...headers, 'idempotency-key': 'promo-stack-123' },
+      headers: { ...headers, 'idempotency-key': testIdempotencyKey('promo-stack') },
       payload: checkoutPayload({ promoCodes: ['SAVE10', 'OTHER'] }),
     });
 
@@ -673,7 +675,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-success-123' },
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': testIdempotencyKey('promo-success') },
       payload: checkoutPayload({ promoCode: 'save10' }),
     });
 
@@ -707,7 +709,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-failure-123' },
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': testIdempotencyKey('promo-failure') },
       payload: checkoutPayload({ promoCode: 'SAVE10' }),
     });
 
@@ -757,7 +759,7 @@ describe('commerce cart and checkout API', () => {
     const first = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-first-use-123' },
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': testIdempotencyKey('promo-first-use') },
       payload: checkoutPayload({ promoCode: 'SAVE10' }),
     });
     cartItems.push({
@@ -771,7 +773,7 @@ describe('commerce cart and checkout API', () => {
     const second = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': 'promo-second-use-123' },
+      headers: { authorization: ['Bearer', token].join(' '), 'idempotency-key': testIdempotencyKey('promo-second-use') },
       payload: checkoutPayload({ promoCode: 'SAVE10' }),
     });
 
@@ -792,7 +794,7 @@ describe('commerce cart and checkout API', () => {
       contact: { name: 'Buyer', phone: '+998901234567' },
       deliveryAddress: { city: 'Tashkent', address: 'Main street 1', floor: '2', comment: 'Call on arrival' },
     };
-    const headers = { authorization: `Bearer ${token}`, 'idempotency-key': 'order-submit-123' };
+    const headers = { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('order-submit') };
     const first = await app.inject({ method: 'POST', url: '/api/v1/checkout', headers, payload });
     const second = await app.inject({ method: 'POST', url: '/api/v1/checkout', headers, payload });
 
@@ -844,7 +846,7 @@ describe('commerce cart and checkout API', () => {
       cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 }],
     });
     const token = await tokenFor(app, USER_A);
-    const headers = { authorization: `Bearer ${token}`, 'idempotency-key': 'same-key-1234' };
+    const headers = { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('same-key') };
     const first = await app.inject({
       method: 'POST', url: '/api/v1/checkout', headers,
       payload: { contact: { name: 'Buyer', phone: '+998901234567' }, deliveryAddress: { city: 'Tashkent', address: 'Street 1' } },
@@ -863,7 +865,7 @@ describe('commerce cart and checkout API', () => {
       cartItems: [{ id: 'cart-item', cartId: CART, itemKey: `${PRODUCT}:none`, productId: PRODUCT, variantId: null, quantity: 1 }],
     });
     const token = await tokenFor(app, USER_A);
-    const key = 'concurrent-checkout-123';
+    const key = testIdempotencyKey('concurrent-checkout');
     const headers = { authorization: `Bearer ${token}`, 'idempotency-key': key };
     const payload = {
       contact: { name: 'Buyer', phone: '+998901234567' },
@@ -918,7 +920,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'variant-checkout-123' },
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('variant-checkout') },
       payload: {
         contact: { name: 'Buyer', phone: '+998901234567' },
         deliveryAddress: { city: 'Tashkent', address: 'Main street 1' },
@@ -947,7 +949,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'stock-check-1234' },
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('stock-check') },
       payload: { contact: { name: 'Buyer', phone: '+998901234567' }, deliveryAddress: { city: 'Tashkent', address: 'Street 1' } },
     });
     expect(response.statusCode).toBe(409);
@@ -984,7 +986,7 @@ describe('commerce cart and checkout API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
-      headers: { authorization: `Bearer ${token}`, 'idempotency-key': 'partial-stock-claim-123' },
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('partial-stock-claim') },
       payload: {
         contact: { name: 'Buyer', phone: '+998901234567' },
         deliveryAddress: { city: 'Tashkent', address: 'Street 1' },

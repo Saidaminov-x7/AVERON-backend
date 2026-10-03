@@ -27,7 +27,7 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
    * POST /media/upload — загрузить изображение
    * Content-Type: multipart/form-data
    * Field: file (image)
-   * Query: listingId? (UUID)
+   * Query: purpose? (productPhoto)
    */
   server.post('/upload', {
     preHandler: [authMiddleware],
@@ -67,8 +67,6 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
       const media = await service.upload(
         { filename: data.filename, mimetype: data.mimetype, data: buffer },
         request.user.userId,
-        query.listingId,
-        isAdmin,
         maxFileSizeBytes,
       );
       return reply.status(media.isNewUpload ? 201 : 200).send(media);
@@ -91,9 +89,8 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
   }, async (request, reply) => {
     const service = getService(request);
     const isAdmin = request.user.role === 'ADMIN';
-    const onlyIfUnattached = (request.query as { onlyIfUnattached?: string }).onlyIfUnattached === 'true';
     try {
-      await service.delete(request.params.id, request.user.userId, isAdmin, onlyIfUnattached);
+      await service.delete(request.params.id, request.user.userId, isAdmin);
       return reply.status(204).send();
     } catch (err) {
       const error = err as Error & { statusCode?: number };
@@ -101,38 +98,6 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
     }
   });
 
-  /**
-   * GET /media/listing/:listingId — медиафайлы объявления
-   */
-  server.get<{ Params: { listingId: string } }>('/listing/:listingId', async (
-    request,
-    _reply,
-  ) => {
-    const service = getService(request);
-    const media = await service.getListingMedia(request.params.listingId);
-    return media;
-  });
-
-  /**
-   * PATCH /media/:id/attach — привязать файл к объявлению
-   */
-  server.patch<{ Params: { id: string }; Body: { listingId: string } }>('/:id/attach', {
-    preHandler: [authMiddleware],
-  }, async (request, reply) => {
-    const { listingId } = request.body;
-    if (!listingId) {
-      return reply.status(400).send({ message: 'listingId is required' });
-    }
-    const service = getService(request);
-    const isAdmin = request.user.role === 'ADMIN';
-    try {
-      const media = await service.attachToListing(request.params.id, listingId, request.user.userId, isAdmin);
-      return media;
-    } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
-    }
-  });
   /**
    * GET /media — список всех медиафайлов (для библиотеки и админки)
    */

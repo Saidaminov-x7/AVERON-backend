@@ -539,7 +539,6 @@ const start = async () => {
         'autoFiscalizationEnabled',
         'smsGatewayEnabled',
         'oneIdAuthEnabled',
-        'yandexRealtyXmlEnabled',
         'geoIpValidationEnabled',
         'fieldEncryptionEnabled',
         'sessionQuarantineEnabled',
