@@ -485,6 +485,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           originalPriceCny: input.sourcePriceCny ?? null,
           exchangeRate: input.exchangeRate ?? null,
           salePriceUzs: input.salePriceUzs,
+          compareAtPriceUzs: input.compareAtPriceUzs ?? null,
           stock: input.stock,
           preorderEnabled: input.preorderEnabled,
           preorderLimit: input.preorderLimit,
@@ -502,7 +503,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
               return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title } };
             }),
           },
-          variants: input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock }] } : undefined,
+          variants: input.colors?.length
+            ? { create: input.colors.map((color, index) => ({ sku: `MANUAL-${sourceProductId}-${index + 1}`, color: `${color.name}::${color.hex.toUpperCase()}`, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock })) }
+            : input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock }] } : undefined,
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
@@ -619,6 +622,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             : {}),
           ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
           ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
+          ...(input.compareAtPriceUzs !== undefined ? { compareAtPriceUzs: input.compareAtPriceUzs } : {}),
           ...(input.preorderEnabled !== undefined ? { preorderEnabled: input.preorderEnabled } : {}),
           ...(input.preorderLimit !== undefined ? { preorderLimit: input.preorderLimit } : {}),
           ...(input.preorderEstimatedAt !== undefined ? { preorderEstimatedAt: input.preorderEstimatedAt } : {}),
@@ -671,8 +675,22 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
 
       if (product.source === 'MANUAL' && (
-        input.color !== undefined || input.size !== undefined || input.salePriceUzs !== undefined || input.stock !== undefined
+        input.color !== undefined || input.colors !== undefined || input.size !== undefined || input.salePriceUzs !== undefined || input.stock !== undefined
       )) {
+        if (input.colors !== undefined) {
+          await tx.commerceProductVariant.updateMany({ where: { productId: id }, data: { active: false } });
+          for (const [index, colorOption] of input.colors.entries()) {
+            await tx.commerceProductVariant.create({ data: {
+              productId: id,
+              sku: `MANUAL-${randomUUID()}-${index + 1}`,
+              color: `${colorOption.name}::${colorOption.hex.toUpperCase()}`,
+              size: input.size?.trim() || null,
+              sourcePriceCny: null,
+              salePriceUzs: input.salePriceUzs ?? Number(updatedProduct.salePriceUzs),
+              stock: input.stock ?? 0,
+            } });
+          }
+        } else {
         const color = input.color?.trim() || null;
         const size = input.size?.trim() || null;
         const variant = manualVariant;
@@ -711,6 +729,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             },
           });
         }
+        }
       }
       return updatedProduct;
     });
@@ -728,6 +747,18 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
     }
     return updated;
+  });
+
+  app.delete('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true } });
+    if (!product) return reply.status(404).send({ message: 'Product not found' });
+    const archived = await app.prisma.$transaction(async (tx) => {
+      const result = await tx.commerceProduct.update({ where: { id }, data: { status: ProductPublicationStatus.ARCHIVED } });
+      await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_DELETED', resource: 'CommerceProduct', resourceId: id } });
+      return result;
+    });
+    return archived;
   });
 
   app.post('/admin/imports', { preHandler: adminMiddleware }, async (request, reply) => {

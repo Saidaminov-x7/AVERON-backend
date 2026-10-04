@@ -269,6 +269,7 @@ export const createManualProductSchema = z.object({
   sourcePriceCny: z.coerce.number().finite().nonnegative().optional(),
   exchangeRate: z.coerce.number().finite().positive().optional(),
   salePriceUzs: z.coerce.number().finite().positive(),
+  compareAtPriceUzs: z.coerce.number().finite().positive().nullable().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).default(0),
   preorderEnabled: z.boolean().default(false),
   preorderLimit: z.number().int().min(0).max(10_000).default(0),
@@ -276,6 +277,10 @@ export const createManualProductSchema = z.object({
     .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().optional(),
   color: z.string().max(80).optional(),
+  colors: z.array(z.object({
+    name: z.string().trim().min(1).max(80),
+    hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
+  })).max(30).optional(),
   size: z.string().max(80).optional(),
   publish: z.boolean().default(true),
 }).superRefine((value, context) => {
@@ -300,6 +305,7 @@ export const updateManualProductSchema = z.object({
   sourceUrl: safeSourceUrlSchema.nullable().optional(),
   images: productImagesSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive().optional(),
+  compareAtPriceUzs: z.coerce.number().finite().positive().nullable().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).optional(),
   preorderEnabled: z.boolean().optional(),
   preorderLimit: z.number().int().min(0).max(10_000).optional(),
@@ -307,6 +313,10 @@ export const updateManualProductSchema = z.object({
     .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().nullable().optional(),
   color: z.string().max(80).optional(),
+  colors: z.array(z.object({
+    name: z.string().trim().min(1).max(80),
+    hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
+  })).max(30).optional(),
   size: z.string().max(80).optional(),
   publish: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
