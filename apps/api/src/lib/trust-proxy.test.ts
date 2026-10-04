@@ -27,4 +27,19 @@ describe('trustProxyOption', () => {
     assert.deepEqual(trustProxyOption(['10.0.0.1', '192.0.2.0/24']), ['10.0.0.1', '192.0.2.0/24']);
     assert.equal(trustProxyOption([]), false);
   });
+
+  it('trusts the managed platform proxy when Railway terminates HTTPS', async () => {
+    const app = fastify({ trustProxy: trustProxyOption([], true) });
+    app.get('/protocol', async (request) => ({ protocol: request.protocol }));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/protocol',
+      headers: { 'x-forwarded-proto': 'https' },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().protocol, 'https');
+    await app.close();
+  });
 });

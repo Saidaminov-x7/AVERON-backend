@@ -66,6 +66,8 @@ mkdirSync(config.STORAGE_PATH, { recursive: true });
 
 // ─── Создание сервера ─────────────────────────────────────────────────────────
 
+const isRailwayRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
+
 const server = fastify({
   logger: {
     level: config.LOG_LEVEL,
@@ -73,7 +75,7 @@ const server = fastify({
       ? { transport: { target: 'pino-pretty', options: { colorize: true } } }
       : {}),
   },
-  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES),
+  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES, isRailwayRuntime),
   ajv: {
     customOptions: {
       strict: 'log',
@@ -82,7 +84,7 @@ const server = fastify({
   },
 });
 
-if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0) {
+if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0 && !isRailwayRuntime) {
   server.log.warn(
     'TRUST_PROXY_ADDRESSES is empty; forwarded client IP headers are ignored and rate limits use the direct peer address',
   );
