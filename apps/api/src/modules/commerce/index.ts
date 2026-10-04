@@ -749,16 +749,46 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return updated;
   });
 
-  app.delete('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/products/:id/archive', { preHandler: adminMiddleware }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
     const archived = await app.prisma.$transaction(async (tx) => {
       const result = await tx.commerceProduct.update({ where: { id }, data: { status: ProductPublicationStatus.ARCHIVED } });
-      await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_DELETED', resource: 'CommerceProduct', resourceId: id } });
+      await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_ARCHIVED', resource: 'CommerceProduct', resourceId: id } });
       return result;
     });
     return archived;
+  });
+
+  app.post('/admin/products/:id/restore', { preHandler: adminMiddleware }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true, status: true } });
+    if (!product) return reply.status(404).send({ message: 'Product not found' });
+    const restored = await app.prisma.$transaction(async (tx) => {
+      const result = await tx.commerceProduct.update({ where: { id }, data: { status: ProductPublicationStatus.DRAFT, publishedAt: null } });
+      await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_RESTORED', resource: 'CommerceProduct', resourceId: id } });
+      return result;
+    });
+    return restored;
+  });
+
+  app.delete('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true, images: { select: { mediaId: true } } } });
+    if (!product) return reply.status(404).send({ message: 'Product not found' });
+    try {
+      await app.prisma.$transaction(async (tx) => {
+        await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_PERMANENTLY_DELETED', resource: 'CommerceProduct', resourceId: id } });
+        await tx.commerceProduct.delete({ where: { id } });
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        return reply.status(409).send({ message: 'Product is used in an order and cannot be permanently deleted. Archive it instead.' });
+      }
+      throw error;
+    }
+    return reply.status(204).send();
   });
 
   app.post('/admin/imports', { preHandler: adminMiddleware }, async (request, reply) => {
