@@ -4,7 +4,7 @@
   "description": "AVERON commerce backend API",
   "main": "dist/server.js",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "build": "prisma generate --schema=../../prisma/schema.prisma && tsc --project tsconfig.json",
