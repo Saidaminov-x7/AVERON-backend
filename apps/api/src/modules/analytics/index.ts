@@ -1,7 +1,6 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 
 const visitSchema = z.object({
@@ -122,12 +121,6 @@ function asNumber(value: { toString(): string } | number) {
   return Number(value.toString());
 }
 
-function trustedVisitorId(request: FastifyRequest) {
-  const userAgent = request.headers['user-agent']?.slice(0, 512) || 'unknown';
-  const digest = createHash('sha256').update(`${request.ip}|${userAgent}`).digest('hex');
-  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-}
-
 export const analyticsModule: FastifyPluginAsync = async (server) => {
   server.post('/events', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
@@ -187,13 +180,12 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = visitSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ANALYTICS_EVENT' });
-    const { path } = parsed.data;
+    const { deviceId, path } = parsed.data;
     if (isPrivatePath(path) || path.startsWith('/admin/') || path.startsWith('/api/')) {
       return reply.status(204).send();
     }
 
     const dayKey = new Date().toISOString().slice(0, 10);
-    const deviceId = trustedVisitorId(request);
     const userAgent = request.headers['user-agent']?.slice(0, 512) || null;
     try {
       await server.prisma.visitLog.upsert({
@@ -252,7 +244,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
         select: { createdAt: true },
       }),
       server.prisma.user.findMany({
-        where: { createdAt: range, ip: { not: null } },
+        where: { createdAt: range },
         select: { createdAt: true },
       }),
       server.prisma.commerceOrder.findMany({

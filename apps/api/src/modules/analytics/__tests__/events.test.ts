@@ -24,15 +24,17 @@ describe('commerce analytics event contract', () => {
     async function buildApp(options?: {
       order?: { status: string; totalRevenue: Prisma.Decimal; refundAmount: Prisma.Decimal } | null;
     }) {
-      const app = Fastify();
+      const app = Fastify({ trustProxy: true });
       const create = vi.fn(async () => ({}));
       const findOrder = vi.fn(async () => options?.order ?? null);
+      const upsertVisit = vi.fn(async () => ({}));
       app.decorate('prisma', {
         commerceAnalyticsEvent: { create },
         commerceOrder: { findUnique: findOrder },
+        visitLog: { upsert: upsertVisit },
       } as never);
       await app.register(analyticsModule, { prefix: '/analytics' });
-      return { app, create, findOrder };
+      return { app, create, findOrder, upsertVisit };
     }
 
     it('records allowed events and returns no analytics payload', async () => {
@@ -100,6 +102,33 @@ describe('commerce analytics event contract', () => {
       expect(privateResponse.statusCode).toBe(204);
       expect(invalidResponse.statusCode).toBe(400);
       expect(create).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it('deduplicates repeat visits by the persistent browser ID instead of changing IP addresses', async () => {
+      const { app, upsertVisit } = await buildApp();
+      const payload = {
+        deviceId: '00000000-0000-4000-8000-000000000099',
+        path: '/ru/catalog',
+      };
+
+      for (const ip of ['198.51.100.10', '203.0.113.25']) {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/analytics/visit',
+          headers: { 'x-forwarded-for': ip },
+          payload,
+        });
+        expect(response.statusCode).toBe(204);
+      }
+
+      expect(upsertVisit).toHaveBeenCalledTimes(2);
+      expect(upsertVisit).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        where: { deviceId_dayKey: { deviceId: payload.deviceId, dayKey: expect.any(String) } },
+      }));
+      expect(upsertVisit).toHaveBeenNthCalledWith(2, expect.objectContaining({
+        where: { deviceId_dayKey: { deviceId: payload.deviceId, dayKey: expect.any(String) } },
+      }));
       await app.close();
     });
   });
