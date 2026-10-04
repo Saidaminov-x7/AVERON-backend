@@ -215,6 +215,7 @@ export const approveImportSchema = z.object({
     }).partial(),
   }).partial().optional(),
   country: productCountrySchema,
+  sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
   salePriceUzs: z.coerce.number().finite().positive(),
   exchangeRate: z.coerce.number().finite().positive().optional(),
   mediaIds: z.array(z.string().uuid()).max(15).default([]),
@@ -257,6 +258,7 @@ const createProductImagesSchema = z.array(z.object({ mediaId: z.string().uuid() 
 export const createManualProductSchema = z.object({
   title: z.string().min(2).max(500),
   country: productCountrySchema,
+  sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
   titleUz: z.string().min(2).max(500),
   titleEn: z.string().min(2).max(500),
   description: z.string().max(5000).optional(),
@@ -288,6 +290,7 @@ export const createManualProductSchema = z.object({
 
 export const updateManualProductSchema = z.object({
   country: productCountrySchema.optional(),
+  sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
   title: z.string().min(2).max(500).optional(),
   titleUz: z.string().max(500).optional(),
   titleEn: z.string().max(500).optional(),

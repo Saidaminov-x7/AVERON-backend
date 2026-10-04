@@ -34,6 +34,7 @@ async function validateItems(db: Db, input: ItemInput[]) {
     where: { id: { in: [...new Set(input.map((item) => item.productId))] }, status: 'PUBLISHED' },
     select: {
       id: true,
+      publicId: true,
       translations: true,
       salePriceUzs: true,
       stock: true,
@@ -72,6 +73,7 @@ function itemDto(item: {
   sortOrder: number;
   product: {
     slug: string;
+    publicId: string | null;
     translations: Prisma.JsonValue;
     salePriceUzs: Prisma.Decimal;
     stock: number;
@@ -96,6 +98,7 @@ function itemDto(item: {
     sortOrder: item.sortOrder,
     product: {
       slug: item.product.slug,
+      publicId: item.product.publicId,
       title: typeof title === 'string' ? title : '',
       imageUrl: item.product.images[0]?.url ?? null,
       priceUzs: String(variant?.salePriceUzs ?? item.product.salePriceUzs),
@@ -115,6 +118,7 @@ const savedOutfitInclude = {
       product: {
         select: {
           slug: true,
+          publicId: true,
           translations: true,
           salePriceUzs: true,
           stock: true,

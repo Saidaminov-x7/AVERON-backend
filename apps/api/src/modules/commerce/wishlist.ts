@@ -8,6 +8,7 @@ const shareTokenParams = z.object({ token: z.string().regex(/^[A-Za-z0-9_-]{43}$
 const publicProductSelect = {
   id: true,
   slug: true,
+  publicId: true,
   translations: true,
   salePriceUzs: true,
   stock: true,
@@ -20,6 +21,7 @@ const publicProductSelect = {
 function productDto(product: {
   id: string;
   slug: string;
+  publicId: string | null;
   translations: unknown;
   salePriceUzs: { toString(): string };
   stock: number;
@@ -39,6 +41,7 @@ function productDto(product: {
   return {
     id: product.id,
     slug: product.slug,
+    publicId: product.publicId,
     title,
     imageUrl: product.images[0]?.url ?? null,
     priceUzs: product.salePriceUzs.toString(),

@@ -146,7 +146,38 @@ describe('commerce admin routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ id: product.id, slug: product.slug, status: 'DRAFT', sourceUrl: product.sourceUrl });
     expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: { OR: [{ id: identifier }, { slug: identifier }] },
+      where: { OR: [{ id: identifier }, { publicId: identifier }, { slug: identifier }] },
+    }));
+    await app.close();
+  });
+
+  it('resolves published products by public ID and returns it with the legacy slug', async () => {
+    const product = {
+      id: 'product-id',
+      slug: 'linen-shirt-583921',
+      publicId: 'a42h-nbsq-o1fp-awaz',
+      status: 'PUBLISHED',
+      stock: 1,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      preorderEstimatedAt: null,
+      images: [],
+      variants: [],
+      category: null,
+    };
+    const { app, prisma } = createTestApp({ publicProduct: product });
+    await start(app);
+
+    const response = await app.inject({ method: 'GET', url: `/api/v1/products/${product.publicId}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ publicId: product.publicId, slug: product.slug });
+    expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        OR: [{ publicId: product.publicId }, { slug: product.publicId }, { id: product.publicId }],
+        status: 'PUBLISHED',
+      },
     }));
     await app.close();
   });
@@ -171,6 +202,7 @@ describe('commerce admin routes', () => {
         titleUz: 'Sinov kurtkasi',
         titleEn: 'Test jacket',
         country: 'CN',
+        sizeChartType: 'SHOES',
         salePriceUzs: 180000,
         images: [{ mediaId }],
         publish: false,
@@ -181,6 +213,9 @@ describe('commerce admin routes', () => {
     expect(prisma.$transaction).toHaveBeenCalledOnce();
     expect(tx.commerceProduct.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
+        publicId: expect.stringMatching(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/),
+        sizeChartType: 'SHOES',
+        slug: expect.stringMatching(/^test-jacket-\d{6}$/),
         sourceUrl: null,
         originalPriceCny: null,
         exchangeRate: null,
@@ -277,6 +312,7 @@ describe('commerce admin routes', () => {
         preorderEnabled: true,
         preorderLimit: 8,
         preorderEstimatedAt: '2031-02-03T00:00:00.000Z',
+        sizeChartType: 'CLOTHING',
       },
     });
 
@@ -286,6 +322,7 @@ describe('commerce admin routes', () => {
         preorderEnabled: true,
         preorderLimit: 8,
         preorderEstimatedAt: new Date('2031-02-03T00:00:00.000Z'),
+        sizeChartType: 'CLOTHING',
       }),
     }));
     await app.close();

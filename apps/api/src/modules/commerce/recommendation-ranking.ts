@@ -66,7 +66,7 @@ export type RankingContext = {
   baseProductId?: string;
   baseCategoryId?: string | null;
   baseParentCategoryId?: string | null;
-  baseMetadata?: string;
+  baseMetadata?: unknown;
   viewedProductIds?: Set<string>;
   interestedCategoryIds?: Set<string>;
   favoriteProductIds?: Set<string>;
@@ -79,14 +79,27 @@ function metadata(product: {
   material: string | null;
   category: { name: Prisma.JsonValue; slug: string } | null;
   variants: Array<{ color: string | null }>;
-}): string {
-  return JSON.stringify({
+}): unknown {
+  return {
     translations: product.translations,
     attributes: product.attributes,
     material: product.material,
-    category: product.category,
+    category: product.category?.name,
     colors: product.variants.map(({ color }) => color),
-  }).toLocaleLowerCase();
+  };
+}
+
+function metadataTerms(value: unknown): Set<string> {
+  if (typeof value === 'string') {
+    return new Set(value.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter((term) => term.length > 3));
+  }
+  if (Array.isArray(value)) {
+    return new Set(value.flatMap((item) => [...metadataTerms(item)]));
+  }
+  if (typeof value === 'object' && value !== null) {
+    return new Set(Object.values(value).flatMap((item) => [...metadataTerms(item)]));
+  }
+  return new Set();
 }
 
 export function rankRecommendations<T extends {
@@ -116,7 +129,7 @@ export function rankRecommendations<T extends {
   const candidateIds = new Set(seenIds);
   const candidateSlugs = new Set<string>();
   const categoryCounts = new Map<string, number>();
-  const baseMetadata = context.baseMetadata ?? '';
+  const baseMetadata = metadataTerms(context.baseMetadata);
 
   const ranked = candidates.flatMap((product) => {
     if (
@@ -126,15 +139,13 @@ export function rankRecommendations<T extends {
     ) return [];
     candidateIds.add(product.id);
     candidateSlugs.add(product.slug);
-    const details = metadata(product);
+    const details = metadataTerms(metadata(product));
     const sameCategory = Boolean(context.baseCategoryId && product.categoryId === context.baseCategoryId);
     const siblingCategory = Boolean(
       context.baseParentCategoryId &&
       product.category?.parentId === context.baseParentCategoryId,
     );
-    const metadataOverlap = baseMetadata
-      ? baseMetadata.split(/[^a-z0-9а-яё]+/i).filter((term) => term.length > 3 && details.includes(term)).length
-      : 0;
+    const metadataOverlap = [...baseMetadata].filter((term) => details.has(term)).length;
     const ratings = product.reviews.map(({ rating }) => rating).filter((rating) => rating >= 1 && rating <= 5);
     const reviewConfidence = Math.min(1, ratings.length / 5);
     const averageRating = ratings.length ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length : 0;
@@ -144,6 +155,7 @@ export function rankRecommendations<T extends {
     let reasonCode: RecommendationReason = 'RELATED_CATEGORY';
 
     if (context.strategy === 'RELATED') {
+      if (!sameCategory && !siblingCategory && metadataOverlap === 0) return [];
       score += (sameCategory ? RECOMMENDATION_WEIGHTS.sameCategory : 0) +
         (siblingCategory ? RECOMMENDATION_WEIGHTS.siblingCategory : 0) +
         Math.min(2, metadataOverlap) * RECOMMENDATION_WEIGHTS.metadataOverlap;

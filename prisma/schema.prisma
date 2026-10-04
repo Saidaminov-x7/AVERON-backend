@@ -906,6 +906,8 @@ model CommerceProduct {
   categoryId        String?
   category          CommerceCategory?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   slug              String                   @unique
+  publicId          String                   @unique
+  sizeChartType      String?
   translations      Json
   description       Json?
   attributes        Json?

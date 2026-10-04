@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, ProductPublicationStatus } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
-import { assertHumanApproval, createProductWithUniqueSlug, ProductSlugCollisionError, slugifyProduct } from './rules';
+import { assertHumanApproval, createProductWithUniquePublicId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
@@ -235,7 +235,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
-    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
+    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
     return product ? publicProductDto(product) : reply.status(404).send({ message: 'Товар не найден' });
   });
 
@@ -393,7 +393,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: adminMiddleware }, async (request, reply) => {
     const identifier = request.params.identifier;
     const product = await app.prisma.commerceProduct.findFirst({
-      where: { OR: [{ id: identifier }, { slug: identifier }] },
+      where: { OR: [{ id: identifier }, { publicId: identifier }, { slug: identifier }] },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
         variants: { where: { active: true } },
@@ -470,10 +470,12 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     let product;
     try {
       product = await withDiagnosticStage('manual_product_transaction', () =>
-        createProductWithUniqueSlug(input.title, (slug) => app.prisma.$transaction(async (tx) => {
+        createProductWithUniquePublicId(input.title, (publicId, slug) => app.prisma.$transaction(async (tx) => {
         const created = await tx.commerceProduct.create({ data: {
           slug,
+          publicId,
           country: input.country,
+          sizeChartType: input.sizeChartType ?? null,
           translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
           description: Object.keys(descriptions).length ? descriptions : undefined,
           attributes: { audience: 'everyone' },
@@ -506,8 +508,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         return created;
         })));
     } catch (error) {
-      if (error instanceof ProductSlugCollisionError) {
-        return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
+      if (error instanceof ProductPublicIdCollisionError) {
+        return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный публичный ID товара' });
       }
       throw error;
     }
@@ -596,6 +598,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         where: { id },
         data: {
           ...(input.country !== undefined ? { country: input.country } : {}),
+          ...(input.sizeChartType !== undefined ? { sizeChartType: input.sizeChartType } : {}),
           ...(input.title !== undefined || input.titleUz !== undefined || input.titleEn !== undefined
             ? {
                 translations: mergeLocalizedTitles(product.translations, {
@@ -822,7 +825,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const mediaById = new Map(media.map((image) => [image.id, image]));
     let result;
     try {
-      result = await createProductWithUniqueSlug(title, (slug) => app.prisma.$transaction(async (tx) => {
+      result = await createProductWithUniquePublicId(title, (publicId, slug) => app.prisma.$transaction(async (tx) => {
         const claimed = await tx.importedProduct.updateMany({
           where: { id, status: 'PENDING_REVIEW' },
           data: { status: 'APPROVED', reviewedById: request.user.userId, reviewedAt: new Date() },
@@ -830,7 +833,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         if (claimed.count !== 1) throw new Error('IMPORT_NOT_PENDING_REVIEW');
         const product = await tx.commerceProduct.create({ data: {
           slug,
+          publicId,
           country: input.country,
+          sizeChartType: input.sizeChartType ?? null,
           translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as Prisma.InputJsonValue,
           description: input.translations
             ? Object.fromEntries(Object.entries(input.translations).flatMap(([locale, content]) =>
@@ -853,8 +858,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       if (error instanceof Error && error.message === 'IMPORT_NOT_PENDING_REVIEW') {
         return reply.status(409).send({ code: error.message, message: 'This import is no longer awaiting review.' });
       }
-      if (error instanceof ProductSlugCollisionError) {
-        return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный URL товара' });
+      if (error instanceof ProductPublicIdCollisionError) {
+        return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный публичный ID товара' });
       }
       throw error;
     }

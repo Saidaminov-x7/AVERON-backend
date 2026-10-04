@@ -15,6 +15,8 @@ function product(id: string, options: {
   preorderReserved?: number;
   rating?: number;
   createdAt?: Date;
+  categoryName?: string;
+  parentCategoryId?: string | null;
 } = {}) {
   return {
     id,
@@ -27,9 +29,9 @@ function product(id: string, options: {
     categoryId: options.categoryId ?? 'category-a',
     category: {
       id: options.categoryId ?? 'category-a',
-      parentId: 'parent',
+      parentId: options.parentCategoryId === undefined ? 'parent' : options.parentCategoryId,
       active: options.active ?? true,
-      name: { en: 'Clothing' },
+      name: { en: options.categoryName ?? 'Clothing' },
       slug: options.categoryId ?? 'category-a',
     },
     translations: { en: { title: id } },
@@ -84,6 +86,29 @@ describe('recommendation ranking', () => {
     );
 
     expect(recommendations.map(({ product: item }) => item.id)).toEqual(['candidate']);
+  });
+
+  it('does not fill related recommendations with unrelated products', () => {
+    const current = product('current');
+    const recommendations = rankRecommendations(
+      [
+        product('same-category'),
+        product('unrelated', {
+          categoryId: 'category-b',
+          categoryName: 'Electronics',
+          parentCategoryId: 'other-parent',
+        }),
+      ],
+      {
+        strategy: 'RELATED',
+        baseProductId: current.id,
+        baseCategoryId: current.categoryId,
+        baseParentCategoryId: 'parent',
+        baseMetadata: { translations: { en: { title: 'Current' } }, category: { en: 'Clothing' } },
+      },
+    );
+
+    expect(recommendations.map(({ product: item }) => item.id)).toEqual(['same-category']);
   });
 
   it('uses actual view and favorite signals for personalization while excluding viewed products', () => {

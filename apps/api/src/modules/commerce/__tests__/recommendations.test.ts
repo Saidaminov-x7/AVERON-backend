@@ -132,4 +132,41 @@ describe('recommendation routes', () => {
     expect(String(create.sessionKey)).not.toMatch(/^[A-Za-z0-9_-]{43}$/);
     await app.close();
   });
+
+  it('uses anonymous browsing history for personalized recommendations', async () => {
+    const candidate = {
+      ...availableProduct,
+      id: 'candidate-product-id',
+      slug: 'candidate-product',
+      createdAt: new Date('2026-09-02T00:00:00.000Z'),
+      publishedAt: new Date('2026-09-02T00:00:00.000Z'),
+      category: { ...availableProduct.category, name: { en: 'Clothing' }, parentId: null },
+    };
+    const findMany = vi.fn(async () => [{
+      productId: 'previously-viewed-product',
+      product: { categoryId: 'category-1' },
+    }]);
+    const prisma = {
+      commerceProduct: {
+        findFirst: vi.fn(async () => availableProduct),
+        findMany: vi.fn(async () => [candidate]),
+      },
+      commerceRecentlyViewedProduct: { findMany },
+    };
+    const app = await buildApp(prisma);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/products/valid-product/recommendations?strategy=personalized',
+      headers: { cookie: `averonRecommendationSession=${'A'.repeat(43)}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().meta).toMatchObject({ strategy: 'PERSONALIZED', personalized: true });
+    expect(response.json().items.map((item: { product: { id: string } }) => item.product.id))
+      .toEqual(['candidate-product-id']);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ sessionKey: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+    }));
+    await app.close();
+  });
 });

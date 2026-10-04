@@ -100,14 +100,14 @@ function isAvailable(product: RecommendationProduct): boolean {
   return isEligibleRecommendationProduct(product);
 }
 
-function productMetadata(product: RecommendationProduct): string {
-  return JSON.stringify({
+function productMetadata(product: RecommendationProduct): unknown {
+  return {
     translations: product.translations,
     attributes: product.attributes,
     material: product.material,
     category: product.category?.name,
     colors: product.variants.map((variant) => variant.color),
-  }).toLocaleLowerCase();
+  };
 }
 
 function responseReason(strategy: string, personalized: boolean): string {
@@ -152,15 +152,14 @@ export function createRecommendationsModule(dependencies: {
           : parsed.data.strategy === 'personalized'
             ? 'PERSONALIZED'
             : 'YOU_MAY_ALSO_LIKE';
-      let userId: string | undefined;
+      let owner: RecommendationOwner | undefined;
       if (strategy === 'PERSONALIZED') {
         if (!flags.isEnabled('PERSONALIZED_RECOMMENDATIONS')) {
           return reply.status(403).send({ code: 'FEATURE_DISABLED' });
         }
         const auth = await identifyOwner(request, reply);
         if (auth === false) return reply;
-        if ('userId' in auth) userId = auth.userId;
-        else strategy = 'YOU_MAY_ALSO_LIKE';
+        owner = auth;
       }
 
       const candidates = await app.prisma.commerceProduct.findMany({
@@ -173,14 +172,15 @@ export function createRecommendationsModule(dependencies: {
         take: RECOMMENDATION_CANDIDATE_LIMIT,
       });
       const eligible = candidates.filter(isAvailable);
-      const recentViews = userId
+      const recentViews = owner
         ? await app.prisma.commerceRecentlyViewedProduct.findMany({
-            where: { userId, product: recommendableWhere() },
+            where: { ...ownerWhere(owner), product: recommendableWhere() },
             select: { productId: true, product: { select: { categoryId: true } } },
             orderBy: { viewedAt: 'desc' },
             take: RECENT_HISTORY_LIMIT,
           })
         : [];
+      const userId = owner && 'userId' in owner ? owner.userId : undefined;
       const favorites = userId
         ? await app.prisma.productFavorite.findMany({
             where: { userId, product: recommendableWhere() },
@@ -202,7 +202,7 @@ export function createRecommendationsModule(dependencies: {
         baseMetadata: productMetadata(base),
         ...(userId ? { viewedProductIds, interestedCategoryIds, favoriteProductIds } : {}),
       }, parsed.data.limit);
-      const personalized = strategy === 'PERSONALIZED' && Boolean(userId) &&
+      const personalized = strategy === 'PERSONALIZED' &&
         (recentViews.length > 0 || favorites.length > 0);
       const items = rows.map((row) => ({
         product: publicRecommendation(row.product),

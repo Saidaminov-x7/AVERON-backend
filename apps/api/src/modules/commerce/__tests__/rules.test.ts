@@ -3,9 +3,10 @@ import { Prisma } from '@prisma/client';
 import {
   assertHumanApproval,
   calculateNetProfit,
+  createProductWithUniquePublicId,
+  createPublicProductId,
   createProductSlug,
-  createProductWithUniqueSlug,
-  ProductSlugCollisionError,
+  ProductPublicIdCollisionError,
   slugifyProduct,
 } from '../rules';
 
@@ -56,43 +57,57 @@ describe('AVERON commerce invariants', () => {
     expect(() => createProductSlug('Тест', '123')).toThrow('INVALID_PRODUCT_SLUG_SUFFIX');
   });
 
-  it('creates distinct slugs from successive generated suffixes', async () => {
-    const suffixes = ['100001', '100002'];
-    const created: string[] = [];
-    const create = async (slug: string) => {
-      created.push(slug);
-      return slug;
-    };
-
-    await createProductWithUniqueSlug('Тест', create, () => suffixes.shift()!);
-    await createProductWithUniqueSlug('Тест', create, () => suffixes.shift()!);
-
-    expect(created).toEqual(['test-100001', 'test-100002']);
+  it('generates public product IDs in the requested compact format', () => {
+    expect(createPublicProductId()).toMatch(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/);
   });
 
-  it('retries only when Prisma reports a slug unique constraint collision', async () => {
+  it('retries a public ID after Prisma reports a unique collision', async () => {
     let attempts = 0;
-    const result = await createProductWithUniqueSlug(
+    const result = await createProductWithUniquePublicId(
       'Тест',
-      async (slug) => {
+      async (publicId) => {
         attempts += 1;
         if (attempts === 1) {
           throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
             code: 'P2002',
             clientVersion: '5.22.0',
-            meta: { target: ['slug'] },
+            meta: { target: ['publicId'] },
           });
         }
-        return slug;
+        return publicId;
       },
       (() => {
-        const suffixes = ['123456', '654321'];
-        return () => suffixes.shift()!;
+        const ids = ['aaaa-bbbb-cccc-dddd', 'eeee-ffff-gggg-hhhh'];
+        return () => ids.shift()!;
       })(),
     );
 
-    expect(result).toBe('test-654321');
+    expect(result).toBe('eeee-ffff-gggg-hhhh');
     expect(attempts).toBe(2);
+  });
+
+  it('retries a collision on the legacy title slug as well', async () => {
+    let attempts = 0;
+    const slugs: string[] = [];
+    await createProductWithUniquePublicId('Тест', async (publicId, slug) => {
+      attempts += 1;
+      slugs.push(slug);
+      if (attempts === 1) {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: '5.22.0',
+          meta: { target: ['slug'] },
+        });
+      }
+      return publicId;
+    }, (() => {
+      const ids = ['aaaa-bbbb-cccc-dddd', 'eeee-ffff-gggg-hhhh'];
+      return () => ids.shift()!;
+    })());
+
+    expect(attempts).toBe(2);
+    expect(slugs[0]).toMatch(/^test-\d{6}$/);
+    expect(slugs[1]).toMatch(/^test-\d{6}$/);
   });
 
   it('does not retry collisions on a different unique constraint', async () => {
@@ -105,22 +120,22 @@ describe('AVERON commerce invariants', () => {
       throw error;
     };
 
-    await expect(createProductWithUniqueSlug('Тест', create, () => '123456')).rejects.toBe(error);
+    await expect(createProductWithUniquePublicId('Тест', create, () => 'aaaa-bbbb-cccc-dddd')).rejects.toBe(error);
   });
 
-  it('fails with a controlled error after five slug collision attempts', async () => {
+  it('fails with a controlled error after five public identifier collision attempts', async () => {
     let attempts = 0;
     const create = async () => {
       attempts += 1;
       throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
         code: 'P2002',
         clientVersion: '5.22.0',
-        meta: { target: 'CommerceProduct_slug_key' },
+        meta: { target: 'CommerceProduct_publicId_key' },
       });
     };
 
-    await expect(createProductWithUniqueSlug('Тест', create, () => '123456'))
-      .rejects.toBeInstanceOf(ProductSlugCollisionError);
+    await expect(createProductWithUniquePublicId('Тест', create, () => 'aaaa-bbbb-cccc-dddd'))
+      .rejects.toBeInstanceOf(ProductPublicIdCollisionError);
     expect(attempts).toBe(5);
   });
 });
