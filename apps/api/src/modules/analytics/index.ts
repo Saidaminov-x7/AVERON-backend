@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 
 const visitSchema = z.object({
@@ -121,6 +122,12 @@ function asNumber(value: { toString(): string } | number) {
   return Number(value.toString());
 }
 
+function trustedVisitorId(request: FastifyRequest) {
+  const userAgent = request.headers['user-agent']?.slice(0, 512) || 'unknown';
+  const digest = createHash('sha256').update(`${request.ip}|${userAgent}`).digest('hex');
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
 export const analyticsModule: FastifyPluginAsync = async (server) => {
   server.post('/events', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
@@ -180,17 +187,19 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = visitSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ANALYTICS_EVENT' });
-    const { deviceId, path } = parsed.data;
+    const { path } = parsed.data;
     if (isPrivatePath(path) || path.startsWith('/admin/') || path.startsWith('/api/')) {
       return reply.status(204).send();
     }
 
     const dayKey = new Date().toISOString().slice(0, 10);
+    const deviceId = trustedVisitorId(request);
+    const userAgent = request.headers['user-agent']?.slice(0, 512) || null;
     try {
       await server.prisma.visitLog.upsert({
         where: { deviceId_dayKey: { deviceId, dayKey } },
-        update: { path },
-        create: { deviceId, dayKey, path },
+        update: { path, ip: request.ip, userAgent },
+        create: { deviceId, dayKey, path, ip: request.ip, userAgent },
       });
     } catch (error) {
       request.log.warn({ err: error }, 'Analytics visit could not be recorded');
@@ -205,13 +214,13 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     const [visits, uniqueVisitors] = await Promise.all([
       server.prisma.visitLog.groupBy({
         by: ['dayKey'],
-        where: { createdAt: { gte: startDate, lte: endDate } },
+        where: { createdAt: { gte: startDate, lte: endDate }, ip: { not: null } },
         _count: { id: true },
         orderBy: { dayKey: 'asc' },
       }),
       server.prisma.visitLog.groupBy({
         by: ['deviceId'],
-        where: { createdAt: { gte: startDate, lte: endDate } },
+        where: { createdAt: { gte: startDate, lte: endDate }, ip: { not: null } },
       }),
     ]);
     return reply.send({
@@ -230,20 +239,20 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     const [visitorsByDay, uniqueVisitors, products, users, paidOrders] = await Promise.all([
       server.prisma.visitLog.groupBy({
         by: ['dayKey'],
-        where: { createdAt: range },
+        where: { createdAt: range, ip: { not: null } },
         _count: { id: true },
         orderBy: { dayKey: 'asc' },
       }),
       server.prisma.visitLog.groupBy({
         by: ['deviceId'],
-        where: { createdAt: range },
+        where: { createdAt: range, ip: { not: null } },
       }),
       server.prisma.commerceProduct.findMany({
         where: { createdAt: range, status: 'PUBLISHED' },
         select: { createdAt: true },
       }),
       server.prisma.user.findMany({
-        where: { createdAt: range },
+        where: { createdAt: range, ip: { not: null } },
         select: { createdAt: true },
       }),
       server.prisma.commerceOrder.findMany({
@@ -352,7 +361,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
       const [visitorsByDay, products, users, orders] = await Promise.all([
         server.prisma.visitLog.groupBy({
           by: ['dayKey'],
-          where: { createdAt: range },
+          where: { createdAt: range, ip: { not: null } },
           _count: { id: true },
         }),
         server.prisma.commerceProduct.findMany({
@@ -400,7 +409,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     const { startDate, endDate } = getDateRange(parsed.data);
     const range = { gte: startDate, lte: endDate };
     const [visits, favorites, paidOrders] = await Promise.all([
-      server.prisma.visitLog.count({ where: { createdAt: range } }),
+      server.prisma.visitLog.count({ where: { createdAt: range, ip: { not: null } } }),
       server.prisma.productFavorite.count({ where: { createdAt: range } }),
       server.prisma.commerceOrder.count({
         where: { createdAt: range, status: { in: [...PAID_ORDER_STATUSES] } },
