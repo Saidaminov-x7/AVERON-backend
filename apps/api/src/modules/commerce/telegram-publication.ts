@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma, TelegramPublicationStatus } from '@prisma/client';
-import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { config } from '../../config';
 import { featureFlags } from '../features/feature-flags';
 import { buildTelegramCard, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from './telegram-publisher';
+import { domainEventBus } from '../integrations/domain-events';
 
 const productParams = z.object({ id: z.string().uuid() });
 const previewBody = z.object({
@@ -34,6 +35,48 @@ async function getPublishedProduct(app: Parameters<FastifyPluginAsync>[0], id: s
     select: productSelect,
   });
   return product;
+}
+
+/** Publishes newly published products when the explicit Telegram flag is enabled. */
+export function registerTelegramProductPublisher(app: FastifyInstance): () => void {
+  if (!featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH') ||
+      !config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim() || !config.TELEGRAM_CHANNEL_ID?.trim()) {
+    return () => undefined;
+  }
+
+  return domainEventBus.subscribe(async (event) => {
+    if (event.type !== 'product.published') return;
+    const channelId = config.TELEGRAM_CHANNEL_ID!.trim();
+    const product = await getPublishedProduct(app, event.productId);
+    if (!product || product.status !== 'PUBLISHED') return;
+
+    const publication = await app.prisma.commerceTelegramPublication.upsert({
+      where: { productId_channelId: { productId: event.productId, channelId } },
+      create: { productId: event.productId, channelId, createdById: event.actorId },
+      update: {},
+      select: { id: true, status: true, telegramMessageId: true, errorCode: true },
+    });
+    if (publication.status === TelegramPublicationStatus.PUBLISHED ||
+        publication.status === TelegramPublicationStatus.PUBLISHING ||
+        (publication.status === TelegramPublicationStatus.FAILED && publication.errorCode === 'TELEGRAM_DELIVERY_UNCONFIRMED')) return;
+
+    const claimed = await app.prisma.commerceTelegramPublication.updateMany({
+      where: { id: publication.id, status: { in: [TelegramPublicationStatus.NOT_PUBLISHED, TelegramPublicationStatus.FAILED] } },
+      data: { status: TelegramPublicationStatus.PUBLISHING, lastAttemptAt: new Date(), lastAttemptById: event.actorId, errorCode: null, attemptCount: { increment: 1 } },
+    });
+    if (claimed.count !== 1) return;
+
+    try {
+      const card = buildTelegramCard(product as TelegramCardProduct, {});
+      const messageId = await sendTelegramCard(card, channelId);
+      await app.prisma.commerceTelegramPublication.update({ where: { id: publication.id }, data: { status: TelegramPublicationStatus.PUBLISHED, telegramMessageId: messageId, publishedAt: new Date(), errorCode: null } });
+      app.log.info({ productId: event.productId, channelId, messageId }, 'Product published to Telegram');
+    } catch (error) {
+      const errorCode = error instanceof TelegramPublishError ? error.code : 'TELEGRAM_PUBLISH_FAILED';
+      await app.prisma.commerceTelegramPublication.update({ where: { id: publication.id }, data: { status: TelegramPublicationStatus.FAILED, errorCode } });
+      app.log.error({ productId: event.productId, channelId, errorCode }, 'Automatic Telegram publication failed');
+    }
+  });
 }
 
 export const telegramPublicationModule: FastifyPluginAsync = async (app) => {

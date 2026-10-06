@@ -38,6 +38,7 @@ import { visualSearchModule } from './modules/visual-search';
 import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
 import { trustProxyOption } from './lib/trust-proxy';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
+import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -225,6 +226,7 @@ import { v2 as cloudinary } from 'cloudinary';
 server.decorate('prisma', prisma);
 server.decorate('redis', redis);
 registerN8nEventPublisher(redis, server.log);
+registerTelegramProductPublisher(server);
 
 // ─── Единый обработчик ошибок ────────────────────────────────────────────────
 registerErrorHandler(server);
