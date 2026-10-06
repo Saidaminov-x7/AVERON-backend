@@ -13,7 +13,7 @@ const previewBody = z.object({
   captionOverride: z.string().trim().max(700).optional(),
 }).strict();
 
-const getProductTelegramToken = () => config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim() || config.TELEGRAM_BOT_TOKEN?.trim();
+const getProductTelegramToken = () => config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim();
 
 const productSelect = {
   id: true,
