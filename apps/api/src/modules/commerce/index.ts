@@ -788,6 +788,15 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
       throw error;
     }
+    if (product.images.length) {
+      const mediaToDelete = await app.prisma.media.findMany({
+        where: { id: { in: product.images.map((image) => image.mediaId) }, listingId: null, productImages: { none: {} } },
+        select: { id: true },
+      });
+      const { MediaService } = await import('../media/service');
+      const mediaService = new MediaService(app.prisma, undefined, request.log);
+      await Promise.allSettled(mediaToDelete.map((media) => mediaService.delete(media.id, request.user.userId, true)));
+    }
     return reply.status(204).send();
   });
 
