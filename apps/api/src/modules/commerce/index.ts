@@ -331,6 +331,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
           ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
           ...(input.active !== undefined ? { active: input.active } : {}),
+          ...(input.imageUrl !== undefined ? { imageUrl: input.imageUrl } : {}),
         },
       });
     } catch (error) {

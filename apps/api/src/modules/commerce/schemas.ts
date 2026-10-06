@@ -334,6 +334,7 @@ export const createCategorySchema = z.object({
   name: localizedCategoryNameSchema,
   parentId: z.string().uuid().nullable().optional(),
   sortOrder: z.coerce.number().int().min(0).max(10000).optional(),
+  imageUrl: z.string().url().max(2000).nullable().optional(),
 });
 
 export const updateCategorySchema = z.object({
@@ -342,6 +343,7 @@ export const updateCategorySchema = z.object({
   parentId: z.string().uuid().nullable().optional(),
   sortOrder: z.coerce.number().int().min(0).max(10000).optional(),
   active: z.boolean().optional(),
+  imageUrl: z.string().url().max(2000).nullable().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one category field must be provided',
 });
