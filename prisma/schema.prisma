@@ -128,6 +128,8 @@ model User {
   name             String
   avatar           String?
   defaultCatalogCountry ProductCountry?
+  heightCm          Int?
+  weightKg          Int?
   role             Role       @default(USER)
   adminRole        AdminRole? // Роль сотрудника в админке
   lastLoginAt      DateTime? // Дата последнего входа
