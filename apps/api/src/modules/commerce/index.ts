@@ -790,7 +790,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     }
     if (product.images.length) {
       const mediaToDelete = await app.prisma.media.findMany({
-        where: { id: { in: product.images.map((image) => image.mediaId) }, listingId: null, productImages: { none: {} } },
+        where: { id: { in: product.images.map((image) => image.mediaId).filter((mediaId): mediaId is string => Boolean(mediaId)) }, listingId: null, productImages: { none: {} } },
         select: { id: true },
       });
       const { MediaService } = await import('../media/service');
