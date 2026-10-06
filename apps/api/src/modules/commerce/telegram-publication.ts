@@ -246,7 +246,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
       });
       await recordTelegramTransition(request, id);
       request.log.error({ publicationId: publication.id, errorCode }, 'Telegram product publication failed');
-      return reply.status(502).send({ code: errorCode, status: TelegramPublicationStatus.FAILED });
+      return reply.status(502).send({ code: errorCode, details: error instanceof TelegramPublishError ? error.details : undefined, status: TelegramPublicationStatus.FAILED });
     }
 
     const publishedAt = new Date();

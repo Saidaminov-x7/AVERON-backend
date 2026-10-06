@@ -32,7 +32,7 @@ export type TelegramCard = {
 };
 
 export class TelegramPublishError extends Error {
-  constructor(readonly code: string) {
+  constructor(readonly code: string, readonly details?: string) {
     super(code);
     this.name = 'TelegramPublishError';
   }
@@ -197,18 +197,17 @@ export async function sendTelegramCard(card: TelegramCard, channelId: string): P
     throw new TelegramPublishError('TELEGRAM_DELIVERY_UNCONFIRMED');
   }
 
-  if (!response.ok) {
-    if (response.status >= 500) throw new TelegramPublishError('TELEGRAM_DELIVERY_UNCONFIRMED');
-    throw new TelegramPublishError(response.status === 429 ? 'TELEGRAM_RATE_LIMITED' : 'TELEGRAM_REJECTED');
-  }
-
-  let result: { ok?: boolean; result?: { message_id?: number } } | null = null;
+  let result: { ok?: boolean; result?: { message_id?: number }; description?: string } | null = null;
   try {
-    result = await response.json() as { ok?: boolean; result?: { message_id?: number } };
+    result = await response.json() as { ok?: boolean; result?: { message_id?: number }; description?: string };
   } catch {
     throw new TelegramPublishError('TELEGRAM_DELIVERY_UNCONFIRMED');
   }
-  if (result?.ok === false) throw new TelegramPublishError('TELEGRAM_REJECTED');
+  if (!response.ok) {
+    if (response.status >= 500) throw new TelegramPublishError('TELEGRAM_DELIVERY_UNCONFIRMED', result?.description);
+    throw new TelegramPublishError(response.status === 429 ? 'TELEGRAM_RATE_LIMITED' : 'TELEGRAM_REJECTED', result?.description);
+  }
+  if (result?.ok === false) throw new TelegramPublishError('TELEGRAM_REJECTED', result.description);
   if (result?.ok !== true || !Number.isSafeInteger(result.result?.message_id) || !result.result?.message_id) {
     throw new TelegramPublishError('TELEGRAM_DELIVERY_UNCONFIRMED');
   }
