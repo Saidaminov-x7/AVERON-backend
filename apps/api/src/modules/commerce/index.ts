@@ -381,6 +381,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           variants: { where: { active: true } },
           category: true,
           importedFrom: { select: { originalTitle: true, status: true, source: true } },
+          _count: { select: { favoriteLinks: true, recentlyViewedRecords: true, reviews: true } },
         },
         orderBy: productOrderBy(query.sort),
         skip: (page - 1) * limit,
@@ -400,6 +401,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         variants: { where: { active: true } },
         category: true,
         importedFrom: { select: { originalTitle: true, status: true, source: true } },
+        _count: { select: { favoriteLinks: true, recentlyViewedRecords: true, reviews: true } },
       },
     });
     return product ?? reply.status(404).send({ message: 'Product not found' });
