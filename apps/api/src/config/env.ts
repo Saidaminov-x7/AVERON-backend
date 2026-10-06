@@ -86,7 +86,7 @@ const envSchema = z.object({
   FEATURE_PINDUODUO_PARSER: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_IPOST: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_N8N: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
-  FEATURE_TELEGRAM_PRODUCT_PUBLISH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FEATURE_TELEGRAM_PRODUCT_PUBLISH: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
   FEATURE_AUTO_CURRENCY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_SMS_VERIFICATION: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   N8N_WEBHOOK_URL: z.preprocess(
