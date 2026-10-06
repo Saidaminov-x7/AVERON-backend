@@ -13,6 +13,8 @@ const previewBody = z.object({
   captionOverride: z.string().trim().max(700).optional(),
 }).strict();
 
+const getProductTelegramToken = () => config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim() || config.TELEGRAM_BOT_TOKEN?.trim();
+
 const productSelect = {
   id: true,
   slug: true,
@@ -40,7 +42,7 @@ async function getPublishedProduct(app: Parameters<FastifyPluginAsync>[0], id: s
 /** Publishes newly published products when the explicit Telegram flag is enabled. */
 export function registerTelegramProductPublisher(app: FastifyInstance): () => void {
   if (!featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH') ||
-      !config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim() || !config.TELEGRAM_CHANNEL_ID?.trim()) {
+      !getProductTelegramToken() || !config.TELEGRAM_CHANNEL_ID?.trim()) {
     return () => undefined;
   }
 
@@ -164,7 +166,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
     const { id } = productParams.parse(request.params);
     const input = previewBody.parse(request.body ?? {});
     const channelId = config.TELEGRAM_CHANNEL_ID?.trim();
-    if (!channelId || !config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim()) {
+    if (!channelId || !getProductTelegramToken()) {
       return reply.status(503).send({ code: 'TELEGRAM_NOT_CONFIGURED' });
     }
 
