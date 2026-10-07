@@ -25,6 +25,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Test
         run: pnpm --filter api test
+        env:
+          DATABASE_URL: postgresql://unit-test:unit-test@127.0.0.1:1/unit_test
+          REDIS_URL: redis://127.0.0.1:1
+          JWT_SECRET: unit-test-only-jwt-signing-secret-not-production
+          REFRESH_SECRET: unit-test-only-refresh-signing-secret-not-production
       - name: Type-check
         run: pnpm --filter api type-check
       - name: Lint
