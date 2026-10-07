@@ -278,7 +278,11 @@ server.get('/health', {
 
 server.get('/health/live', {
   schema: { tags: ['Health'] },
-}, async () => ({ status: 'live', timestamp: new Date().toISOString() }));
+}, async () => ({
+  status: 'live',
+  commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+  timestamp: new Date().toISOString(),
+}));
 
 server.get('/health/ai', {
   schema: { tags: ['Health'] },

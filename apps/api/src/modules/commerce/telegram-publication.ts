@@ -5,15 +5,13 @@ import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { config } from '../../config';
 import { featureFlags } from '../features/feature-flags';
-import { buildTelegramCard, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from './telegram-publisher';
+import { buildTelegramCard, isTelegramProductPublisherConfigured, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from './telegram-publisher';
 import { domainEventBus } from '../integrations/domain-events';
 
 const productParams = z.object({ id: z.string().uuid() });
 const previewBody = z.object({
   captionOverride: z.string().trim().max(700).optional(),
 }).strict();
-
-const getProductTelegramToken = () => config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim();
 
 const productSelect = {
   id: true,
@@ -42,7 +40,7 @@ async function getPublishedProduct(app: Parameters<FastifyPluginAsync>[0], id: s
 /** Publishes newly published products when the explicit Telegram flag is enabled. */
 export function registerTelegramProductPublisher(app: FastifyInstance): () => void {
   if (!featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH') ||
-      !getProductTelegramToken() || !config.TELEGRAM_CHANNEL_ID?.trim()) {
+      !isTelegramProductPublisherConfigured()) {
     return () => undefined;
   }
 
@@ -75,8 +73,9 @@ export function registerTelegramProductPublisher(app: FastifyInstance): () => vo
       app.log.info({ productId: event.productId, channelId, messageId }, 'Product published to Telegram');
     } catch (error) {
       const errorCode = error instanceof TelegramPublishError ? error.code : 'TELEGRAM_PUBLISH_FAILED';
+      const telegramDetails = error instanceof TelegramPublishError ? error.details : undefined;
       await app.prisma.commerceTelegramPublication.update({ where: { id: publication.id }, data: { status: TelegramPublicationStatus.FAILED, errorCode } });
-      app.log.error({ productId: event.productId, channelId, errorCode }, 'Automatic Telegram publication failed');
+      app.log.error({ productId: event.productId, channelId, errorCode, telegramDetails }, 'Automatic Telegram publication failed');
     }
   });
 }
@@ -118,7 +117,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
       : null;
     return {
       featureEnabled: featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'),
-      configured: Boolean(channelId && config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim()),
+      configured: isTelegramProductPublisherConfigured(),
       channelId,
       status: publication?.status ?? TelegramPublicationStatus.NOT_PUBLISHED,
       telegramMessageId: publication?.telegramMessageId ?? null,
@@ -166,7 +165,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
     const { id } = productParams.parse(request.params);
     const input = previewBody.parse(request.body ?? {});
     const channelId = config.TELEGRAM_CHANNEL_ID?.trim();
-    if (!channelId || !getProductTelegramToken()) {
+    if (!channelId || !isTelegramProductPublisherConfigured()) {
       return reply.status(503).send({ code: 'TELEGRAM_NOT_CONFIGURED' });
     }
 
@@ -231,6 +230,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
       messageId = await sendTelegramCard(card, channelId);
     } catch (error) {
       const errorCode = error instanceof TelegramPublishError ? error.code : 'TELEGRAM_PUBLISH_FAILED';
+      const telegramDetails = error instanceof TelegramPublishError ? error.details : undefined;
       await app.prisma.commerceTelegramPublication.update({
         where: { id: publication.id },
         data: { status: TelegramPublicationStatus.FAILED, errorCode },
@@ -245,8 +245,8 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
         },
       });
       await recordTelegramTransition(request, id);
-      request.log.error({ publicationId: publication.id, errorCode }, 'Telegram product publication failed');
-      return reply.status(502).send({ code: errorCode, details: error instanceof TelegramPublishError ? error.details : undefined, status: TelegramPublicationStatus.FAILED });
+      request.log.error({ publicationId: publication.id, errorCode, telegramDetails }, 'Telegram product publication failed');
+      return reply.status(502).send({ code: errorCode, details: telegramDetails, status: TelegramPublicationStatus.FAILED });
     }
 
     const publishedAt = new Date();

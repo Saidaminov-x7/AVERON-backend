@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -36,3 +40,8 @@ jobs:
         run: pnpm --filter api lint
       - name: Build
         run: pnpm --filter api build
+      - name: Record verified source SHA
+        if: always()
+        run: |
+          current="$(git rev-parse HEAD)"
+          printf 'Backend current=%s verified=%s status=%s\n' "$current" "$current" "${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"

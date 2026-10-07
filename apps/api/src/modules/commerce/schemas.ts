@@ -4,6 +4,29 @@ import { isIP } from 'node:net';
 
 export const productCountrySchema = z.nativeEnum(ProductCountry);
 
+export const productSizeChartSchema = z.array(z.object({
+  size: z.string().trim().min(1).max(32),
+  shouldersCm: z.number().finite().min(10).max(100).optional(),
+  chestCm: z.number().finite().min(20).max(200).optional(),
+  lengthCm: z.number().finite().min(20).max(250).optional(),
+  sleeveCm: z.number().finite().min(10).max(150).optional(),
+  waistCm: z.number().finite().min(20).max(200).optional(),
+  hipsCm: z.number().finite().min(20).max(220).optional(),
+  inseamCm: z.number().finite().min(10).max(160).optional(),
+  recommendedHeightMinCm: z.number().int().min(80).max(250).optional(),
+  recommendedHeightMaxCm: z.number().int().min(80).max(250).optional(),
+  recommendedWeightMinKg: z.number().int().min(20).max(300).optional(),
+  recommendedWeightMaxKg: z.number().int().min(20).max(300).optional(),
+})).max(40).superRefine((rows, context) => {
+  const sizes = new Set<string>();
+  rows.forEach((row, index) => {
+    if (sizes.has(row.size.toLocaleLowerCase())) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'size'], message: 'Size labels must be unique' });
+    sizes.add(row.size.toLocaleLowerCase());
+    if (row.recommendedHeightMinCm !== undefined && row.recommendedHeightMaxCm !== undefined && row.recommendedHeightMinCm > row.recommendedHeightMaxCm) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'recommendedHeightMaxCm'], message: 'Maximum recommended height must not be below minimum' });
+    if (row.recommendedWeightMinKg !== undefined && row.recommendedWeightMaxKg !== undefined && row.recommendedWeightMinKg > row.recommendedWeightMaxKg) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'recommendedWeightMaxKg'], message: 'Maximum recommended weight must not be below minimum' });
+  });
+});
+
 const safeSourceUrlSchema = z.string().url().max(2048).refine((value) => {
   const url = new URL(value);
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
@@ -216,6 +239,7 @@ export const approveImportSchema = z.object({
   }).partial().optional(),
   country: productCountrySchema,
   sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
+  sizeChart: productSizeChartSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive(),
   exchangeRate: z.coerce.number().finite().positive().optional(),
   mediaIds: z.array(z.string().uuid()).max(15).default([]),
@@ -259,6 +283,7 @@ export const createManualProductSchema = z.object({
   title: z.string().min(2).max(500),
   country: productCountrySchema,
   sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
+  sizeChart: productSizeChartSchema.optional(),
   titleUz: z.string().min(2).max(500),
   titleEn: z.string().min(2).max(500),
   description: z.string().max(5000).optional(),
@@ -296,6 +321,7 @@ export const createManualProductSchema = z.object({
 export const updateManualProductSchema = z.object({
   country: productCountrySchema.optional(),
   sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
+  sizeChart: productSizeChartSchema.optional(),
   title: z.string().min(2).max(500).optional(),
   titleUz: z.string().max(500).optional(),
   titleEn: z.string().max(500).optional(),

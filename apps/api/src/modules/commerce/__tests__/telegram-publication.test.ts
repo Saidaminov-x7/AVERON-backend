@@ -29,6 +29,7 @@ vi.mock('../../features/feature-flags', () => ({
   featureFlags: { isEnabled: () => mocks.featureEnabled },
 }));
 vi.mock('../telegram-publisher', () => ({
+  isTelegramProductPublisherConfigured: () => true,
   TelegramPublishError: class TelegramPublishError extends Error {
     constructor(readonly code: string) { super(code); }
   },
