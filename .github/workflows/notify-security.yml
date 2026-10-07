@@ -1,0 +1,23 @@
+name: Notify AVERON Security CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch exact source SHA
+        env:
+          GH_TOKEN: ${{ secrets.AVERON_SECURITY_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          gh api repos/Saidaminov-x7/AVERON-security-tests/dispatches \
+            -f event_type=averon-application-changed \
+            -f client_payload[repository]=AVERON-backend \
+            -f client_payload[sha]="$SOURCE_SHA"
