@@ -27,6 +27,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm --filter api exec prisma generate
       - name: Test
         run: pnpm --filter api test
         env:
