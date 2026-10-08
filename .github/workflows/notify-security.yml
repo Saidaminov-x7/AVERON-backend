@@ -1,23 +1,49 @@
 name: Notify AVERON Security CI
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: [Backend CI]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   dispatch:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Mark exact source SHA pending cross-repository verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          SOURCE_REPOSITORY: AVERON-backend
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${SOURCE_SHA}" \
+            -f state=pending \
+            -f context='AVERON / cross-repository verify' \
+            -f description='Cross-repository verification is running' \
+            -f target_url="https://github.com/Saidaminov-x7/AVERON-security-tests/actions"
       - name: Dispatch exact source SHA
         env:
           GH_TOKEN: ${{ secrets.AVERON_SECURITY_DISPATCH_TOKEN }}
-          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          SOURCE_REPOSITORY: AVERON-backend
         run: |
           gh api repos/Saidaminov-x7/AVERON-security-tests/dispatches \
             -f event_type=averon-application-changed \
-            -f client_payload[repository]=AVERON-backend \
+            -f client_payload[repository]="$SOURCE_REPOSITORY" \
             -f client_payload[sha]="$SOURCE_SHA"
+      - name: Mark dispatch failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${SOURCE_SHA}" \
+            -f state=error \
+            -f context='AVERON / cross-repository verify' \
+            -f description='Cross-repository verification dispatch failed' \
+            -f target_url="https://github.com/Saidaminov-x7/AVERON-security-tests/actions"

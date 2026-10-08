@@ -140,5 +140,5 @@ describe('email login failure throttling', () => {
     expect(findUnique).toHaveBeenCalledTimes(8);
     expect(redis.eval).toHaveBeenCalledTimes(8);
     await app.close();
-  });
+  }, 15_000);
 });

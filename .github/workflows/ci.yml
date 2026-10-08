@@ -9,25 +9,41 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # actions/checkout v6.0.2
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # pnpm/action-setup v4
+        with:
+          version: 9.15.9
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6.5.0
         with:
           node-version: 22.x
           cache: pnpm
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.9
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
       - name: Test
         run: pnpm --filter api test
+        env:
+          DATABASE_URL: postgresql://unit-test:unit-test@127.0.0.1:1/unit_test
+          REDIS_URL: redis://127.0.0.1:1
+          JWT_SECRET: unit-test-only-jwt-signing-secret-not-production
+          REFRESH_SECRET: unit-test-only-refresh-signing-secret-not-production
       - name: Type-check
         run: pnpm --filter api type-check
       - name: Lint
         run: pnpm --filter api lint
       - name: Build
         run: pnpm --filter api build
+      - name: Record verified source SHA
+        if: always()
+        run: |
+          current="$(git rev-parse HEAD)"
+          printf 'Backend current=%s verified=%s status=%s\n' "$current" "$current" "${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"

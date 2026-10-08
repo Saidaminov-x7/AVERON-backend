@@ -38,6 +38,13 @@ export class TelegramPublishError extends Error {
   }
 }
 
+export function isTelegramProductPublisherConfigured(): boolean {
+  return Boolean(
+    (config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim()) &&
+    config.TELEGRAM_CHANNEL_ID?.trim(),
+  );
+}
+
 function localized(value: unknown, locale: 'ru' | 'uz' | 'en', field: 'title' | 'description'): string {
   if (typeof value === 'string') return value.trim();
   if (!value || typeof value !== 'object' || Array.isArray(value)) return '';

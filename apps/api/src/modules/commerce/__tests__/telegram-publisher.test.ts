@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ miniAppUrl: 'https://t.me/averon_store/app' }));
+const mocks = vi.hoisted(() => ({
+  miniAppUrl: 'https://t.me/averon_store/app',
+  productBotToken: 'product-token',
+  miniAppBotToken: undefined as string | undefined,
+}));
 
 vi.mock('../../../config', () => ({
   config: {
-    TELEGRAM_MINI_APP_BOT_TOKEN: 'test-token-never-returned',
+    get TELEGRAM_BOT_TOKEN() { return mocks.productBotToken; },
+    get TELEGRAM_MINI_APP_BOT_TOKEN() { return mocks.miniAppBotToken; },
+    TELEGRAM_CHANNEL_ID: '@averon_test',
     get TELEGRAM_MINI_APP_URL() { return mocks.miniAppUrl; },
     PUBLIC_SITE_URL: 'https://shop.example',
   },
 }));
 
-import { buildTelegramCard, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from '../telegram-publisher';
+import { buildTelegramCard, isTelegramProductPublisherConfigured, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from '../telegram-publisher';
 
 const product: TelegramCardProduct = {
   id: 'internal-id',
@@ -31,6 +37,8 @@ const product: TelegramCardProduct = {
 describe('Telegram product cards', () => {
   afterEach(() => {
     mocks.miniAppUrl = 'https://t.me/averon_store/app';
+    mocks.productBotToken = 'product-token';
+    mocks.miniAppBotToken = undefined;
     vi.unstubAllGlobals();
   });
 
@@ -41,6 +49,10 @@ describe('Telegram product cards', () => {
     expect(card.captionText).toContain('Preorder · 5 available');
     expect(card.estimatedAvailableAt).toBeNull();
     expect(card.productUrl).not.toContain('internal-id');
+  });
+
+  it('considers the product bot token configured without requiring a Mini App token', () => {
+    expect(isTelegramProductPublisherConfigured()).toBe(true);
   });
 
   it('rejects non-published products and unsafe public identifiers', () => {
@@ -69,6 +81,7 @@ describe('Telegram product cards', () => {
 
     await expect(sendTelegramCard(card, '@averon_test')).resolves.toBe('42');
     const request = fetchMock.mock.calls[0]?.[1];
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/botproduct-token/sendPhoto');
     expect(request).toBeDefined();
     const body = JSON.parse(String(request?.body)) as { caption?: string; text?: string };
     const sentText = body.caption ?? body.text ?? '';

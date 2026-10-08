@@ -13,6 +13,7 @@ import { telegramPublicationModule } from './telegram-publication';
 import { productReviewsModule } from './product-reviews';
 import { catalogAssistantModule } from './catalog-assistant';
 import { publicProductDto } from './public-product-dto';
+import { recommendProductSize } from './size-recommendation';
 import { createRecommendationsModule } from './recommendations';
 import { outfitsModule } from './outfits';
 import { wishlistModule } from './wishlist';
@@ -236,7 +237,15 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
     const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
-    return product ? publicProductDto(product) : reply.status(404).send({ message: 'Товар не найден' });
+    if (!product) return reply.status(404).send({ message: 'Товар не найден' });
+    let bodyProfile: { heightCm: number | null; weightKg: number | null } | null = null;
+    try {
+      await request.jwtVerify();
+      bodyProfile = await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { heightCm: true, weightKg: true } });
+    } catch {
+      // Public product details remain available without authentication.
+    }
+    return { ...publicProductDto(product), sizeRecommendation: recommendProductSize(product.sizeChart, bodyProfile) };
   });
 
   app.get('/categories', async () => app.prisma.commerceCategory.findMany({ where: { active: true }, orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }] }));
@@ -479,6 +488,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           publicId,
           country: input.country,
           sizeChartType: input.sizeChartType ?? null,
+          sizeChart: input.sizeChart as Prisma.InputJsonValue | undefined,
           translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
           description: Object.keys(descriptions).length ? descriptions : undefined,
           attributes: { audience: 'everyone' },
@@ -605,6 +615,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         data: {
           ...(input.country !== undefined ? { country: input.country } : {}),
           ...(input.sizeChartType !== undefined ? { sizeChartType: input.sizeChartType } : {}),
+          ...(input.sizeChart !== undefined ? { sizeChart: input.sizeChart as Prisma.InputJsonValue } : {}),
           ...(input.title !== undefined || input.titleUz !== undefined || input.titleEn !== undefined
             ? {
                 translations: mergeLocalizedTitles(product.translations, {
@@ -909,6 +920,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           publicId,
           country: input.country,
           sizeChartType: input.sizeChartType ?? null,
+          sizeChart: input.sizeChart as Prisma.InputJsonValue | undefined,
           translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as Prisma.InputJsonValue,
           description: input.translations
             ? Object.fromEntries(Object.entries(input.translations).flatMap(([locale, content]) =>

@@ -910,6 +910,7 @@ model CommerceProduct {
   slug              String                   @unique
   publicId          String                   @unique
   sizeChartType      String?
+  sizeChart         Json?
   translations      Json
   description       Json?
   attributes        Json?
