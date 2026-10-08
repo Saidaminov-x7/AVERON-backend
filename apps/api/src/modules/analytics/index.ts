@@ -312,6 +312,92 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
+  server.get('/admin/journey', { preHandler: [adminMiddleware] }, async (request, reply) => {
+    const parsed = dateRangeQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
+    const { startDate, endDate } = getDateRange(parsed.data);
+    const firstVisits = await server.prisma.visitLog.groupBy({
+      by: ['deviceId'],
+      where: { ip: { not: null }, createdAt: { lte: endDate } },
+      _min: { createdAt: true },
+    });
+    const firstVisitByDevice = new Map<string, Date>();
+    for (const visit of firstVisits) {
+      if (visit._min.createdAt) firstVisitByDevice.set(visit.deviceId, visit._min.createdAt);
+    }
+    const cohort = Array.from(firstVisitByDevice.entries()).filter(([, visitedAt]) =>
+      visitedAt >= startDate && visitedAt <= endDate,
+    );
+    const cohortIds = cohort.map(([deviceId]) => deviceId);
+    const matureCutoff = new Date(endDate.getTime() - 3 * 24 * 60 * 60 * 1000);
+    const matureVisitors = cohort.filter(([, visitedAt]) => visitedAt <= matureCutoff).length;
+    const purchaseEvents = cohortIds.length
+      ? await server.prisma.commerceAnalyticsEvent.findMany({
+        where: {
+          deviceId: { in: cohortIds },
+          eventName: 'purchase',
+          orderId: { not: null },
+          createdAt: { lte: endDate },
+        },
+        select: { deviceId: true, orderId: true },
+      })
+      : [];
+    const orderIds = [...new Set(purchaseEvents.flatMap((event) => event.orderId ? [event.orderId] : []))];
+    const orders = orderIds.length
+      ? await server.prisma.commerceOrder.findMany({
+        where: { id: { in: orderIds }, status: { in: [...PAID_ORDER_STATUSES] }, createdAt: { lte: endDate } },
+        select: { id: true, createdAt: true, totalRevenue: true, refundAmount: true, items: { select: { quantity: true } } },
+        orderBy: { createdAt: 'asc' },
+      })
+      : [];
+    const orderById = new Map(orders.map((order) => [order.id, order]));
+    const firstOrderByDevice = new Map<string, (typeof orders)[number]>();
+    for (const event of purchaseEvents) {
+      const order = event.orderId ? orderById.get(event.orderId) : undefined;
+      const current = firstOrderByDevice.get(event.deviceId);
+      if (order && (!current || order.createdAt < current.createdAt)) firstOrderByDevice.set(event.deviceId, order);
+    }
+    const bucketMap = new Map<number, { purchases: number; units: number; revenueUzs: number }>();
+    let daySum = 0;
+    let firstOrderUnits = 0;
+    for (const [deviceId, visitedAt] of cohort) {
+      const order = firstOrderByDevice.get(deviceId);
+      if (!order) continue;
+      const elapsedDays = Math.max(0, Math.floor((order.createdAt.getTime() - visitedAt.getTime()) / 86_400_000));
+      const bucket = elapsedDays > 30 ? 31 : elapsedDays;
+      const units = order.items.reduce((total, item) => total + item.quantity, 0);
+      const revenue = Math.max(0, asNumber(order.totalRevenue) - asNumber(order.refundAmount));
+      const current = bucketMap.get(bucket) ?? { purchases: 0, units: 0, revenueUzs: 0 };
+      current.purchases += 1;
+      current.units += units;
+      current.revenueUzs += revenue;
+      bucketMap.set(bucket, current);
+      firstOrderUnits += units;
+      daySum += elapsedDays;
+    }
+    const buyers = firstOrderByDevice.size;
+    const day3Buyers = cohort.filter(([deviceId, visitedAt]) => {
+      const order = firstOrderByDevice.get(deviceId);
+      return Boolean(order && visitedAt <= matureCutoff && order.createdAt.getTime() - visitedAt.getTime() <= 3 * 86_400_000);
+    }).length;
+    return reply.send({
+      firstTimeVisitors: cohort.length,
+      buyers,
+      conversionRate: cohort.length ? buyers / cohort.length : 0,
+      avgDaysToFirstPurchase: buyers ? daySum / buyers : 0,
+      avgProductsInFirstOrder: buyers ? firstOrderUnits / buyers : 0,
+      matureVisitors,
+      day3Buyers,
+      day3ConversionRate: matureVisitors ? day3Buyers / matureVisitors : 0,
+      daily: Array.from({ length: 32 }, (_, day) => ({
+        day: day === 31 ? '31+' : String(day),
+        purchases: bucketMap.get(day)?.purchases ?? 0,
+        units: bucketMap.get(day)?.units ?? 0,
+        revenueUzs: Number((bucketMap.get(day)?.revenueUzs ?? 0).toFixed(2)),
+      })),
+    });
+  });
+
   server.get('/admin/export', { preHandler: [adminMiddleware] }, async (request, reply) => {
     const parsed = exportQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_EXPORT_QUERY' });

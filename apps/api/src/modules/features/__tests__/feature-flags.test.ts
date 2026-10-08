@@ -25,6 +25,8 @@ describe('feature flags', () => {
       VISUAL_SEARCH: false,
       SIMILAR_PRODUCTS: false,
       IMAGE_EMBEDDINGS: false,
+      FITTING_ROOM: false,
+      LOCAL_3D_GENERATION: false,
     });
 
     expect(flags.capabilities()).toEqual({
@@ -45,6 +47,8 @@ describe('feature flags', () => {
       visualSearch: false,
       similarProducts: false,
       imageEmbeddings: false,
+      fittingRoom: false,
+      local3dGeneration: false,
     });
     expect(flags.isEnabled('AI_PRODUCT_FILL')).toBe(false);
   });
@@ -60,8 +64,10 @@ describe('feature flags', () => {
       'aiSearch',
       'autoCurrency',
       'completeTheLook',
+      'fittingRoom',
       'imageEmbeddings',
       'ipost',
+      'local3dGeneration',
       'n8n',
       'parser1688',
       'parserPinduoduo',

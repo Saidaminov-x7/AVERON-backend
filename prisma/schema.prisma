@@ -793,6 +793,36 @@ enum ProductPublicationStatus {
   ARCHIVED
 }
 
+enum FittingGarmentLayer {
+  BASE_TOP
+  MID_LAYER
+  OUTERWEAR
+  BOTTOM
+  FOOTWEAR
+  ACCESSORY
+}
+
+enum Product3DAssetStatus {
+  NEEDS_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum Product3DAssetSource {
+  MANUAL
+  LOCAL_GENERATION
+}
+
+enum Product3DGenerationStatus {
+  QUEUED
+  RUNNING
+  POSTPROCESSING
+  NEEDS_REVIEW
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 enum TelegramPublicationStatus {
   NOT_PUBLISHED
   PUBLISHING
@@ -942,6 +972,8 @@ model CommerceProduct {
   favoriteLinks     ProductFavorite[]
   alerts            ProductPriceAlert[]
   outfitItems       OutfitItem[]
+  fittingRoomAssets Product3DAsset[]
+  fittingRoomJobs   Product3DGenerationJob[]
   importedFrom      ImportedProduct?         @relation(fields: [importedFromId], references: [id], onDelete: SetNull)
   importedFromId    String?                  @unique
   createdAt         DateTime                 @default(now())
@@ -1077,8 +1109,62 @@ model CommerceProductVariant {
   cartItems       CommerceCartItem[]
   orderItems      CommerceOrderItem[]
   outfitItems     OutfitItem[]
+  fittingRoomAssets Product3DAsset[]
 
   @@index([productId, active])
+}
+
+model Product3DAsset {
+  id                 String                @id @default(uuid())
+  productId          String
+  product            CommerceProduct       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId          String?
+  variant            CommerceProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  fileKey            String                @unique
+  fileHash           String
+  fileSize           Int
+  status             Product3DAssetStatus  @default(NEEDS_REVIEW)
+  source             Product3DAssetSource  @default(MANUAL)
+  garmentLayer       FittingGarmentLayer
+  mannequinVersion   String                @default("averon-neutral-v1")
+  modelVersion       String                @default("1")
+  sourceImageIds     String[]              @default([])
+  validationSummary String?
+  validationDetails Json?
+  positionX          Float                 @default(0)
+  positionY          Float                 @default(0)
+  positionZ          Float                 @default(0)
+  scale              Float                 @default(1)
+  reviewedById       String?
+  approvedAt         DateTime?
+  rejectionReason    String?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@index([productId, status])
+  @@index([variantId, status])
+  @@index([garmentLayer, status])
+  @@index([fileHash])
+}
+
+model Product3DGenerationJob {
+  id              String                    @id @default(uuid())
+  productId       String
+  product         CommerceProduct           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId       String?
+  initiatedById   String
+  status          Product3DGenerationStatus @default(QUEUED)
+  stage           String                    @default("QUEUED")
+  attemptCount    Int                       @default(0)
+  errorCode       String?
+  resultAssetId   String?                   @unique
+  createdAt       DateTime                  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  updatedAt       DateTime                  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([productId, status])
 }
 
 model ImportedProduct {

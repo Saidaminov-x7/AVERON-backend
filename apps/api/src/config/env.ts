@@ -100,6 +100,8 @@ const envSchema = z.object({
   FEATURE_VISUAL_SEARCH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_SIMILAR_PRODUCTS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_IMAGE_EMBEDDINGS: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  FITTING_ROOM_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  LOCAL_3D_GENERATION_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   VISUAL_SEARCH_MAX_IMAGE_MB: z.coerce.number().int().min(1).max(10).default(10),
   VISUAL_SEARCH_RATE_LIMIT_MAX: z.coerce.number().int().positive().max(20).default(5),
   VISUAL_SEARCH_RATE_LIMIT_WINDOW_SEC: z.coerce.number().int().positive().max(3600).default(60),
