@@ -19,6 +19,7 @@ import { outfitsModule } from './outfits';
 import { wishlistModule } from './wishlist';
 import { commercePromosModule } from './commerce-promos';
 import { ipostShippingModule } from './ipost-shipping';
+import { fittingRoomModule } from './fitting-room';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 
@@ -169,6 +170,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(wishlistModule);
   app.register(commercePromosModule);
   app.register(ipostShippingModule);
+  app.register(fittingRoomModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
@@ -216,7 +218,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         .slice((page - 1) * limit, page * limit)
       const pageProducts = await app.prisma.commerceProduct.findMany({
         where: { id: { in: orderedIds } },
-        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true },
+        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } },
       });
       const productsById = new Map(pageProducts.map((product) => [product.id, product]));
       return {
@@ -228,7 +230,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       };
     }
     const [items, total] = await Promise.all([
-      app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
+      app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),
     ]);
     return { items: items.map(publicProductDto), pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
@@ -236,7 +238,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
-    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
+    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } } });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
     let bodyProfile: { heightCm: number | null; weightKg: number | null } | null = null;
     try {

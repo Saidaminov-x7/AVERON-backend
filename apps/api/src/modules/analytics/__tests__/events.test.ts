@@ -29,9 +29,9 @@ describe('commerce analytics event contract', () => {
       const findOrder = vi.fn(async () => options?.order ?? null);
       const upsertVisit = vi.fn(async () => ({}));
       app.decorate('prisma', {
-        commerceAnalyticsEvent: { create },
-        commerceOrder: { findUnique: findOrder },
-        visitLog: { upsert: upsertVisit },
+        commerceOrder: { findUnique: findOrder, findMany: vi.fn(async () => []) },
+        commerceAnalyticsEvent: { create, findMany: vi.fn(async () => []) },
+        visitLog: { upsert: upsertVisit, findMany: vi.fn(async () => []), groupBy: vi.fn(async () => []), count: vi.fn(async () => 0) },
       } as never);
       await app.register(analyticsModule, { prefix: '/analytics' });
       return { app, create, findOrder, upsertVisit };

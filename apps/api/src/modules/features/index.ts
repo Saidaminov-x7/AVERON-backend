@@ -11,6 +11,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     const capabilities = featureFlags.capabilities();
     return {
       ...capabilities,
+      local3dGeneration: false,
       parser1688: capabilities.parser1688 && Boolean(config.PARSER_IMPORT_TOKEN),
       visualSearch: capabilities.visualSearch && visualSimilarityService.isAvailable(),
       similarProducts: capabilities.similarProducts && visualSimilarityService.isAvailable(),

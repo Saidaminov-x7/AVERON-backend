@@ -1,3 +1,5 @@
+import { featureFlags } from '../features/feature-flags';
+
 export function publicProductDto<T extends {
   stock: number;
   preorderEnabled: boolean;
@@ -5,6 +7,7 @@ export function publicProductDto<T extends {
   preorderReserved: number;
   preorderEstimatedAt: Date | null;
   variants?: Array<{ stock: number; active: boolean }>;
+  fittingRoomAssets?: Array<{ id: string }>;
 }>(product: T) {
   const {
     preorderEnabled,
@@ -16,6 +19,7 @@ export function publicProductDto<T extends {
   const preorderAvailable = preorderEnabled ? Math.max(0, preorderLimit - preorderReserved) : 0;
   return {
     ...publicProduct,
+    fittingRoomAvailable: featureFlags.isEnabled('FITTING_ROOM') && (product.fittingRoomAssets?.length ?? 0) > 0,
     availability: {
       inStock: product.variants
         ? product.variants.some((variant) => variant.active && variant.stock > 0)
