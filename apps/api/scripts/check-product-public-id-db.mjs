@@ -3,6 +3,10 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const legacyId = 'a42h-nbsq-o1fp-awaz';
+const localizedAttributes = {
+  composition: { ru: 'Хлопок 100%', uz: '100% paxta', en: '100% cotton' },
+  careInstructions: { ru: 'Машинная стирка', uz: 'Mashinada yuvish', en: 'Machine wash' },
+};
 let createdId;
 
 try {
@@ -29,6 +33,7 @@ try {
       publicId,
       legacyPublicId: `db-integration-legacy-${Date.now()}`,
       translations: { en: { title: 'DB integration fixture' } },
+      attributes: localizedAttributes,
       source: 'MANUAL',
       sourceProductId: `db-integration-${Date.now()}`,
       salePriceUzs: '1',
@@ -36,6 +41,12 @@ try {
     select: { id: true, publicId: true, legacyPublicId: true },
   });
   createdId = created.id;
+
+  const reloaded = await prisma.commerceProduct.findUnique({
+    where: { id: created.id },
+    select: { attributes: true },
+  });
+  assert.deepEqual(reloaded?.attributes, localizedAttributes, 'localized composition and care were not saved and reloaded');
 
   const legacyLookup = await prisma.commerceProduct.findFirst({
     where: {
@@ -50,7 +61,7 @@ try {
   });
   assert.equal(legacyLookup?.id, migrated.id, 'legacy product lookup did not resolve to the migrated row');
 
-  console.log('PASS: additive migration preserves old IDs, assigns AVR-000000000000001, and allocates AVR-000000000000002 next.');
+  console.log('PASS: additive migration preserves old IDs; article allocation is sequential; localized composition and care survive a PostgreSQL save/reload.');
 } finally {
   if (createdId) {
     await prisma.commerceProduct.delete({ where: { id: createdId } });
