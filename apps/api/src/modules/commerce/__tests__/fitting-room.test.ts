@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import { fastifyMultipart } from '@fastify/multipart';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../lib/adminMiddleware', () => ({
@@ -165,7 +166,7 @@ async function start(app: ReturnType<typeof Fastify>, storage: ReturnType<typeof
 describe('fitting-room routes', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.stubEnv('LOCAL_3D_GENERATOR_MODULE', 'C:\\averon\\local-3d-generator.mjs');
+    vi.stubEnv('LOCAL_3D_GENERATOR_MODULE', resolve('local-3d-generator.test.mjs'));
     vi.spyOn(featureFlags, 'isEnabled').mockReturnValue(true);
   });
 
