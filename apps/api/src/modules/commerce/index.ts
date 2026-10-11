@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AdminRole, Prisma, ProductPublicationStatus } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
-import { assertHumanApproval, createProductWithUniquePublicId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
+import { assertHumanApproval, createProductWithUniquePublicId, formatPublicProductId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
@@ -313,7 +313,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
-    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } } });
+    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { legacyPublicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } } });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
     let bodyProfile: { heightCm: number | null; weightKg: number | null } | null = null;
     try {
@@ -491,7 +491,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async (request, reply) => {
     const identifier = request.params.identifier;
     const product = await app.prisma.commerceProduct.findFirst({
-      where: { OR: [{ id: identifier }, { publicId: identifier }, { slug: identifier }] },
+      where: { OR: [{ id: identifier }, { publicId: identifier }, { legacyPublicId: identifier }, { slug: identifier }] },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
         variants: { where: { active: true } },
@@ -637,7 +637,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
-        })));
+        }), async () => {
+          const [sequence] = await app.prisma.$queryRaw<Array<{ id: bigint }>>`SELECT nextval('"CommerceProduct_public_id_seq"') AS id`;
+          return formatPublicProductId(sequence.id);
+        }));
     } catch (error) {
       if (error instanceof ProductPublicIdCollisionError) {
         const concurrentReplay = await findIdempotentProduct();
@@ -1112,7 +1115,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } } } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
         return product;
-      }));
+      }), async () => {
+        const [sequence] = await app.prisma.$queryRaw<Array<{ id: bigint }>>`SELECT nextval('"CommerceProduct_public_id_seq"') AS id`;
+        return formatPublicProductId(sequence.id);
+      });
     } catch (error) {
       if (error instanceof Error && error.message === 'IMPORT_NOT_PENDING_REVIEW') {
         return reply.status(409).send({ code: error.message, message: 'This import is no longer awaiting review.' });

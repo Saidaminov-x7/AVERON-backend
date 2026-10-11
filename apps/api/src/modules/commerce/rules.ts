@@ -131,14 +131,19 @@ export function createPublicProductId(): string {
   return `${token.slice(0, 4)}-${token.slice(4, 8)}-${token.slice(8, 12)}-${token.slice(12, 16)}`;
 }
 
+export function formatPublicProductId(sequence: bigint): string {
+  if (sequence < 1n || sequence > 999_999_999_999_999n) throw new Error('INVALID_PUBLIC_PRODUCT_SEQUENCE');
+  return `AVR-${sequence.toString().padStart(15, '0')}`;
+}
+
 export async function createProductWithUniquePublicId<T>(
   title: string,
   create: (publicId: string, slug: string) => Promise<T>,
-  idGenerator: () => string = createPublicProductId,
+  idGenerator: () => string | Promise<string> = createPublicProductId,
 ): Promise<T> {
   for (let attempt = 0; attempt < MAX_PUBLIC_PRODUCT_ID_ATTEMPTS; attempt += 1) {
-    const publicId = idGenerator();
-    if (!/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/.test(publicId)) {
+    const publicId = await idGenerator();
+    if (!/^(?:[a-z0-9]{4}(?:-[a-z0-9]{4}){3}|AVR-\d{15})$/.test(publicId)) {
       throw new Error('INVALID_PUBLIC_PRODUCT_ID');
     }
     try {

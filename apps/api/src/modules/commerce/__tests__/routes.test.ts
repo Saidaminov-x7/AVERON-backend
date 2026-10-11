@@ -109,6 +109,7 @@ function createTestApp({
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
         where.id.in.map((id) => ({ id, url: 'https://cdn.example/photo.jpg', size: mediaSize }))),
     },
+    $queryRaw: vi.fn(async () => [{ id: 1n }]),
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
   };
   const app = Fastify();
@@ -287,7 +288,7 @@ describe('commerce admin routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ id: product.id, slug: product.slug, status: 'DRAFT', sourceUrl: product.sourceUrl });
     expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: { OR: [{ id: identifier }, { publicId: identifier }, { slug: identifier }] },
+      where: { OR: [{ id: identifier }, { publicId: identifier }, { legacyPublicId: identifier }, { slug: identifier }] },
     }));
     await app.close();
   });
@@ -316,7 +317,44 @@ describe('commerce admin routes', () => {
     expect(response.json()).toMatchObject({ publicId: product.publicId, slug: product.slug });
     expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
-        OR: [{ publicId: product.publicId }, { slug: product.publicId }, { id: product.publicId }],
+        OR: [{ publicId: product.publicId }, { legacyPublicId: product.publicId }, { slug: product.publicId }, { id: product.publicId }],
+        status: 'PUBLISHED',
+      },
+    }));
+    await app.close();
+  });
+
+  it('keeps resolving an existing public URL after its identifier is migrated', async () => {
+    const product = {
+      id: 'product-id',
+      slug: 'linen-shirt-583921',
+      publicId: 'AVR-000000000000001',
+      legacyPublicId: 'a42h-nbsq-o1fp-awaz',
+      status: 'PUBLISHED',
+      stock: 1,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      preorderEstimatedAt: null,
+      images: [],
+      variants: [],
+      category: null,
+    };
+    const { app, prisma } = createTestApp({ publicProduct: product });
+    await start(app);
+
+    const response = await app.inject({ method: 'GET', url: `/api/v1/products/${product.legacyPublicId}` });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ publicId: product.publicId, slug: product.slug });
+    expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        OR: [
+          { publicId: product.legacyPublicId },
+          { legacyPublicId: product.legacyPublicId },
+          { slug: product.legacyPublicId },
+          { id: product.legacyPublicId },
+        ],
         status: 'PUBLISHED',
       },
     }));
@@ -366,7 +404,7 @@ describe('commerce admin routes', () => {
     expect(prisma.$transaction).toHaveBeenCalledOnce();
     expect(tx.commerceProduct.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
-        publicId: expect.stringMatching(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/),
+        publicId: 'AVR-000000000000001',
         sizeChartType: 'SHOES',
         attributes: {
           audience: 'everyone',
@@ -385,6 +423,7 @@ describe('commerce admin routes', () => {
       }),
     }));
     expect(tx.auditLog.create).toHaveBeenCalledOnce();
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
     expect(tx.commerceProduct.create.mock.calls[0][0].data).toMatchObject({ stock: 9 });
     expect(tx.commerceProduct.create.mock.calls[0][0].data.variants.create).toEqual([
       expect.objectContaining({ color: 'Red::#FF0000', size: 'S', stock: 2, salePriceUzs: 180000 }),

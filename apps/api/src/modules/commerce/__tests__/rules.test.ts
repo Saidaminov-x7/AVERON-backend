@@ -6,6 +6,7 @@ import {
   createProductWithUniquePublicId,
   createPublicProductId,
   createProductSlug,
+  formatPublicProductId,
   ProductPublicIdCollisionError,
   slugifyProduct,
 } from '../rules';
@@ -59,6 +60,20 @@ describe('AVERON commerce invariants', () => {
 
   it('generates public product IDs in the requested compact format', () => {
     expect(createPublicProductId()).toMatch(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/);
+  });
+
+  it('formats a monotonic public product ID without exposing the database UUID', () => {
+    expect(formatPublicProductId(1n)).toBe('AVR-000000000000001');
+    expect(formatPublicProductId(42n)).toBe('AVR-000000000000042');
+    expect(() => formatPublicProductId(0n)).toThrow('INVALID_PUBLIC_PRODUCT_SEQUENCE');
+  });
+
+  it('supports an asynchronous database-backed public ID sequence', async () => {
+    await expect(createProductWithUniquePublicId(
+      'Test shirt',
+      async (publicId) => publicId,
+      async () => formatPublicProductId(1n),
+    )).resolves.toBe('AVR-000000000000001');
   });
 
   it('retries a public ID after Prisma reports a unique collision', async () => {
