@@ -909,6 +909,7 @@ model CommerceProduct {
   category          CommerceCategory?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   slug              String                   @unique
   publicId          String                   @unique
+  legacyPublicId    String?                  @unique
   sizeChartType      String?
   translations      Json
   description       Json?
@@ -1025,6 +1026,7 @@ model CommerceProductImage {
   media     Media?          @relation(fields: [mediaId], references: [id], onDelete: SetNull)
   url       String
   alt       Json?
+  coverCrop Json?
   sortOrder Int             @default(0)
   embeddings ProductImageEmbedding[]
 

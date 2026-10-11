@@ -113,6 +113,25 @@ describe('commerce product country validation', () => {
     expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN', images }).success).toBe(false);
   });
 
+  it('validates persisted cover focal point and zoom while remaining compatible with legacy image payloads', () => {
+    const validCrop = { x: 14, y: 82, zoom: 2.2 };
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN' }).success).toBe(true);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      images: [{ ...manualProduct.images[0], coverCrop: validCrop }],
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({
+      images: [{ id: '00000000-0000-4000-8000-000000000005', coverCrop: validCrop }],
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({
+      images: [{ id: '00000000-0000-4000-8000-000000000005', coverCrop: { ...validCrop, x: 101 } }],
+    }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({
+      images: [{ id: '00000000-0000-4000-8000-000000000005', coverCrop: { ...validCrop, zoom: 0.5 } }],
+    }).success).toBe(false);
+  });
+
   it('requires a supported country when approving an imported product', () => {
     const approval = {
       salePriceUzs: 180000,

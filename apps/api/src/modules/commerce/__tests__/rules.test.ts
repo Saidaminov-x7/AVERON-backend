@@ -4,7 +4,7 @@ import {
   assertHumanApproval,
   calculateNetProfit,
   createProductWithUniquePublicId,
-  createPublicProductId,
+  formatPublicProductId,
   createProductSlug,
   ProductPublicIdCollisionError,
   slugifyProduct,
@@ -57,8 +57,10 @@ describe('AVERON commerce invariants', () => {
     expect(() => createProductSlug('Тест', '123')).toThrow('INVALID_PRODUCT_SLUG_SUFFIX');
   });
 
-  it('generates public product IDs in the requested compact format', () => {
-    expect(createPublicProductId()).toMatch(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/);
+  it('formats sequential public product IDs with a fixed-width numeric suffix', () => {
+    expect(formatPublicProductId(1n)).toBe('AVR-000000000000001');
+    expect(formatPublicProductId('42')).toBe('AVR-000000000000042');
+    expect(() => formatPublicProductId(0)).toThrow('PUBLIC_PRODUCT_ID_SEQUENCE_OUT_OF_RANGE');
   });
 
   it('retries a public ID after Prisma reports a unique collision', async () => {
@@ -77,12 +79,12 @@ describe('AVERON commerce invariants', () => {
         return publicId;
       },
       (() => {
-        const ids = ['aaaa-bbbb-cccc-dddd', 'eeee-ffff-gggg-hhhh'];
+        const ids = ['AVR-000000000000001', 'AVR-000000000000002'];
         return () => ids.shift()!;
       })(),
     );
 
-    expect(result).toBe('eeee-ffff-gggg-hhhh');
+    expect(result).toBe('AVR-000000000000002');
     expect(attempts).toBe(2);
   });
 
@@ -101,7 +103,7 @@ describe('AVERON commerce invariants', () => {
       }
       return publicId;
     }, (() => {
-      const ids = ['aaaa-bbbb-cccc-dddd', 'eeee-ffff-gggg-hhhh'];
+      const ids = ['AVR-000000000000001', 'AVR-000000000000002'];
       return () => ids.shift()!;
     })());
 
@@ -120,7 +122,7 @@ describe('AVERON commerce invariants', () => {
       throw error;
     };
 
-    await expect(createProductWithUniquePublicId('Тест', create, () => 'aaaa-bbbb-cccc-dddd')).rejects.toBe(error);
+    await expect(createProductWithUniquePublicId('Тест', create, () => 'AVR-000000000000001')).rejects.toBe(error);
   });
 
   it('fails with a controlled error after five public identifier collision attempts', async () => {
@@ -134,7 +136,7 @@ describe('AVERON commerce invariants', () => {
       });
     };
 
-    await expect(createProductWithUniquePublicId('Тест', create, () => 'aaaa-bbbb-cccc-dddd'))
+    await expect(createProductWithUniquePublicId('Тест', create, () => 'AVR-000000000000001'))
       .rejects.toBeInstanceOf(ProductPublicIdCollisionError);
     expect(attempts).toBe(5);
   });

@@ -232,9 +232,16 @@ export const approveImportSchema = z.object({
 
 export const rejectImportSchema = z.object({ reason: z.string().min(3).max(500) });
 
+export const productImageCoverCropSchema = z.object({
+  x: z.number().finite().min(0).max(100),
+  y: z.number().finite().min(0).max(100),
+  zoom: z.number().finite().min(1).max(3),
+}).strict();
+
 const productImageReferenceSchema = z.object({
   id: z.string().uuid().optional(),
   mediaId: z.string().uuid().optional(),
+  coverCrop: productImageCoverCropSchema.nullable().optional(),
 }).refine(({ id, mediaId }) => Boolean(id) !== Boolean(mediaId), {
   message: 'Each image must reference either an existing product image or a media upload',
 });
@@ -247,7 +254,10 @@ const productImagesSchema = z.array(productImageReferenceSchema).min(1).max(15)
     }
   });
 
-const createProductImagesSchema = z.array(z.object({ mediaId: z.string().uuid() })).min(1).max(15)
+const createProductImagesSchema = z.array(z.object({
+  mediaId: z.string().uuid(),
+  coverCrop: productImageCoverCropSchema.nullable().optional(),
+})).min(1).max(15)
   .superRefine((images, context) => {
     const mediaIds = images.map(({ mediaId }) => mediaId);
     if (new Set(mediaIds).size !== mediaIds.length) {
@@ -264,6 +274,8 @@ export const createManualProductSchema = z.object({
   description: z.string().max(5000).optional(),
   descriptionUz: z.string().max(5000).optional(),
   descriptionEn: z.string().max(5000).optional(),
+  composition: z.object({ ru: z.string().max(4000).optional(), uz: z.string().max(4000).optional(), en: z.string().max(4000).optional() }).strict().optional(),
+  careInstructions: z.object({ ru: z.string().max(8000).optional(), uz: z.string().max(8000).optional(), en: z.string().max(8000).optional() }).strict().optional(),
   sourceUrl: safeSourceUrlSchema.optional().nullable(),
   images: createProductImagesSchema,
   sourcePriceCny: z.coerce.number().finite().nonnegative().optional(),
@@ -302,6 +314,8 @@ export const updateManualProductSchema = z.object({
   description: z.string().max(5000).optional(),
   descriptionUz: z.string().max(5000).optional(),
   descriptionEn: z.string().max(5000).optional(),
+  composition: z.object({ ru: z.string().max(4000).optional(), uz: z.string().max(4000).optional(), en: z.string().max(4000).optional() }).strict().optional(),
+  careInstructions: z.object({ ru: z.string().max(8000).optional(), uz: z.string().max(8000).optional(), en: z.string().max(8000).optional() }).strict().optional(),
   sourceUrl: safeSourceUrlSchema.nullable().optional(),
   images: productImagesSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive().optional(),

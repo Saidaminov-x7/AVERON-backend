@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, ProductPublicationStatus } from '@prisma/client';
 import { adminMiddleware } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
-import { assertHumanApproval, createProductWithUniquePublicId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
+import { assertHumanApproval, createProductWithUniquePublicId, formatPublicProductId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
@@ -156,6 +156,23 @@ function mergeLocalizedDescriptions(
   return descriptions as Prisma.InputJsonObject;
 }
 
+function mergeProductAttributes(
+  existing: unknown,
+  updates: { composition?: Record<string, string>; careInstructions?: Record<string, string> },
+): Prisma.InputJsonObject {
+  const attributes = copyJsonObject(existing);
+  for (const key of ['composition', 'careInstructions'] as const) {
+    const value = updates[key];
+    if (value === undefined) continue;
+    const localized = Object.fromEntries(
+      Object.entries(value).flatMap(([locale, text]) => typeof text === 'string' && text.trim() ? [[locale, text.trim()]] : []),
+    );
+    if (Object.keys(localized).length) attributes[key] = localized;
+    else delete attributes[key];
+  }
+  return attributes as Prisma.InputJsonObject;
+}
+
 export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(createRecommendationsModule());
   app.register(parserImportModule);
@@ -235,7 +252,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
-    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
+    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { legacyPublicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
     return product ? publicProductDto(product) : reply.status(404).send({ message: 'Товар не найден' });
   });
 
@@ -481,7 +498,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           sizeChartType: input.sizeChartType ?? null,
           translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
           description: Object.keys(descriptions).length ? descriptions : undefined,
-          attributes: { audience: 'everyone' },
+          attributes: mergeProductAttributes({ audience: 'everyone' }, {
+            composition: input.composition,
+            careInstructions: input.careInstructions,
+          }),
           source: 'MANUAL',
           sourceProductId,
           sourceUrl: input.sourceUrl ?? null,
@@ -503,7 +523,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             create: input.images.map((image, sortOrder) => {
               const file = mediaById.get(image.mediaId!);
               if (!file) throw new Error('Product photo reference was not resolved');
-              return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title } };
+              return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title }, ...(image.coverCrop ? { coverCrop: image.coverCrop } : {}) };
             }),
           },
           variants: input.colors?.length
@@ -512,7 +532,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
-        })));
+        }), async () => {
+          const [sequence] = await app.prisma.$queryRaw<Array<{ id: bigint }>>`SELECT nextval('"CommerceProduct_public_id_seq"') AS id`;
+          return formatPublicProductId(sequence.id);
+        }));
     } catch (error) {
       if (error instanceof ProductPublicIdCollisionError) {
         return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный публичный ID товара' });
@@ -538,7 +561,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         preorderReserved: true,
         translations: true,
         description: true,
-        images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true } },
+        attributes: true,
+        images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true, coverCrop: true } },
         variants: { select: { id: true, sku: true, stock: true, active: true } },
       },
     });
@@ -554,7 +578,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       if (preorderLimit < product.preorderReserved) {
         throw Object.assign(new Error('Preorder limit cannot be lower than already reserved quantity'), { statusCode: 409 });
       }
-      let resolvedImages: Array<{ id?: string; mediaId: string | null; url: string }> | undefined;
+      let resolvedImages: Array<{ id?: string; mediaId: string | null; url: string; coverCrop?: Prisma.InputJsonValue | typeof Prisma.DbNull }> | undefined;
       if (input.images) {
         const settings = await tx.siteSettings.findUnique({
           where: { id: 'singleton' },
@@ -576,11 +600,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           if (image.id) {
             const existing = existingById.get(image.id);
             if (!existing) throw Object.assign(new Error('Product image does not belong to this product'), { statusCode: 400 });
-            return { id: existing.id, mediaId: existing.mediaId, url: existing.url };
+            return { id: existing.id, mediaId: existing.mediaId, url: existing.url, coverCrop: image.coverCrop === undefined ? (existing.coverCrop as Prisma.InputJsonValue | null) ?? undefined : image.coverCrop ?? Prisma.DbNull };
           }
           const file = mediaById.get(image.mediaId!);
           if (!file) throw Object.assign(new Error('Product photo reference was not resolved'), { statusCode: 400 });
-          return { mediaId: file.id, url: file.url };
+          return { mediaId: file.id, url: file.url, ...(image.coverCrop ? { coverCrop: image.coverCrop } : {}) };
         });
       }
       if (input.categoryId && input.categoryId !== product.categoryId) {
@@ -622,6 +646,12 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
                   en: input.descriptionEn,
                 }),
               }
+            : {}),
+          ...(input.composition !== undefined || input.careInstructions !== undefined
+            ? { attributes: mergeProductAttributes(product.attributes, {
+                composition: input.composition,
+                careInstructions: input.careInstructions,
+              }) }
             : {}),
           ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
           ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
@@ -667,11 +697,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           if (image.id) {
             await tx.commerceProductImage.update({
               where: { id: image.id },
-              data: { sortOrder },
+              data: { sortOrder, ...(image.coverCrop !== undefined ? { coverCrop: image.coverCrop } : {}) },
             });
           } else {
             await tx.commerceProductImage.create({
-              data: { productId: id, mediaId: image.mediaId, url: image.url, sortOrder },
+              data: { productId: id, mediaId: image.mediaId, url: image.url, sortOrder, ...(image.coverCrop !== undefined ? { coverCrop: image.coverCrop } : {}) },
             });
           }
         }
@@ -926,7 +956,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } } } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
         return product;
-      }));
+      }), async () => {
+        const [sequence] = await app.prisma.$queryRaw<Array<{ id: bigint }>>`SELECT nextval('"CommerceProduct_public_id_seq"') AS id`;
+        return formatPublicProductId(sequence.id);
+      });
     } catch (error) {
       if (error instanceof Error && error.message === 'IMPORT_NOT_PENDING_REVIEW') {
         return reply.status(409).send({ code: error.message, message: 'This import is no longer awaiting review.' });
