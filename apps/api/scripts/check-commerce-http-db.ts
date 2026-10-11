@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import Fastify from "fastify";
+import fastifyCookie from "@fastify/cookie";
 import fastifyJwt from "@fastify/jwt";
 import fastifyMultipart from "@fastify/multipart";
 import { AdminRole, PrismaClient, Role } from "@prisma/client";
+import { Redis } from "ioredis";
+import { ZodError } from "zod";
+import { config } from "../src/config";
+import {
+  requestPhoneRegistration,
+  verifyPhoneRegistration,
+} from "../src/modules/auth/phone-password";
 import { createFittingRoomModule } from "../src/modules/commerce/fitting-room";
 import { commerceModule } from "../src/modules/commerce";
 
@@ -16,6 +24,10 @@ let productId: string | undefined;
 let adminId: string | undefined;
 let token: string | undefined;
 let fittingRoomApp: ReturnType<typeof Fastify> | undefined;
+let authApp: ReturnType<typeof Fastify> | undefined;
+let authRedis: Redis | undefined;
+let registeredUserId: string | undefined;
+let registrationPhone: string | undefined;
 
 function makeValidGlb() {
   const document = {
@@ -91,6 +103,126 @@ async function createPendingImport(sourceProductId: string) {
 
 async function main() {
   try {
+    assert.equal(
+      config.NODE_ENV,
+      "test",
+      "auth integration must run in test mode",
+    );
+    assert.equal(
+      config.FEATURE_SMS_VERIFICATION,
+      true,
+      "SMS verification flag must be enabled for the isolated OTP test",
+    );
+    const redis = new Redis(config.REDIS_URL, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+    });
+    authRedis = redis;
+    await redis.connect();
+    assert.equal(
+      await redis.ping(),
+      "PONG",
+      "isolated Redis must be available",
+    );
+
+    authApp = Fastify({ logger: false });
+    authApp.decorate("redis", redis);
+    authApp.decorate("prisma", prisma);
+    authApp.setErrorHandler((error, _request, reply) => {
+      if (error instanceof ZodError) {
+        return reply.status(400).send({ message: "Validation failed" });
+      }
+      return reply.status(500).send({ message: "Internal server error" });
+    });
+    await authApp.register(fastifyCookie);
+    await authApp.register(fastifyJwt, { secret: config.JWT_SECRET });
+    authApp.post("/auth/register/phone/request-code", requestPhoneRegistration);
+    authApp.post("/auth/register/phone/verify-code", verifyPhoneRegistration);
+    await authApp.ready();
+
+    registrationPhone = `+998${String(Date.now() % 1_000_000_000).padStart(9, "0")}`;
+    const unsupportedPrefix = await authApp.inject({
+      method: "POST",
+      url: "/auth/register/phone/request-code",
+      payload: {
+        name: "HTTP OTP Integration",
+        phone: "+1 202 555 0101",
+        password: "StrongPass123!",
+      },
+    });
+    assert.equal(
+      unsupportedPrefix.statusCode,
+      400,
+      "server must reject unsupported phone country prefixes",
+    );
+
+    const requestedCode = await authApp.inject({
+      method: "POST",
+      url: "/auth/register/phone/request-code",
+      payload: {
+        name: "HTTP OTP Integration",
+        phone: registrationPhone,
+        password: "StrongPass123!",
+      },
+    });
+    assert.equal(requestedCode.statusCode, 200, requestedCode.body);
+    const devCode = (requestedCode.json() as { devCode?: string }).devCode;
+    assert.ok(devCode, "test-only OTP must be returned by test mode");
+    assert.match(devCode, /^\d{6}$/);
+
+    const invalidCode = await authApp.inject({
+      method: "POST",
+      url: "/auth/register/phone/verify-code",
+      payload: { phone: registrationPhone, code: "000000" },
+    });
+    assert.equal(
+      invalidCode.statusCode,
+      401,
+      "invalid OTP must not create an account",
+    );
+    assert.equal(
+      await prisma.user.count({ where: { phone: registrationPhone } }),
+      0,
+      "invalid OTP must leave PostgreSQL unchanged",
+    );
+
+    const verifiedRegistration = await authApp.inject({
+      method: "POST",
+      url: "/auth/register/phone/verify-code",
+      payload: { phone: registrationPhone, code: devCode },
+    });
+    assert.equal(
+      verifiedRegistration.statusCode,
+      200,
+      verifiedRegistration.body,
+    );
+    const registrationBody = verifiedRegistration.json() as {
+      accessToken: string;
+      user: { id: string; phone: string; role: string };
+    };
+    assert.equal(registrationBody.user.phone, registrationPhone);
+    assert.equal(registrationBody.user.role, "USER");
+    assert.ok(registrationBody.accessToken);
+    registeredUserId = registrationBody.user.id;
+    assert.equal(
+      await prisma.user.count({
+        where: {
+          id: registeredUserId,
+          phone: registrationPhone,
+          verified: true,
+        },
+      }),
+      1,
+      "successful OTP must persist exactly one verified user",
+    );
+    assert.equal(
+      await prisma.authSession.count({
+        where: { userId: registeredUserId, revokedAt: null },
+      }),
+      1,
+      "successful registration must persist an authenticated session",
+    );
+
     const admin = await prisma.user.create({
       data: {
         email: `http-integration-${stamp}@averon.invalid`,
@@ -444,11 +576,28 @@ async function main() {
     );
 
     console.log(
-      "PASS PostgreSQL HTTP integration: parser-to-admin import review, localized composition/care, authenticated GLB upload/review and audit persistence",
+      "PASS PostgreSQL/Redis HTTP integration: +998 registration OTP/session, parser-to-admin import review, localized composition/care, authenticated GLB upload/review and audit persistence",
     );
   } finally {
     await app.close().catch(() => undefined);
     await fittingRoomApp?.close().catch(() => undefined);
+    await authApp?.close().catch(() => undefined);
+    if (registrationPhone) {
+      await authRedis
+        ?.del(
+          `averon:v1:auth:phone-password:register:${registrationPhone}`,
+          `averon:v1:auth:phone-password:cooldown:${registrationPhone}`,
+        )
+        .catch(() => undefined);
+    }
+    if (registeredUserId) {
+      await prisma.authSession
+        .deleteMany({ where: { userId: registeredUserId } })
+        .catch(() => undefined);
+      await prisma.user
+        .deleteMany({ where: { id: registeredUserId } })
+        .catch(() => undefined);
+    }
     if (productId)
       await prisma.commerceProduct
         .deleteMany({ where: { id: productId } })
@@ -465,6 +614,7 @@ async function main() {
         .deleteMany({ where: { id: adminId } })
         .catch(() => undefined);
     }
+    await authRedis?.quit().catch(() => undefined);
     await prisma.$disconnect();
   }
 }
