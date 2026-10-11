@@ -450,7 +450,7 @@ describe('fitting-room routes', () => {
     await start(app, storage);
 
     const payload = { sourceImageIds: [imageId], garmentLayer: 'BASE_TOP' };
-    const headers = { 'idempotency-key': 'fixture-generation-001' };
+    const headers = { 'idempotency-key': 'fit-gen-1' };
     const first = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/fitting-room/generation-jobs`, headers, payload });
     const replay = await app.inject({ method: 'POST', url: `/api/v1/admin/products/${productId}/fitting-room/generation-jobs`, headers, payload });
 
@@ -467,7 +467,7 @@ describe('fitting-room routes', () => {
     const { app, tx, prisma, storage } = createTestApp();
     vi.mocked(featureFlags.isEnabled).mockImplementation((flag) => flag === 'LOCAL_3D_GENERATION');
     await start(app, storage);
-    const headers = { 'idempotency-key': 'fixture-generation-002' };
+    const headers = { 'idempotency-key': 'fit-gen-2' };
     const url = `/api/v1/admin/products/${productId}/fitting-room/generation-jobs`;
     await app.inject({ method: 'POST', url, headers, payload: { sourceImageIds: [imageId], garmentLayer: 'BASE_TOP' } });
     const conflict = await app.inject({ method: 'POST', url, headers, payload: { sourceImageIds: [imageId], garmentLayer: 'OUTERWEAR' } });
@@ -486,7 +486,7 @@ describe('fitting-room routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: `/api/v1/admin/products/${productId}/fitting-room/generation-jobs`,
-      headers: { 'idempotency-key': 'fixture-generation-003' },
+      headers: { 'idempotency-key': 'fit-gen-3' },
       payload: { sourceImageIds: [imageId], garmentLayer: 'BASE_TOP' },
     });
 
