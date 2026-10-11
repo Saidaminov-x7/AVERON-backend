@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { randomUUID } from 'node:crypto';
-import { Prisma, ProductPublicationStatus } from '@prisma/client';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { createHash, randomUUID } from 'node:crypto';
+import { AdminRole, Prisma, ProductPublicationStatus } from '@prisma/client';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
 import { assertHumanApproval, createProductWithUniquePublicId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
 import { featureFlags } from '../features/feature-flags';
@@ -22,10 +22,55 @@ import { ipostShippingModule } from './ipost-shipping';
 import { fittingRoomModule } from './fitting-room';
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
+const catalogReadRoles = [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR, AdminRole.SUPPORT];
+const catalogManageRoles = [AdminRole.SUPER_ADMIN, AdminRole.ADMIN];
+
+export function buildManualVariantOptions(input: {
+  color?: string;
+  colors?: Array<{ name: string; hex: string }>;
+  size?: string;
+  sizes?: string[];
+  variantStocks?: Array<{ color: string | null; size: string | null; stock: number }>;
+}) {
+  const uniqueValues = <T>(entries: Array<readonly [string, T]>) => {
+    const values = new Map<string, T>();
+    for (const [key, value] of entries) if (!values.has(key)) values.set(key, value);
+    return [...values.values()];
+  };
+  const colors = input.colors?.length
+    ? uniqueValues(input.colors.map((color) => {
+        const value = `${color.name.trim()}::${color.hex.toUpperCase()}`;
+        return [value.toLocaleLowerCase(), value] as const;
+      }))
+    : input.color?.trim() ? [input.color.trim()] : [null];
+  const rawSizes = input.sizes?.length ? input.sizes : input.size?.trim() ? [input.size] : [null];
+  const standardSizes = new Map(['XXXS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XXXXL']
+    .map((size) => [size.toLocaleLowerCase(), size]));
+  const sizes = uniqueValues(rawSizes.map((size) => {
+    const trimmed = size?.trim() || null;
+    const value = trimmed ? standardSizes.get(trimmed.toLocaleLowerCase()) ?? trimmed : null;
+    return [value?.toLocaleLowerCase() ?? '', value] as const;
+  }));
+  if (colors.length === 1 && colors[0] === null && sizes.length === 1 && sizes[0] === null) return [];
+  const variantStocks = new Map((input.variantStocks ?? []).map(({ color, size, stock }) => [
+    `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`,
+    stock,
+  ]));
+  const options = colors.flatMap((color) => sizes.map((size) => ({ color, size })));
+  const availableKeys = new Set(options.map(({ color, size }) => `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`));
+  if ([...variantStocks.keys()].some((key) => !availableKeys.has(key))) {
+    throw new Error('Variant stock entry does not match a configured color and size');
+  }
+  return options.map((option) => ({
+    ...option,
+    stock: variantStocks.get(`${option.color?.trim().toLocaleLowerCase() ?? ''}\u0000${option.size?.trim().toLocaleLowerCase() ?? ''}`),
+  }));
+}
 
 export function buildProductWhere(
   query: ProductListQuery,
   status?: ProductPublicationStatus,
+  compareAtPriceRef?: Prisma.FieldRef<'CommerceProduct', 'Decimal'>,
 ): Prisma.CommerceProductWhereInput {
   const where: Prisma.CommerceProductWhereInput = {};
   if (status) where.status = status;
@@ -41,11 +86,16 @@ export function buildProductWhere(
       },
     };
   }
-  if (query.minPrice !== undefined || query.maxPrice !== undefined) {
+  if (query.minPrice !== undefined || query.maxPrice !== undefined || query.saleOnly === 'true') {
     where.salePriceUzs = {
       ...(query.minPrice ? { gte: query.minPrice } : {}),
       ...(query.maxPrice ? { lte: query.maxPrice } : {}),
+      ...(query.saleOnly === 'true' ? { gt: 0 } : {}),
+      ...(query.saleOnly === 'true' && compareAtPriceRef ? { lt: compareAtPriceRef } : {}),
     };
+  }
+  if (query.saleOnly === 'true') {
+    where.compareAtPriceUzs = { not: null };
   }
   if (query.q?.trim()) {
     const tokens = query.q.trim().split(/\s+/).filter(Boolean).slice(0, 6);
@@ -158,6 +208,27 @@ function mergeLocalizedDescriptions(
   return descriptions as Prisma.InputJsonObject;
 }
 
+type ProductCareAttribute = 'composition' | 'careInstructions';
+type LocalizedProductText = Partial<Record<'ru' | 'uz' | 'en', string>>;
+
+function mergeLocalizedProductAttributes(
+  existing: Prisma.JsonValue | null,
+  updates: Partial<Record<ProductCareAttribute, LocalizedProductText>>,
+): Prisma.InputJsonObject {
+  const attributes = copyJsonObject(existing);
+  for (const [name, localizedUpdates] of Object.entries(updates) as Array<[ProductCareAttribute, LocalizedProductText]>) {
+    const localized = isJsonObject(attributes[name]) ? copyJsonObject(attributes[name] as Prisma.JsonValue) : {};
+    for (const [locale, text] of Object.entries(localizedUpdates)) {
+      if (text === undefined) continue;
+      if (text.trim()) localized[locale] = text.trim();
+      else delete localized[locale];
+    }
+    if (Object.keys(localized).length) attributes[name] = localized;
+    else delete attributes[name];
+  }
+  return attributes as Prisma.InputJsonObject;
+}
+
 export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(createRecommendationsModule());
   app.register(parserImportModule);
@@ -175,7 +246,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where = buildProductWhere(query, ProductPublicationStatus.PUBLISHED);
+    const where = buildProductWhere(
+      query,
+      ProductPublicationStatus.PUBLISHED,
+      app.prisma.commerceProduct.fields.compareAtPriceUzs,
+    );
     if (query.sort === 'popular') {
       const eligibleWhere = buildPopularProductWhere(where);
       const [candidates, total] = await Promise.all([
@@ -279,13 +354,13 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get('/admin/categories', { preHandler: adminMiddleware }, async () =>
+  app.get('/admin/categories', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async () =>
     app.prisma.commerceCategory.findMany({
       include: { parent: { select: { id: true, slug: true, name: true } }, _count: { select: { products: true, imports: true } } },
       orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }],
     }));
 
-  app.post('/admin/categories', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/categories', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const input = createCategorySchema.parse(request.body);
     if (input.parentId) {
       const parent = await app.prisma.commerceCategory.findUnique({ where: { id: input.parentId }, select: { id: true, active: true } });
@@ -308,7 +383,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(409).send({ message: 'Could not generate a unique category slug' });
   });
 
-  app.put<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.put<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const input = updateCategorySchema.parse(request.body);
     const current = await app.prisma.commerceCategory.findUnique({ where: { id: request.params.id } });
     if (!current) return reply.status(404).send({ message: 'Category not found' });
@@ -353,7 +428,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.delete<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.delete<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const current = await app.prisma.commerceCategory.findUnique({ where: { id: request.params.id } });
     if (!current) return reply.status(404).send({ message: 'Category not found' });
     return app.prisma.commerceCategory.update({ where: { id: current.id }, data: { active: false } });
@@ -361,11 +436,17 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/custom-orders', async (request, reply) => {
     const input = customOrderSchema.parse(request.body);
-    const item = await app.prisma.customOrderRequest.create({ data: { ...input, contact: input.contact as any, selectedVariant: input.selectedVariant as any } });
+    const item = await app.prisma.customOrderRequest.create({
+      data: {
+        ...input,
+        contact: input.contact as Prisma.InputJsonValue,
+        selectedVariant: input.selectedVariant as Prisma.InputJsonValue | undefined,
+      },
+    });
     return reply.status(201).send(item);
   });
 
-  app.get('/admin/dashboard', { preHandler: adminMiddleware }, async () => {
+  app.get('/admin/dashboard', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async () => {
     const [published, pendingReview, rejected, orders, users, revenue, expenses] = await Promise.all([
       app.prisma.commerceProduct.count({ where: { status: 'PUBLISHED' } }),
       app.prisma.importedProduct.count({ where: { status: 'PENDING_REVIEW' } }),
@@ -378,11 +459,15 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { products: { published, pendingReview, rejected }, orders: { total: orders }, users: { total: users }, finance: { revenue: revenue._sum.totalRevenue ?? 0, netProfit: revenue._sum.netProfit ?? 0, expenses: expenses._sum.amount ?? 0 } };
   });
 
-  app.get('/admin/products', { preHandler: adminMiddleware }, async (request) => {
+  app.get('/admin/products', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async (request) => {
     const query = adminProductListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where = buildProductWhere(query, query.status);
+    const where = buildProductWhere(
+      query,
+      query.status,
+      app.prisma.commerceProduct.fields.compareAtPriceUzs,
+    );
     if (query.source) where.source = query.source;
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({
@@ -403,7 +488,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
   });
 
-  app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async (request, reply) => {
     const identifier = request.params.identifier;
     const product = await app.prisma.commerceProduct.findFirst({
       where: { OR: [{ id: identifier }, { publicId: identifier }, { slug: identifier }] },
@@ -418,7 +503,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return product ?? reply.status(404).send({ message: 'Product not found' });
   });
 
-  app.get('/admin/imports', { preHandler: adminMiddleware }, async (request) => {
+  app.get('/admin/imports', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request) => {
     const query = adminImportListQuerySchema.parse(request.query);
     const where: Prisma.ImportedProductWhereInput = {
       ...(query.status ? { status: query.status } : {}),
@@ -446,8 +531,27 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { items, pagination: { page: query.page, limit: query.limit, total, pages: Math.ceil(total / query.limit) } };
   });
 
-  app.post('/admin/products', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/products', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
+    const rawIdempotencyKey = request.headers['idempotency-key'];
+    if (typeof rawIdempotencyKey !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(rawIdempotencyKey)) {
+      return reply.status(400).send({ code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A valid Idempotency-Key header is required' });
+    }
+    const manualCreationKey = createHash('sha256')
+      .update(`${request.user.userId}:${rawIdempotencyKey}`)
+      .digest('hex');
+    const manualCreationHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+    const findIdempotentProduct = () => app.prisma.commerceProduct.findUnique({
+      where: { manualCreationKey },
+      include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true },
+    });
+    const replay = await findIdempotentProduct();
+    if (replay) {
+      if (replay.manualCreationHash !== manualCreationHash) {
+        return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with a different product payload' });
+      }
+      return reply.header('idempotent-replay', 'true').status(200).send(replay);
+    }
     const mediaIds = input.images.map((image) => image.mediaId).filter((id): id is string => Boolean(id));
     const settings = await withDiagnosticStage('manual_product_settings_lookup', () =>
       app.prisma.siteSettings.findUnique({
@@ -480,6 +584,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       ...(input.descriptionUz?.trim() ? { uz: input.descriptionUz.trim() } : {}),
       ...(input.descriptionEn?.trim() ? { en: input.descriptionEn.trim() } : {}),
     };
+    const variantOptions = buildManualVariantOptions(input);
     const sourceProductId = randomUUID();
     let product;
     try {
@@ -493,10 +598,18 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           sizeChart: input.sizeChart as Prisma.InputJsonValue | undefined,
           translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
           description: Object.keys(descriptions).length ? descriptions : undefined,
-          attributes: { audience: 'everyone' },
+          attributes: {
+            audience: 'everyone',
+            ...mergeLocalizedProductAttributes(null, {
+              composition: { ru: input.composition, uz: input.compositionUz, en: input.compositionEn },
+              careInstructions: { ru: input.careInstructions, uz: input.careInstructionsUz, en: input.careInstructionsEn },
+            }),
+          },
           source: 'MANUAL',
           sourceProductId,
           sourceUrl: input.sourceUrl ?? null,
+          manualCreationKey,
+          manualCreationHash,
           originalPriceCny: input.sourcePriceCny ?? null,
           exchangeRate: input.exchangeRate ?? null,
           salePriceUzs: input.salePriceUzs,
@@ -518,15 +631,22 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
               return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title } };
             }),
           },
-          variants: input.colors?.length
-            ? { create: input.colors.map((color, index) => ({ sku: `MANUAL-${sourceProductId}-${index + 1}`, color: `${color.name}::${color.hex.toUpperCase()}`, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock })) }
-            : input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock }] } : undefined,
+          variants: variantOptions.length
+            ? { create: variantOptions.map((option, index) => ({ sku: `MANUAL-${sourceProductId}-${index + 1}`, ...option, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: option.stock ?? input.stock })) }
+            : undefined,
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
         })));
     } catch (error) {
       if (error instanceof ProductPublicIdCollisionError) {
+        const concurrentReplay = await findIdempotentProduct();
+        if (concurrentReplay?.manualCreationHash === manualCreationHash) {
+          return reply.header('idempotent-replay', 'true').status(200).send(concurrentReplay);
+        }
+        if (concurrentReplay) {
+          return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with a different product payload' });
+        }
         return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный публичный ID товара' });
       }
       throw error;
@@ -534,7 +654,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(201).send(product);
   });
 
-  app.put('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.put('/admin/products/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = updateManualProductSchema.parse(request.body);
     const product = await app.prisma.commerceProduct.findUnique({
@@ -550,6 +670,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         preorderReserved: true,
         translations: true,
         description: true,
+        attributes: true,
         images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true } },
         variants: { select: { id: true, sku: true, stock: true, active: true } },
       },
@@ -612,6 +733,12 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const descriptionsProvided = input.description !== undefined
         || input.descriptionUz !== undefined
         || input.descriptionEn !== undefined;
+      const productAttributesProvided = input.composition !== undefined
+        || input.compositionUz !== undefined
+        || input.compositionEn !== undefined
+        || input.careInstructions !== undefined
+        || input.careInstructionsUz !== undefined
+        || input.careInstructionsEn !== undefined;
       const updatedProduct = await tx.commerceProduct.update({
         where: { id },
         data: {
@@ -636,13 +763,31 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
                 }),
               }
             : {}),
+          ...(productAttributesProvided
+            ? {
+                attributes: mergeLocalizedProductAttributes(product.attributes, {
+                  composition: {
+                    ru: input.composition,
+                    uz: input.compositionUz,
+                    en: input.compositionEn,
+                  },
+                  careInstructions: {
+                    ru: input.careInstructions,
+                    uz: input.careInstructionsUz,
+                    en: input.careInstructionsEn,
+                  },
+                }),
+              }
+            : {}),
           ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
           ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
           ...(input.compareAtPriceUzs !== undefined ? { compareAtPriceUzs: input.compareAtPriceUzs } : {}),
           ...(input.preorderEnabled !== undefined ? { preorderEnabled: input.preorderEnabled } : {}),
           ...(input.preorderLimit !== undefined ? { preorderLimit: input.preorderLimit } : {}),
           ...(input.preorderEstimatedAt !== undefined ? { preorderEstimatedAt: input.preorderEstimatedAt } : {}),
-          ...(input.stock !== undefined && !hasActiveVariants && input.color === undefined && input.size === undefined
+          ...(input.stock !== undefined && !hasActiveVariants
+            && input.color === undefined && input.colors === undefined
+            && input.size === undefined && input.sizes === undefined
             ? { stock: input.stock }
             : {}),
           ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
@@ -691,19 +836,46 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
 
       if (product.source === 'MANUAL' && (
-        input.color !== undefined || input.colors !== undefined || input.size !== undefined || input.salePriceUzs !== undefined || input.stock !== undefined
+        input.color !== undefined || input.colors !== undefined
+        || input.size !== undefined || input.sizes !== undefined
+        || input.salePriceUzs !== undefined || input.stock !== undefined || input.variantStocks !== undefined
       )) {
-        if (input.colors !== undefined) {
+        if (input.variantStocks !== undefined && input.colors === undefined && input.sizes === undefined) {
+          const activeVariants = product.variants.filter((variant: { active: boolean }) => variant.active) as Array<{
+            id: string;
+            color?: string | null;
+            size?: string | null;
+            active: boolean;
+          }>;
+          const activeKeys = new Set(activeVariants.map((variant) =>
+            `${variant.color?.trim().toLocaleLowerCase() ?? ''}\u0000${variant.size?.trim().toLocaleLowerCase() ?? ''}`));
+          const requestedKeys = input.variantStocks.map(({ color, size }) =>
+            `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`);
+          if (requestedKeys.length !== activeVariants.length || requestedKeys.some((key) => !activeKeys.has(key))) {
+            throw Object.assign(new Error('Variant stock entries must cover every active product variant'), { statusCode: 400 });
+          }
+          for (const { color, size, stock } of input.variantStocks) {
+            const variant = activeVariants.find((candidate) =>
+              `${candidate.color?.trim().toLocaleLowerCase() ?? ''}\u0000${candidate.size?.trim().toLocaleLowerCase() ?? ''}`
+                === `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`);
+            if (variant) await tx.commerceProductVariant.update({ where: { id: variant.id }, data: { stock } });
+          }
+        } else if (input.colors !== undefined || input.sizes !== undefined) {
           await tx.commerceProductVariant.updateMany({ where: { productId: id }, data: { active: false } });
-          for (const [index, colorOption] of input.colors.entries()) {
+          const variantOptions = buildManualVariantOptions(input);
+          const existingStockByKey = new Map(product.variants.map((variant: { color?: string | null; size?: string | null; stock: number }) => [
+            `${variant.color?.trim().toLocaleLowerCase() ?? ''}\u0000${variant.size?.trim().toLocaleLowerCase() ?? ''}`,
+            variant.stock,
+          ]));
+          for (const [index, option] of variantOptions.entries()) {
+            const variantKey = `${option.color?.trim().toLocaleLowerCase() ?? ''}\u0000${option.size?.trim().toLocaleLowerCase() ?? ''}`;
             await tx.commerceProductVariant.create({ data: {
               productId: id,
               sku: `MANUAL-${randomUUID()}-${index + 1}`,
-              color: `${colorOption.name}::${colorOption.hex.toUpperCase()}`,
-              size: input.size?.trim() || null,
+              ...option,
               sourcePriceCny: null,
               salePriceUzs: input.salePriceUzs ?? Number(updatedProduct.salePriceUzs),
-              stock: input.stock ?? 0,
+              stock: option.stock ?? existingStockByKey.get(variantKey) ?? input.stock ?? 0,
             } });
           }
         } else {
@@ -758,14 +930,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const mediaService = new MediaService(app.prisma, undefined, request.log);
       for (const media of mediaToDelete) {
         await mediaService.delete(media.id, request.user.userId, true).catch((error) => {
-          request.log.error({ err: error, mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
+          request.log.error({ errorName: error instanceof Error ? error.name : 'UnknownError', mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
         });
       }
     }
     return updated;
   });
 
-  app.post('/admin/products/:id/archive', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/products/:id/archive', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
@@ -777,7 +949,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return archived;
   });
 
-  app.post('/admin/products/:id/restore', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/products/:id/restore', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true, status: true } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
@@ -789,7 +961,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return restored;
   });
 
-  app.delete('/admin/products/:id', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.delete('/admin/products/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true, images: { select: { mediaId: true } } } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
@@ -816,7 +988,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(204).send();
   });
 
-  app.post('/admin/imports', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/imports', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const input = createImportSchema.parse(request.body);
     if (input.source === 'SOURCE_1688' && !featureFlags.isEnabled('PARSER_1688')) {
       return reply.status(403).send({ code: 'FEATURE_DISABLED', message: 'The 1688 parser is disabled.' });
@@ -883,7 +1055,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post('/admin/imports/:id/approve', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/imports/:id/approve', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = approveImportSchema.parse(request.body);
     const imported = await app.prisma.importedProduct.findUnique({ where: { id } });
@@ -969,7 +1141,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return result;
   });
 
-  app.post('/admin/imports/:id/reject', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/imports/:id/reject', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = rejectImportSchema.parse(request.body);
     const imported = await app.prisma.importedProduct.findUnique({ where: { id } });

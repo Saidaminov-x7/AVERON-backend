@@ -26,10 +26,11 @@ export function registerErrorHandler(server: FastifyInstance) {
         }, `Request failed during ${diagnosticStage}`);
       } else {
         request.log.error({
-          err: error,
           requestId: request.id,
           method: request.method,
           route: request.routeOptions.url,
+          errorType: error.name,
+          errorCode: error.code,
         }, 'Unhandled request error');
       }
       return reply.status(statusCode).send({

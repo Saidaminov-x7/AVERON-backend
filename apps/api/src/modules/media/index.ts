@@ -2,8 +2,10 @@
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { fileTypeFromBuffer } from 'file-type';
+import { AdminRole } from '@prisma/client';
 import { authMiddleware } from '../../lib/authMiddleware';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { sendSafeErrorReply } from '../../lib/safe-error-response';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { MediaService } from './service';
 import { uploadQuerySchema, mediaListQuerySchema } from './schemas';
@@ -74,10 +76,10 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
       const error = err as Error & { statusCode?: number };
       const statusCode = error.statusCode ?? 500;
       if (statusCode >= 500) {
-        request.log.error({ err: error }, '[MediaUpload] Failed to upload media');
+        request.log.error({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[MediaUpload] Failed to upload media');
         return reply.status(500).send({ message: 'Не удалось загрузить файл, попробуйте позже' });
       }
-      return reply.status(statusCode).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, error, '[MediaUpload] Failed to upload media');
     }
   });
 
@@ -93,8 +95,7 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
       await service.delete(request.params.id, request.user.userId, isAdmin);
       return reply.status(204).send();
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Media delete failed');
     }
   });
 
@@ -102,7 +103,7 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
    * GET /media — список всех медиафайлов (для библиотеки и админки)
    */
   server.get('/', {
-    preHandler: [adminMiddleware],
+    preHandler: [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)],
   }, async (request: FastifyRequest, _reply: FastifyReply) => {
     const query = mediaListQuerySchema.parse(request.query);
     const service = getService(request);

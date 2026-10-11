@@ -11,13 +11,17 @@ import { Role } from '@prisma/client';
 import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
 import { dummyPasswordHash } from './dummy-password';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
   reply: FastifyReply,
 ) => {
   const dto = loginSchema.parse(request.body);
   try {
-    const failureKey = loginFailureKey('email', dto.email);
+    const failureKey = loginFailureKey('email', dto.email, request.ip);
     if (await isLoginTemporarilyLocked(request.server.redis, failureKey)) {
       return reply.status(429).send({ message: 'Неверный email или пароль. Попробуйте позже.' });
     }
@@ -65,7 +69,7 @@ export const loginHandler = async (
       });
       twoFactorAuthEnabled = settings?.twoFactorAuthEnabled === true;
     } catch (err) {
-      request.log.warn({ err }, 'Failed to fetch siteSettings in loginHandler');
+      request.log.warn({ errorName: safeErrorName(err) }, 'Failed to fetch siteSettings in loginHandler');
     }
 
     const require2FA =
@@ -87,7 +91,7 @@ export const loginHandler = async (
             300,
           );
         } catch (rErr) {
-          request.log.error({ rErr }, 'Redis set failed for 2FA token');
+          request.log.error({ errorName: safeErrorName(rErr) }, 'Redis set failed for 2FA token');
         }
       }
 
@@ -101,7 +105,7 @@ export const loginHandler = async (
           request.ip,
         );
       } catch (tgErr) {
-        request.log.error({ tgErr }, 'sendTelegram2FACode failed');
+        request.log.error({ errorName: safeErrorName(tgErr) }, 'sendTelegram2FACode failed');
       }
 
       return reply.send({
@@ -146,7 +150,7 @@ export const loginHandler = async (
       },
     });
   } catch (error) {
-    request.log.error({ err: error, requestId: request.id }, 'Authentication attempt failed');
+    request.log.error({ errorName: safeErrorName(error), requestId: request.id }, 'Authentication attempt failed');
     return reply.status(500).send({
       message: 'Ошибка авторизации на сервере',
     });

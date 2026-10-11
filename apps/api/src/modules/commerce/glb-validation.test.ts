@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GlbValidationError, validateGlb, validateGlbWithKhronos } from './glb-validation';
+import { GlbValidationError, MAX_GLB_SIZE_BYTES, validateGlb, validateGlbWithKhronos } from './glb-validation';
 
 function makeGlb(document: Record<string, unknown>, binary = Buffer.alloc(36)) {
   const json = Buffer.from(JSON.stringify(document));
@@ -49,6 +49,29 @@ describe('validateGlb', () => {
     const buffer = makeGlb({ ...validDocument, images: [{ uri: 'https://example.com/texture.png' }] });
     expect(() => validateGlb(buffer)).toThrowError(GlbValidationError);
     expect(() => validateGlb(buffer)).toThrowError('GLB_EXTERNAL_RESOURCE_FORBIDDEN');
+  });
+
+  it('rejects unsupported required compression extensions', () => {
+    const buffer = makeGlb({ ...validDocument, extensionsRequired: ['KHR_draco_mesh_compression'] });
+    expect(() => validateGlb(buffer)).toThrowError('GLB_REQUIRED_EXTENSION_UNSUPPORTED');
+  });
+
+  it('rejects a mesh count above the bounded upload limit', () => {
+    const buffer = makeGlb({ ...validDocument, meshes: Array.from({ length: 2001 }, () => validDocument.meshes[0]) });
+    expect(() => validateGlb(buffer)).toThrowError('GLB_MESH_COUNT_EXCEEDED');
+  });
+
+  it('rejects accessor data above the bounded geometry complexity limit', () => {
+    const buffer = makeGlb({
+      ...validDocument,
+      accessors: [{ ...validDocument.accessors[0], count: 1_000_001 }],
+    });
+    expect(() => validateGlb(buffer)).toThrowError('GLB_GEOMETRY_COMPLEXITY_EXCEEDED');
+  });
+
+  it('rejects GLB files larger than the upload limit before parsing', () => {
+    const oversized = Buffer.alloc(MAX_GLB_SIZE_BYTES + 1);
+    expect(() => validateGlb(oversized)).toThrowError('GLB_SIZE_INVALID');
   });
 
   it('rejects a malformed container', () => {

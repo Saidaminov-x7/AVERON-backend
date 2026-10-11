@@ -64,6 +64,7 @@ const productListQueryBaseSchema = z.object({
   color: optionalQueryValue(z.string().trim().min(1).max(48)),
   minPrice: optionalQueryValue(productPriceQuerySchema),
   maxPrice: optionalQueryValue(productPriceQuerySchema),
+  saleOnly: optionalQueryValue(z.enum(['true', 'false'])),
   sort: z.enum(['newest', 'price_asc', 'price_desc', 'popular']).optional(),
   page: z.string().regex(/^[1-9]\d{0,5}$/).optional(),
   limit: z.string().regex(/^[1-9]\d{0,2}$/).optional(),
@@ -279,6 +280,31 @@ const createProductImagesSchema = z.array(z.object({ mediaId: z.string().uuid() 
     }
   });
 
+const manualProductColorSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
+}).superRefine((color, context) => {
+  if (/^(?:цвет|color)\s*\d+$/iu.test(color.name)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['name'], message: 'Use a descriptive color name, not a generated placeholder' });
+  }
+});
+
+const manualVariantStockSchema = z.object({
+  color: z.string().max(160).nullable(),
+  size: z.string().max(40).nullable(),
+  stock: z.number().int().min(0).max(2_147_483_647),
+});
+
+const validateManualVariantStocks = (
+  value: { variantStocks?: Array<{ color: string | null; size: string | null; stock: number }> },
+  context: z.RefinementCtx,
+) => {
+  const keys = (value.variantStocks ?? []).map(({ color, size }) => `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`);
+  if (new Set(keys).size !== keys.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['variantStocks'], message: 'Variant stock entries must be unique' });
+  }
+};
+
 export const createManualProductSchema = z.object({
   title: z.string().min(2).max(500),
   country: productCountrySchema,
@@ -289,6 +315,12 @@ export const createManualProductSchema = z.object({
   description: z.string().max(5000).optional(),
   descriptionUz: z.string().max(5000).optional(),
   descriptionEn: z.string().max(5000).optional(),
+  composition: z.string().max(2000).optional(),
+  compositionUz: z.string().max(2000).optional(),
+  compositionEn: z.string().max(2000).optional(),
+  careInstructions: z.string().max(3000).optional(),
+  careInstructionsUz: z.string().max(3000).optional(),
+  careInstructionsEn: z.string().max(3000).optional(),
   sourceUrl: safeSourceUrlSchema.optional().nullable(),
   images: createProductImagesSchema,
   sourcePriceCny: z.coerce.number().finite().nonnegative().optional(),
@@ -296,19 +328,19 @@ export const createManualProductSchema = z.object({
   salePriceUzs: z.coerce.number().finite().positive(),
   compareAtPriceUzs: z.coerce.number().finite().positive().nullable().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).default(0),
+  variantStocks: z.array(manualVariantStockSchema).max(900).optional(),
   preorderEnabled: z.boolean().default(false),
   preorderLimit: z.number().int().min(0).max(10_000).default(0),
   preorderEstimatedAt: z.string().datetime({ offset: true }).nullable().optional()
     .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().optional(),
   color: z.string().max(80).optional(),
-  colors: z.array(z.object({
-    name: z.string().trim().min(1).max(80),
-    hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
-  })).max(30).optional(),
+  colors: z.array(manualProductColorSchema).max(30).optional(),
   size: z.string().max(80).optional(),
+  sizes: z.array(z.string().trim().min(1).max(40)).max(30).optional(),
   publish: z.boolean().default(true),
 }).superRefine((value, context) => {
+  validateManualVariantStocks(value, context);
   if (value.preorderEnabled && value.preorderLimit < 1) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -328,26 +360,31 @@ export const updateManualProductSchema = z.object({
   description: z.string().max(5000).optional(),
   descriptionUz: z.string().max(5000).optional(),
   descriptionEn: z.string().max(5000).optional(),
+  composition: z.string().max(2000).optional(),
+  compositionUz: z.string().max(2000).optional(),
+  compositionEn: z.string().max(2000).optional(),
+  careInstructions: z.string().max(3000).optional(),
+  careInstructionsUz: z.string().max(3000).optional(),
+  careInstructionsEn: z.string().max(3000).optional(),
   sourceUrl: safeSourceUrlSchema.nullable().optional(),
   images: productImagesSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive().optional(),
   compareAtPriceUzs: z.coerce.number().finite().positive().nullable().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).optional(),
+  variantStocks: z.array(manualVariantStockSchema).max(900).optional(),
   preorderEnabled: z.boolean().optional(),
   preorderLimit: z.number().int().min(0).max(10_000).optional(),
   preorderEstimatedAt: z.string().datetime({ offset: true }).nullable().optional()
     .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().nullable().optional(),
   color: z.string().max(80).optional(),
-  colors: z.array(z.object({
-    name: z.string().trim().min(1).max(80),
-    hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
-  })).max(30).optional(),
+  colors: z.array(manualProductColorSchema).max(30).optional(),
   size: z.string().max(80).optional(),
+  sizes: z.array(z.string().trim().min(1).max(40)).max(30).optional(),
   publish: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one product field must be provided',
-});
+}).superRefine(validateManualVariantStocks);
 
 const localizedCategoryNameSchema = z.object({
   ru: z.string().trim().min(1).max(120),

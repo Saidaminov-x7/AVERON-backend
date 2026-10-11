@@ -10,6 +10,7 @@ import { commerceOrdersModule } from '../orders';
 const USER_A = '00000000-0000-4000-8000-000000000001';
 const USER_B = '00000000-0000-4000-8000-000000000002';
 const ADMIN = '00000000-0000-4000-8000-000000000003';
+const SUPPORT = '00000000-0000-4000-8000-000000000010';
 const PRODUCT = '00000000-0000-4000-8000-000000000004';
 const SECOND_PRODUCT = '00000000-0000-4000-8000-000000000008';
 const CART = '00000000-0000-4000-8000-000000000005';
@@ -59,6 +60,7 @@ function createTestApp(options: {
   products?: Record<string, any>;
   cartItems?: Array<Record<string, any>>;
   initialOrders?: Array<Record<string, any>>;
+  initialPayments?: Array<Record<string, any>>;
   promoCodes?: Array<Record<string, any>>;
   failOrderCreation?: boolean;
 } = {}) {
@@ -71,6 +73,7 @@ function createTestApp(options: {
   const promos = new Map((options.promoCodes ?? []).map((promo) => [promo.normalizedCode, structuredClone(promo)]));
   const promoUsages = new Map<string, Record<string, any>>();
   const orders = options.initialOrders ?? [];
+  const payments = options.initialPayments ?? [];
   const statusHistory: Array<Record<string, unknown>> = [];
   let nextId = 20;
   const id = () => `00000000-0000-4000-8000-${String(nextId++).padStart(12, '0')}`;
@@ -94,6 +97,7 @@ function createTestApp(options: {
     }),
   };
   const commerceCartItem = {
+    count: vi.fn(async ({ where }: any) => cartItems.filter((item) => item.cartId === where.cartId).length),
     findUnique: vi.fn(async ({ where }: any) =>
       cartItems.find((item) => item.cartId === where.cartId_itemKey.cartId && item.itemKey === where.cartId_itemKey.itemKey) ?? null),
     findFirst: vi.fn(async ({ where }: any) => cartItems.find((item) => item.id === where.id && item.cartId === where.cartId) ?? null),
@@ -260,6 +264,16 @@ function createTestApp(options: {
     commercePromoCode,
     commercePromoCodeUsage,
     commerceOrder,
+    commercePayment: {
+      findFirst: vi.fn(async ({ where }: any) => payments.find((payment) =>
+        payment.orderId === where.orderId
+        && payment.status === where.status
+        && payment.amount === where.amount
+        && payment.currency === where.currency
+        && Boolean(payment.provider?.trim())
+        && Boolean(payment.providerRef?.trim())
+        && payment.paidAt !== null) ?? null),
+    },
     commerceDelivery,
     commerceDeliveryStatusHistory,
     commerceOrderStatusHistory: {
@@ -281,8 +295,8 @@ function createTestApp(options: {
     user: {
       findUnique: vi.fn(async ({ where }: any) => ({
         id: where.id,
-        role: where.id === ADMIN ? 'ADMIN' : 'USER',
-        adminRole: where.id === ADMIN ? 'SUPER_ADMIN' : null,
+        role: where.id === ADMIN || where.id === SUPPORT ? 'ADMIN' : 'USER',
+        adminRole: where.id === ADMIN ? 'SUPER_ADMIN' : where.id === SUPPORT ? 'SUPPORT' : null,
         isBlocked: false,
         isDeleted: false,
       })),
@@ -331,7 +345,7 @@ function createTestApp(options: {
 
 async function tokenFor(app: ReturnType<typeof Fastify>, userId: string) {
   await app.ready();
-  return app.jwt.sign({ userId, role: userId === ADMIN ? 'ADMIN' : 'USER' });
+  return app.jwt.sign({ userId, role: userId === ADMIN || userId === SUPPORT ? 'ADMIN' : 'USER' });
 }
 
 function promoCode(overrides: Record<string, unknown> = {}) {
@@ -467,6 +481,44 @@ describe('commerce cart and checkout API', () => {
       expect(invalidQuantity.json().code).toBe('INVALID_CART_ITEM');
     }
     expect(prisma.commerceCartItem.upsert).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('bounds cart line count before accepting another distinct item or checking out legacy oversized carts', async () => {
+    const existingLines = Array.from({ length: 50 }, (_, index) => ({
+      id: `cart-line-${index}`,
+      cartId: CART,
+      itemKey: `existing-product-${index}:none`,
+      productId: PRODUCT,
+      variantId: null,
+      quantity: 1,
+    }));
+    const { app, prisma, products, cartItems, orders } = createTestApp({ cartItems: existingLines });
+    products.set('NEW-PRODUCT', makeProduct());
+    const token = await tokenFor(app, USER_A);
+
+    const add = await app.inject({
+      method: 'POST',
+      url: '/api/v1/cart/items',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { productId: 'NEW-PRODUCT', quantity: 1 },
+    });
+    expect(add.statusCode).toBe(409);
+    expect(add.json().code).toBe('CART_ITEM_LIMIT');
+    expect(cartItems).toHaveLength(50);
+    expect(prisma.commerceCartItem.upsert).not.toHaveBeenCalled();
+
+    cartItems.push({ ...existingLines[0], id: 'legacy-over-limit' });
+    const checkout = await app.inject({
+      method: 'POST',
+      url: '/api/v1/checkout',
+      headers: { authorization: `Bearer ${token}`, 'idempotency-key': testIdempotencyKey('oversized-cart') },
+      payload: checkoutPayload(),
+    });
+    expect(checkout.statusCode).toBe(409);
+    expect(checkout.json().code).toBe('CART_ITEM_LIMIT');
+    expect(prisma.commerceOrder.create).not.toHaveBeenCalled();
+    expect(orders).toHaveLength(0);
     await app.close();
   });
 
@@ -1004,6 +1056,20 @@ describe('commerce cart and checkout API', () => {
 });
 
 describe('commerce order ownership and admin workflow', () => {
+  it('denies SUPPORT access to customer order PII and order operations', async () => {
+    const { app } = createTestApp();
+    const token = await tokenFor(app, SUPPORT);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/orders',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(403);
+    await app.close();
+  });
+
   it('allows an admin to advance internal delivery status and keeps provider metadata private', async () => {
     const delivery = {
       id: 'delivery-1',
@@ -1351,7 +1417,19 @@ describe('commerce order ownership and admin workflow', () => {
       updatedAt: new Date(),
       items: [],
     };
-    const { app, prisma, orders } = createTestApp({ initialOrders: [order] });
+    const { app, prisma, orders } = createTestApp({
+      initialOrders: [order],
+      initialPayments: [{
+        id: 'payment-wrong-total-1',
+        orderId: ORDER_ID,
+        provider: 'test-gateway',
+        providerRef: 'test-payment-ref-wrong-total',
+        amount: '19999.00',
+        currency: 'UZS',
+        status: 'PAID',
+        paidAt: new Date('2026-10-01T10:00:00Z'),
+      }],
+    });
     const userToken = await tokenFor(app, USER_A);
     const denied = await app.inject({
       method: 'PATCH',
@@ -1413,7 +1491,19 @@ describe('commerce order ownership and admin workflow', () => {
       statusHistory: [],
       items: [],
     };
-    const { app, prisma } = createTestApp({ initialOrders: [order] });
+    const { app, prisma } = createTestApp({
+      initialOrders: [order],
+      initialPayments: [{
+        id: 'payment-shipping-1',
+        orderId: ORDER_ID,
+        provider: 'test-gateway',
+        providerRef: 'test-payment-ref-1',
+        amount: '20000.00',
+        currency: 'UZS',
+        status: 'PAID',
+        paidAt: new Date('2026-10-01T10:00:00Z'),
+      }],
+    });
     const adminToken = await tokenFor(app, ADMIN);
     const headers = { authorization: `Bearer ${adminToken}` };
 
@@ -1467,6 +1557,95 @@ describe('commerce order ownership and admin workflow', () => {
       createdAt: expect.any(String),
     });
     expect(customerHistoryEntry).not.toHaveProperty('note');
+    await app.close();
+  });
+
+  it('does not mark an order paid unless a settled payment matches its total and currency', async () => {
+    const order = {
+      id: ORDER_ID,
+      orderNumber: 'AV-PAYMENT-GATE-1',
+      userId: USER_A,
+      status: 'CONFIRMED',
+      currency: 'UZS',
+      subtotal: '20000.00',
+      discount: '0.00',
+      deliveryCost: '0.00',
+      totalRevenue: '20000.00',
+      contact: { name: 'Buyer', phone: '+998901234567' },
+      deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      statusHistory: [],
+      items: [],
+    };
+    const { app, prisma, orders } = createTestApp({ initialOrders: [order] });
+    const headers = { authorization: `Bearer ${await tokenFor(app, ADMIN)}` };
+
+    const unpaid = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-PAYMENT-GATE-1/status',
+      headers,
+      payload: { status: 'PAID' },
+    });
+    expect(unpaid.statusCode).toBe(409);
+    expect(unpaid.json()).toMatchObject({ code: 'PAYMENT_NOT_CONFIRMED' });
+    expect(orders[0].status).toBe('CONFIRMED');
+    expect(prisma.commerceOrderStatusHistory.create).not.toHaveBeenCalled();
+    expect(prisma.commercePayment.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        orderId: ORDER_ID,
+        status: 'PAID',
+        amount: '20000.00',
+        currency: 'UZS',
+        provider: { not: '' },
+        providerRef: { not: '' },
+        paidAt: { not: null },
+      }),
+    }));
+    await app.close();
+  });
+
+  it('accepts a PAID transition when a settled payment matches the order', async () => {
+    const order = {
+      id: ORDER_ID,
+      orderNumber: 'AV-PAYMENT-SETTLED-1',
+      userId: USER_A,
+      status: 'CONFIRMED',
+      currency: 'UZS',
+      subtotal: '20000.00',
+      discount: '0.00',
+      deliveryCost: '0.00',
+      totalRevenue: '20000.00',
+      contact: { name: 'Buyer', phone: '+998901234567' },
+      deliveryAddress: { city: 'Tashkent', address: 'Street 1' },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      statusHistory: [],
+      items: [],
+    };
+    const { app, orders } = createTestApp({
+      initialOrders: [order],
+      initialPayments: [{
+        id: 'payment-settled-1',
+        orderId: ORDER_ID,
+        provider: 'test-gateway',
+        providerRef: 'test-payment-ref-2',
+        amount: '20000.00',
+        currency: 'UZS',
+        status: 'PAID',
+        paidAt: new Date('2026-10-01T10:00:00Z'),
+      }],
+    });
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/orders/AV-PAYMENT-SETTLED-1/status',
+      headers: { authorization: `Bearer ${await tokenFor(app, ADMIN)}` },
+      payload: { status: 'PAID' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().status).toBe('PAID');
+    expect(orders[0].status).toBe('PAID');
     await app.close();
   });
 

@@ -1,7 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
 
-vi.mock('../../../lib/adminMiddleware', () => ({ adminMiddleware: async () => undefined }));
+vi.mock('../../../lib/adminMiddleware', () => ({
+  adminMiddleware: async () => undefined,
+  requireAdminRole: () => async () => undefined,
+}));
 
 import { analyticsModule } from '../index';
 

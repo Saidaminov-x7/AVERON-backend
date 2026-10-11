@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { Prisma } from '@prisma/client';
+import { AdminRole, Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 
 const visitSchema = z.object({
   deviceId: z.string().uuid(),
@@ -122,6 +122,7 @@ function asNumber(value: { toString(): string } | number) {
 }
 
 export const analyticsModule: FastifyPluginAsync = async (server) => {
+  const analyticsAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   server.post('/events', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -169,7 +170,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         return reply.status(204).send();
       }
-      request.log.warn({ err: error }, 'Commerce analytics event could not be recorded');
+      request.log.warn({ errorName: error instanceof Error ? error.name : 'UnknownError' }, 'Commerce analytics event could not be recorded');
       return reply.status(503).send({ code: 'ANALYTICS_UNAVAILABLE' });
     }
     return reply.status(204).send();
@@ -194,12 +195,12 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
         create: { deviceId, dayKey, path, ip: request.ip, userAgent },
       });
     } catch (error) {
-      request.log.warn({ err: error }, 'Analytics visit could not be recorded');
+      request.log.warn({ errorName: error instanceof Error ? error.name : 'UnknownError' }, 'Analytics visit could not be recorded');
     }
     return reply.status(204).send();
   });
 
-  server.get('/admin/visitors', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/visitors', { preHandler: analyticsAccess }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -223,7 +224,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
-  server.get('/admin/range', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/range', { preHandler: analyticsAccess }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -312,7 +313,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
-  server.get('/admin/journey', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/journey', { preHandler: analyticsAccess }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -398,7 +399,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
-  server.get('/admin/export', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/export', { preHandler: analyticsAccess }, async (request, reply) => {
     const parsed = exportQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_EXPORT_QUERY' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -481,7 +482,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     return reply.send(`\uFEFF${csv}`);
   });
 
-  server.get('/funnel', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/funnel', { preHandler: analyticsAccess }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);

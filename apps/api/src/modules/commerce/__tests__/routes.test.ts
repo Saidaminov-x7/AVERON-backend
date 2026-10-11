@@ -7,9 +7,14 @@ vi.mock('../../../lib/adminMiddleware', () => ({
       user: { userId: '00000000-0000-4000-8000-000000000001', role: 'ADMIN', adminRole: 'SUPER_ADMIN' },
     });
   },
+  requireAdminRole: () => async (request: object) => {
+    Object.assign(request, {
+      user: { userId: '00000000-0000-4000-8000-000000000001', role: 'ADMIN', adminRole: 'SUPER_ADMIN' },
+    });
+  },
 }));
 
-import { commerceModule } from '../index';
+import { buildManualVariantOptions, commerceModule } from '../index';
 
 const mediaId = '00000000-0000-4000-8000-000000000002';
 const categoryId = '00000000-0000-4000-8000-000000000003';
@@ -42,11 +47,21 @@ function createTestApp({
     images: [{ id: '00000000-0000-4000-8000-000000000005', mediaId, url: 'https://cdn.example/photo.jpg', sortOrder: 0 }],
     variants: [],
   };
+  const idempotentProducts = new Map<string, Record<string, any>>();
   const tx = {
     commerceProduct: {
-      create: vi.fn(async () => createdProduct),
+      create: vi.fn(async ({ data }: { data: Record<string, any> }) => {
+        const product = { ...createdProduct, ...data };
+        if (typeof data.manualCreationKey === 'string') idempotentProducts.set(data.manualCreationKey, product);
+        return product;
+      }),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
         manualProduct ? Object.assign(manualProduct, data) : { ...createdProduct, ...data }),
+    },
+    commerceProductVariant: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      update: vi.fn(async () => ({})),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'variant-created', ...data })),
     },
     importedProduct: {
       updateMany: vi.fn(async () => ({ count: 1 })),
@@ -60,9 +75,11 @@ function createTestApp({
   };
   const prisma = {
     commerceProduct: {
+      fields: { compareAtPriceUzs: 'compare-at-price-ref' },
       findMany: vi.fn(async () => publicProduct ? [publicProduct] : []),
       findFirst: vi.fn(async () => publicProduct),
-      findUnique: vi.fn(async () => manualProduct),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, string> }) =>
+        where.manualCreationKey ? idempotentProducts.get(where.manualCreationKey) ?? null : manualProduct),
       count: vi.fn(async () => 0),
     },
     commerceProductVariant: {
@@ -105,6 +122,26 @@ async function start(app: ReturnType<typeof Fastify>) {
 }
 
 describe('public catalog filters', () => {
+  it('applies the sale predicate to both the page query and authoritative count', async () => {
+    const { app, prisma } = createTestApp();
+    await start(app);
+    const response = await app.inject({ method: 'GET', url: '/api/v1/products?saleOnly=true&page=2&limit=12' });
+
+    expect(response.statusCode).toBe(200);
+    const saleWhere = {
+      status: 'PUBLISHED',
+      compareAtPriceUzs: { not: null },
+      salePriceUzs: { gt: 0, lt: 'compare-at-price-ref' },
+    };
+    expect(prisma.commerceProduct.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: saleWhere,
+      skip: 12,
+      take: 12,
+    }));
+    expect(prisma.commerceProduct.count).toHaveBeenCalledWith({ where: saleWhere });
+    await app.close();
+  });
+
   it('returns only distinct facets for active variants of published products', async () => {
     const { app, prisma } = createTestApp();
     await start(app);
@@ -127,6 +164,110 @@ describe('public catalog filters', () => {
 
 describe('commerce admin routes', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('normalizes duplicate options and creates the full color-by-size variant matrix', () => {
+    expect(buildManualVariantOptions({
+      colors: [
+        { name: ' Black ', hex: '#000000' },
+        { name: 'black', hex: '#000000' },
+        { name: 'Aqua', hex: '#00ffff' },
+      ],
+      sizes: [' m ', 'M', 'L'],
+    })).toEqual([
+      { color: 'Black::#000000', size: 'M' },
+      { color: 'Black::#000000', size: 'L' },
+      { color: 'Aqua::#00FFFF', size: 'M' },
+      { color: 'Aqua::#00FFFF', size: 'L' },
+    ]);
+  });
+
+  it('applies stock per color and size when creating the manual variant matrix', () => {
+    expect(buildManualVariantOptions({
+      colors: [{ name: 'Red', hex: '#ff0000' }],
+      sizes: ['S', 'M'],
+      variantStocks: [
+        { color: 'Red::#FF0000', size: 'S', stock: 2 },
+        { color: 'Red::#FF0000', size: 'M', stock: 7 },
+      ],
+    })).toEqual([
+      { color: 'Red::#FF0000', size: 'S', stock: 2 },
+      { color: 'Red::#FF0000', size: 'M', stock: 7 },
+    ]);
+    expect(() => buildManualVariantOptions({
+      colors: [{ name: 'Red', hex: '#ff0000' }],
+      sizes: ['S'],
+      variantStocks: [{ color: 'Blue::#0000FF', size: 'S', stock: 2 }],
+    })).toThrow('Variant stock entry does not match a configured color and size');
+  });
+
+  it('applies size-only edits to variants and does not mirror variant stock onto the product', async () => {
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL',
+      status: 'DRAFT',
+      publishedAt: null,
+      categoryId: null,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } },
+      description: null,
+      images: [],
+      variants: [],
+      salePriceUzs: 180000,
+    };
+    const { app, tx } = createTestApp({ manualProduct });
+    await start(app);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: { sizes: [' m ', 'M', 'L'], stock: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(tx.commerceProductVariant.updateMany).toHaveBeenCalledWith({
+      where: { productId: manualProduct.id },
+      data: { active: false },
+    });
+    expect(tx.commerceProductVariant.create).toHaveBeenCalledTimes(2);
+    expect(tx.commerceProductVariant.create.mock.calls.map(([call]) => call.data)).toEqual([
+      expect.objectContaining({ productId: manualProduct.id, color: null, size: 'M', stock: 7, salePriceUzs: 180000 }),
+      expect.objectContaining({ productId: manualProduct.id, color: null, size: 'L', stock: 7, salePriceUzs: 180000 }),
+    ]);
+    expect(tx.commerceProduct.update.mock.calls[0][0].data).not.toHaveProperty('stock');
+    await app.close();
+  });
+
+  it('updates existing variant stock without recreating the variant matrix', async () => {
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL', status: 'DRAFT', publishedAt: null, categoryId: null,
+      preorderEnabled: false, preorderLimit: 0, preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } }, description: null, images: [],
+      variants: [
+        { id: 'variant-s', sku: 'MANUAL-s', color: 'Red::#FF0000', size: 'S', stock: 1, active: true },
+        { id: 'variant-m', sku: 'MANUAL-m', color: 'Red::#FF0000', size: 'M', stock: 1, active: true },
+      ],
+      salePriceUzs: 180000,
+    };
+    const { app, tx } = createTestApp({ manualProduct });
+    await start(app);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: { variantStocks: [
+        { color: 'Red::#FF0000', size: 'S', stock: 1 },
+        { color: 'Red::#FF0000', size: 'M', stock: 6 },
+      ] },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(tx.commerceProductVariant.update).toHaveBeenCalledWith({ where: { id: 'variant-m' }, data: { stock: 6 } });
+    expect(tx.commerceProductVariant.create).not.toHaveBeenCalled();
+    await app.close();
+  });
 
   it.each(['product-id', 'existing-product-slug'])('looks up an editable product directly by identifier: %s', async (identifier) => {
     const product = {
@@ -197,6 +338,7 @@ describe('commerce admin routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-create-product' },
       payload: {
         title: 'Test jacket',
         titleUz: 'Sinov kurtkasi',
@@ -204,6 +346,17 @@ describe('commerce admin routes', () => {
         country: 'CN',
         sizeChartType: 'SHOES',
         salePriceUzs: 180000,
+        stock: 9,
+        colors: [{ name: 'Red', hex: '#ff0000' }],
+        sizes: ['S', 'M'],
+        variantStocks: [
+          { color: 'Red::#FF0000', size: 'S', stock: 2 },
+          { color: 'Red::#FF0000', size: 'M', stock: 7 },
+        ],
+        composition: 'Хлопок 100%',
+        compositionUz: '100% paxta',
+        careInstructions: 'Машинная стирка',
+        careInstructionsEn: 'Machine wash',
         images: [{ mediaId }],
         publish: false,
       },
@@ -215,6 +368,11 @@ describe('commerce admin routes', () => {
       data: expect.objectContaining({
         publicId: expect.stringMatching(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/),
         sizeChartType: 'SHOES',
+        attributes: {
+          audience: 'everyone',
+          composition: { ru: 'Хлопок 100%', uz: '100% paxta' },
+          careInstructions: { ru: 'Машинная стирка', en: 'Machine wash' },
+        },
         slug: expect.stringMatching(/^test-jacket-\d{6}$/),
         sourceUrl: null,
         originalPriceCny: null,
@@ -227,6 +385,57 @@ describe('commerce admin routes', () => {
       }),
     }));
     expect(tx.auditLog.create).toHaveBeenCalledOnce();
+    expect(tx.commerceProduct.create.mock.calls[0][0].data).toMatchObject({ stock: 9 });
+    expect(tx.commerceProduct.create.mock.calls[0][0].data.variants.create).toEqual([
+      expect.objectContaining({ color: 'Red::#FF0000', size: 'S', stock: 2, salePriceUzs: 180000 }),
+      expect.objectContaining({ color: 'Red::#FF0000', size: 'M', stock: 7, salePriceUzs: 180000 }),
+    ]);
+    await app.close();
+  });
+
+  it('requires an idempotency key before creating a manual product', async () => {
+    const { app, tx } = createTestApp();
+    await start(app);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/products',
+      payload: {
+        title: 'Test jacket', titleUz: 'Sinov kurtkasi', titleEn: 'Test jacket',
+        country: 'CN', salePriceUzs: 180000, images: [{ mediaId }], publish: false,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'IDEMPOTENCY_KEY_REQUIRED' });
+    expect(tx.commerceProduct.create).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('replays the same manual product result without a second write and rejects key reuse with another payload', async () => {
+    const { app, prisma, tx } = createTestApp();
+    await start(app);
+    const payload = {
+      title: 'Idempotent jacket', titleUz: 'Takrorlanmas kurtka', titleEn: 'Idempotent jacket',
+      country: 'CN', salePriceUzs: 180000, images: [{ mediaId }], publish: false,
+    };
+    const request = {
+      method: 'POST' as const,
+      url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-idempotent-product' },
+      payload,
+    };
+
+    const created = await app.inject(request);
+    const replay = await app.inject(request);
+    const conflict = await app.inject({ ...request, payload: { ...payload, salePriceUzs: 190000 } });
+
+    expect(created.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['idempotent-replay']).toBe('true');
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(tx.commerceProduct.create).toHaveBeenCalledOnce();
     await app.close();
   });
 
@@ -237,6 +446,7 @@ describe('commerce admin routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-create-preorder' },
       payload: {
         title: 'Test jacket',
         titleUz: 'Sinov kurtkasi',
@@ -328,6 +538,51 @@ describe('commerce admin routes', () => {
     await app.close();
   });
 
+  it('updates localized composition and care while preserving existing product attributes', async () => {
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL',
+      categoryId: null,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } },
+      description: null,
+      attributes: {
+        audience: 'women',
+        composition: { ru: 'Old fabric', uz: 'Old text' },
+        customAttribute: 'keep me',
+      },
+      images: [],
+      variants: [],
+      salePriceUzs: 180000,
+    };
+    const { app, tx } = createTestApp({ manualProduct });
+    await start(app);
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: {
+        composition: 'Лён 100%',
+        compositionUz: '',
+        careInstructionsEn: 'Wash cold',
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(tx.commerceProduct.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        attributes: {
+          audience: 'women',
+          composition: { ru: 'Лён 100%' },
+          careInstructions: { en: 'Wash cold' },
+          customAttribute: 'keep me',
+        },
+      }),
+    }));
+    await app.close();
+  });
+
   it('exposes authoritative public preorder availability without internal limits', async () => {
     const { app } = createTestApp({
       publicProduct: {
@@ -365,6 +620,7 @@ describe('commerce admin routes', () => {
     const countResponse = await countApp.app.inject({
       method: 'POST',
       url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-photo-count' },
       payload: {
         title: 'Test jacket',
         titleUz: 'Sinov kurtkasi',
@@ -384,6 +640,7 @@ describe('commerce admin routes', () => {
     const sizeResponse = await sizeApp.app.inject({
       method: 'POST',
       url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-photo-size' },
       payload: {
         title: 'Test jacket',
         titleUz: 'Sinov kurtkasi',
@@ -405,6 +662,7 @@ describe('commerce admin routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-inactive-category' },
       payload: {
         title: 'Test jacket',
         titleUz: 'Sinov kurtkasi',

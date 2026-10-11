@@ -1,7 +1,7 @@
-import type { AveronOrderStatus, CommerceDeliveryStatus, Prisma } from '@prisma/client';
+import { AdminRole, type AveronOrderStatus, type CommerceDeliveryStatus, type Prisma } from '@prisma/client';
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
 
 const statusSchema = z.object({
@@ -310,6 +310,10 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 class OrderTransitionFailure extends Error {
   constructor(readonly code: string) {
     super(code);
@@ -365,6 +369,7 @@ async function cancelPendingDelivery(
 }
 
 export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
+  const orderOperationsRole = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   app.get('/orders/me', { preHandler: authMiddleware }, async (request, reply) => {
     try {
       const orders = await app.prisma.commerceOrder.findMany({
@@ -375,7 +380,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       });
       return orders.map((order) => customerOrderDto(order));
     } catch (error) {
-      request.log.error({ error }, 'Unable to list customer orders');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to list customer orders');
       return reply.status(500).send({ code: 'ORDER_LIST_FAILED', message: 'Unable to load orders' });
     }
   });
@@ -388,7 +393,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (!order) return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       return customerOrderDto(order);
     } catch (error) {
-      request.log.error({ error }, 'Unable to load customer order');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to load customer order');
       return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load order' });
     }
   });
@@ -403,6 +408,8 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
           select: {
             id: true,
             status: true,
+            totalRevenue: true,
+            currency: true,
             inventoryCommitted: true,
             delivery: { select: { id: true, status: true } },
             items: {
@@ -445,12 +452,12 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (error instanceof OrderTransitionFailure) {
         return reply.status(409).send({ code: error.code, message: 'Order could not be safely cancelled' });
       }
-      request.log.error({ error }, 'Unable to cancel customer order');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to cancel customer order');
       return reply.status(500).send({ code: 'ORDER_CANCEL_FAILED', message: 'Unable to cancel order' });
     }
   });
 
-  app.get('/admin/orders', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.get('/admin/orders', { preHandler: orderOperationsRole }, async (request, reply) => {
     try {
       const orders = await app.prisma.commerceOrder.findMany({
         select: adminOrderSelect,
@@ -459,13 +466,13 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       });
       return orders.map(adminOrderDto);
     } catch (error) {
-      request.log.error({ error }, 'Unable to list admin orders');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to list admin orders');
       return reply.status(500).send({ code: 'ORDER_LIST_FAILED', message: 'Unable to load orders' });
     }
   });
 
   app.patch<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/shipping', {
-    preHandler: adminMiddleware,
+    preHandler: orderOperationsRole,
   }, async (request, reply) => {
     const parsed = deliveryUpdateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_SHIPPING_DETAILS', message: 'Invalid shipping details' });
@@ -549,13 +556,13 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (errorCode(error) === 'P2002') {
         return reply.status(409).send({ code: 'TRACKING_NUMBER_CONFLICT', message: 'Tracking number is already assigned' });
       }
-      request.log.error({ error }, 'Unable to update internal delivery');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to update internal delivery');
       return reply.status(500).send({ code: 'SHIPPING_UPDATE_FAILED', message: 'Unable to update shipping details' });
     }
   });
 
   app.get<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber', {
-    preHandler: adminMiddleware,
+    preHandler: orderOperationsRole,
   }, async (request, reply) => {
     try {
       const order = await app.prisma.commerceOrder.findUnique({
@@ -565,13 +572,13 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (!order) return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       return adminOrderDto(order);
     } catch (error) {
-      request.log.error({ error }, 'Unable to load admin order');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to load admin order');
       return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load order' });
     }
   });
 
   app.patch<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/status', {
-    preHandler: adminMiddleware,
+    preHandler: orderOperationsRole,
   }, async (request, reply) => {
     const parsed = statusSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ORDER_STATUS', message: 'Invalid order status' });
@@ -582,6 +589,8 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
           select: {
             id: true,
             status: true,
+            totalRevenue: true,
+            currency: true,
             inventoryCommitted: true,
             delivery: { select: { id: true, status: true } },
             items: {
@@ -598,6 +607,21 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
         if (!current) return { error: 'ORDER_NOT_FOUND' as const };
         if (!allowedTransitions[current.status as AveronOrderStatus]?.includes(parsed.data.status as AveronOrderStatus)) {
           return { error: 'INVALID_ORDER_STATUS_TRANSITION' as const };
+        }
+        if (parsed.data.status === 'PAID') {
+          const payment = await tx.commercePayment.findFirst({
+            where: {
+              orderId: current.id,
+              status: 'PAID',
+              amount: current.totalRevenue,
+              currency: current.currency,
+              provider: { not: '' },
+              providerRef: { not: '' },
+              paidAt: { not: null },
+            },
+            select: { id: true },
+          });
+          if (!payment) return { error: 'PAYMENT_NOT_CONFIRMED' as const };
         }
         if (parsed.data.status === 'CANCELLED' && current.inventoryCommitted) {
           await restoreOrderInventory(tx, current.items);
@@ -626,6 +650,9 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       });
       if ('error' in result) {
         if (result.error === 'ORDER_NOT_FOUND') return reply.status(404).send({ code: result.error, message: 'Order not found' });
+        if (result.error === 'PAYMENT_NOT_CONFIRMED') {
+          return reply.status(409).send({ code: result.error, message: 'Payment has not been confirmed' });
+        }
         return reply.status(409).send({ code: result.error, message: 'Invalid order status transition' });
       }
       if (!result.order) return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load updated order' });
@@ -635,7 +662,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ code: error.code, message: 'Order status transition could not be completed' });
       }
       if (errorCode(error) === 'P2025') return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
-      request.log.error({ error }, 'Unable to update order status');
+      request.log.error({ errorName: safeErrorName(error) }, 'Unable to update order status');
       return reply.status(500).send({ code: 'ORDER_STATUS_UPDATE_FAILED', message: 'Unable to update order status' });
     }
   });

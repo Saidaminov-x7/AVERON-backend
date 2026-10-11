@@ -17,6 +17,7 @@ import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
 import argon2 from 'argon2';
 import { ZodError } from 'zod';
+import { createHash } from 'node:crypto';
 
 import { mkdirSync } from 'fs';
 import { config } from './config';
@@ -37,6 +38,11 @@ import { productAiModule } from './modules/commerce/product-ai';
 import { visualSearchModule } from './modules/visual-search';
 import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
 import { trustProxyOption } from './lib/trust-proxy';
+import { registerNotFoundHandler } from './lib/notFoundHandler';
+import { monitorAuthenticatedAuthorizationDenial } from './lib/security-denial-monitor';
+import { monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './lib/unmatched-route-monitor';
+import { monitorSuccessfulResourceEnumeration } from './lib/successful-resource-enumeration-monitor';
+import { serializeSafeRequest } from './lib/safe-request-logger';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
@@ -67,16 +73,17 @@ mkdirSync(config.STORAGE_PATH, { recursive: true });
 
 // ─── Создание сервера ─────────────────────────────────────────────────────────
 
-const isRailwayRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
-
 const server = fastify({
   logger: {
     level: config.LOG_LEVEL,
+    // Fastify's default request serializer records req.url, which may include
+    // credentials, phone numbers, or other user data in query parameters.
+    serializers: { req: (request) => serializeSafeRequest(request) },
     ...(config.NODE_ENV === 'development'
       ? { transport: { target: 'pino-pretty', options: { colorize: true } } }
       : {}),
   },
-  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES, isRailwayRuntime),
+  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES),
   ajv: {
     customOptions: {
       strict: 'log',
@@ -85,7 +92,7 @@ const server = fastify({
   },
 });
 
-if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0 && !isRailwayRuntime) {
+if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0) {
   server.log.warn(
     'TRUST_PROXY_ADDRESSES is empty; forwarded client IP headers are ignored and rate limits use the direct peer address',
   );
@@ -99,7 +106,7 @@ const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
     });
     return settings?.adaptiveRateLimitEnabled === true;
   },
-  (error) => server.log.warn({ err: error }, '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
+  (error) => server.log.warn({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
 );
 
 redis.on('error', (err) => {
@@ -382,13 +389,16 @@ server.get('/health/ready', {
 server.addHook('onResponse', async (request, reply) => {
   const routineAuthProbe = request.url.startsWith('/auth/refresh') || request.url.startsWith('/auth/me') || request.url.startsWith('/admin/theme');
   if ((reply.statusCode === 401 || reply.statusCode === 403) && !routineAuthProbe) {
+    // Persist the matched route template, never the raw URL: query strings and
+    // concrete path segments may contain credentials or personal identifiers.
+    const safeRoute = request.routeOptions.url ?? 'unmatched';
     prisma.auditLog.create({
       data: {
-        userId: (request as any).user?.userId ?? null,
+        userId: request.user?.userId ?? null,
         action: 'SECURITY_DENIED',
-        resource: request.url,
+        resource: safeRoute,
         meta: {
-          path: request.url,
+          route: safeRoute,
           method: request.method,
           statusCode: reply.statusCode,
           ip: request.ip,
@@ -399,6 +409,54 @@ server.addHook('onResponse', async (request, reply) => {
       },
     }).catch((err) => server.log.error({ err }, 'Failed to write security audit log'));
   }
+
+  // Escalate only repeated denials tied to an authenticated principal. Never
+  // block on a single failure or trust client-supplied account/IP identifiers.
+  void monitorAuthenticatedAuthorizationDenial({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    userId: request.user?.userId,
+    route: request.routeOptions.url ?? 'unmatched',
+    statusCode: reply.statusCode,
+  });
+
+  void monitorUnmatchedRouteScan({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    sourceIp: request.ip,
+    routeMatched: Boolean(request.routeOptions.url),
+    statusCode: reply.statusCode,
+  });
+
+  void monitorResourceNotFoundProbes({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    sourceIp: request.ip,
+    routeTemplate: request.routeOptions.url,
+    statusCode: reply.statusCode,
+  });
+
+  void monitorSuccessfulResourceEnumeration({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    method: request.method,
+    statusCode: reply.statusCode,
+    userId: request.user?.userId,
+    routeTemplate: request.routeOptions.url,
+    params: request.params as Record<string, unknown>,
+  });
 });
 
 // ─── Глобальный обработчик ошибок ────────────────────────────────────────────
@@ -424,7 +482,9 @@ server.setErrorHandler((error, request, reply) => {
     errorCode,
     method: request.method,
     route: request.routeOptions.url,
-    userId: request.user?.userId,
+    userIdHash: request.user?.userId
+      ? createHash('sha256').update(request.user.userId).digest('hex').slice(0, 16)
+      : undefined,
   }, 'Request error');
 
   if (error instanceof ZodError) {
@@ -454,7 +514,7 @@ server.setErrorHandler((error, request, reply) => {
     return reply.status(429).send({
       statusCode: 429,
       error: 'Too Many Requests',
-      message: errorMessage,
+      message: 'Too many requests. Please try again later.',
     });
   }
 
@@ -463,19 +523,13 @@ server.setErrorHandler((error, request, reply) => {
     statusCode,
     error: statusCode === 500 ? 'Internal Server Error' : errorType,
     // В проде не отдаём детали 500-ых ошибок наружу
-    message: statusCode === 500 && isProduction ? 'An unexpected error occurred' : errorMessage,
+    message: statusCode >= 500 ? 'An unexpected error occurred' : errorMessage,
   });
 });
 
 // ─── Not Found handler ────────────────────────────────────────────────────────
 
-server.setNotFoundHandler((request, reply) => {
-  reply.status(404).send({
-    statusCode: 404,
-    error: 'Not Found',
-    message: `Route ${request.method} ${request.url} not found`,
-  });
-});
+registerNotFoundHandler(server);
 
 import { startTelegramBot, stopTelegramBot } from './lib/telegram';
 import { runScheduledBackup } from './lib/jobs/scheduled-backup';
@@ -553,8 +607,9 @@ const start = async () => {
         'watermarkDetectorEnabled',
         'openTelemetryEnabled',
       ];
+      const settingsFlags = siteSettings as unknown as Record<string, unknown> | null;
       const enabledUnimplemented = unimplementedFlags.filter(
-        (flag) => (siteSettings as any)?.[flag] === true,
+        (flag) => settingsFlags?.[flag] === true,
       );
       if (enabledUnimplemented.length > 0) {
         server.log.warn(

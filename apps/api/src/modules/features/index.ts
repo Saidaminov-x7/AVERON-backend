@@ -3,7 +3,8 @@ import { config } from '../../config';
 import { featureFlags } from './feature-flags';
 import { visualSimilarityService } from '../visual-search/runtime';
 import { catalogAiService } from '../commerce/catalog-ai-service';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { AdminRole } from '@prisma/client';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { isTelegramProductPublisherConfigured } from '../commerce/telegram-publisher';
 
 export const capabilitiesModule: FastifyPluginAsync = async (app) => {
@@ -28,7 +29,8 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get('/admin/ai-status', { preHandler: adminMiddleware }, async () => ({
+  const diagnosticsAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
+  app.get('/admin/ai-status', { preHandler: diagnosticsAccess }, async () => ({
     flags: {
       aiSearch: featureFlags.isEnabled('AI_SEARCH'),
       styleAssistant: featureFlags.isEnabled('STYLE_ASSISTANT'),
@@ -40,7 +42,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     timeoutMs: config.AI_TIMEOUT_MS,
   }));
 
-  app.get('/admin/recommendation-status', { preHandler: adminMiddleware }, async () => ({
+  app.get('/admin/recommendation-status', { preHandler: diagnosticsAccess }, async () => ({
     flags: {
       recommendations: featureFlags.isEnabled('RECOMMENDATIONS'),
       personalized: featureFlags.isEnabled('PERSONALIZED_RECOMMENDATIONS'),
@@ -51,7 +53,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     personalizedResultsShared: false,
   }));
 
-  app.get('/admin/integration-diagnostics', { preHandler: adminMiddleware }, async () => {
+  app.get('/admin/integration-diagnostics', { preHandler: diagnosticsAccess }, async () => {
     let redisHealthy = false;
     try {
       redisHealthy = await app.redis.ping() === 'PONG';

@@ -7,6 +7,7 @@ import { fileTypeFromBuffer } from 'file-type';
 import { adminMiddleware, requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { AdminService } from './service';
+import { sendSafeErrorReply } from '../../lib/safe-error-response';
 import {
   adminUsersFilterSchema,
   blockUserSchema,
@@ -39,8 +40,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const result = await service.getUsers(filter);
       return result;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -50,8 +50,8 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   server.get('/users/export', { preHandler: userActionHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const filter = adminUsersFilterSchema.parse(request.query);
     const service = getService(request);
-    const users = await service.exportUsers(filter);
     try {
+      const users = await service.exportUsers(filter);
       const headers = ['ID', 'Имя', 'Email', 'Телефон', 'Роль', 'Статус', 'Дата регистрации'];
       const rows = users.map((u) => [u.id, u.name, u.email, u.phone, u.role, u.isBlocked ? 'Заблокирован' : 'Активен', u.createdAt.toISOString()]);
       const escapeCsv = (value: unknown) => {
@@ -63,8 +63,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       reply.header('Content-Disposition', 'attachment; filename="users.csv"');
       return reply.send('\uFEFF' + csv);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin export failed');
     }
   });
 
@@ -76,8 +75,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.getUserById(request.params.id);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -90,8 +88,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.blockUser(request.params.id, dto.reason, request.user.userId, request.ip);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -103,8 +100,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.unblockUser(request.params.id, request.user.userId, request.ip);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -213,8 +209,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.getPageById(request.params.id);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -228,8 +223,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const page = await service.createPage(dto, request.user.userId);
       return reply.status(201).send(page);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -242,8 +236,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.updatePage(request.params.id, dto, request.user.userId);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -256,8 +249,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const page = await service.togglePageMaintenance(request.params.id, request.user.userId);
       return page;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -270,8 +262,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       await service.deletePage(request.params.id, request.user.userId);
       return reply.status(204).send();
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -299,16 +290,13 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       try {
         await request.server.redis.del('site:settings:public');
       } catch (redisErr) {
-        request.log.warn({ err: redisErr }, 'Failed to clear redis cache for site:settings:public');
+        request.log.warn({ errorName: redisErr instanceof Error ? redisErr.name : 'UnknownError' }, 'Failed to clear redis cache for site:settings:public');
       }
 
       return settings;
     } catch (err) {
-      request.log.error({ err }, 'Error updating site settings');
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({
-        message: error.message || 'Ошибка сохранения настроек сайта',
-      });
+      request.log.error({ errorName: err instanceof Error ? err.name : 'UnknownError' }, 'Error updating site settings');
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -343,8 +331,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       await request.server.redis.del('site:settings:public').catch(() => {});
       return result;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -358,8 +345,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       await request.server.redis.del('site:settings:public').catch(() => {});
       return result;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -453,8 +439,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       reply.header('Content-Disposition', `attachment; filename="${filename}"`);
       return reply.send('\uFEFF' + csvData); // BOM для корректного отображения кириллицы
     } catch (err) {
-      const error = err as Error;
-      return reply.status(500).send({ message: `Failed to generate export: ${error.message}` });
+      return sendSafeErrorReply(request, reply, err, 'Admin export failed');
     }
   });
 
