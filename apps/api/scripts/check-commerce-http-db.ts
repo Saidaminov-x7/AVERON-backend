@@ -7,6 +7,7 @@ import { commerceModule } from "../src/modules/commerce";
 const prisma = new PrismaClient();
 const app = Fastify({ logger: false });
 const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const parserToken = "isolated-parser-http-integration-token";
 const sourceProductIds = [`http-approve-${stamp}`, `http-reject-${stamp}`];
 const importIds: string[] = [];
 let productId: string | undefined;
@@ -14,21 +15,29 @@ let adminId: string | undefined;
 let token: string | undefined;
 
 async function createPendingImport(sourceProductId: string) {
-  const item = await prisma.importedProduct.create({
-    data: {
-      source: "SOURCE_1688",
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/parser/imports",
+    headers: { authorization: `Bearer ${parserToken}` },
+    payload: {
+      schemaVersion: 1,
+      provider: "SOURCE_1688",
       sourceProductId,
+      deduplicationKey: `SOURCE_1688:${sourceProductId}`,
       sourceUrl: `https://detail.1688.com/offer/${sourceProductId}.html`,
-      originalTitle: `HTTP integration ${sourceProductId}`,
-      sourceMetadata: { composition: "cotton", care: "machine wash" },
-      normalizedPayload: {
-        title: `HTTP integration ${sourceProductId}`,
-        country: "CN",
-        variants: [],
-      },
-      aiPayload: { ru: { title: `HTTP integration ${sourceProductId}` } },
+      sourceTitle: `HTTP integration ${sourceProductId}`,
+      country: "CN",
+      sourceAttributes: { composition: "cotton", care: "machine wash" },
+      rawMetadata: { supplierSku: sourceProductId },
+      fetchedAt: new Date().toISOString(),
     },
   });
+  assert.equal(
+    response.statusCode,
+    201,
+    `parser must create a pending import over HTTP: ${response.body}`,
+  );
+  const item = (response.json() as { item: { id: string } }).item;
   importIds.push(item.id);
   return item;
 }
@@ -118,10 +127,18 @@ async function main() {
       listedImport,
       "pending import is visible in the authenticated review queue",
     );
-    assert.deepEqual(listedImport.sourceMetadata, {
+    const listedNormalizedPayload = listedImport.normalizedPayload as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(listedNormalizedPayload.sourceAttributes, {
       composition: "cotton",
       care: "machine wash",
     });
+    assert.deepEqual(listedNormalizedPayload.rawMetadata, {
+      supplierSku: sourceProductIds[0],
+    });
+    assert.equal(listedNormalizedPayload.country, "CN");
     assert.equal(
       listedImport.status,
       "PENDING_REVIEW",
@@ -261,7 +278,7 @@ async function main() {
     );
 
     console.log(
-      "PASS authenticated PostgreSQL HTTP integration: import details, draft approval, rejection audit, localized composition/care save and public read",
+      "PASS PostgreSQL HTTP integration: parser ingestion, admin import details/draft approval/rejection audit, localized composition/care save and public read",
     );
   } finally {
     await app.close().catch(() => undefined);
