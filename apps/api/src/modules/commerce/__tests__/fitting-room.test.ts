@@ -287,7 +287,12 @@ describe('fitting-room routes', () => {
     expect(response.json()).toEqual({ code: 'FITTING_ROOM_MODEL_UNAVAILABLE' });
     expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({
-        OR: [{ id: productId }, { slug: productId }, { publicId: productId }],
+        OR: [
+          { id: productId },
+          { slug: productId },
+          { publicId: productId },
+          { legacyPublicId: productId },
+        ],
         status: 'PUBLISHED',
       }),
     }));

@@ -144,7 +144,12 @@ export function createFittingRoomModule(storageFactory: StorageFactory = default
       if (!query.success) return reply.status(400).send({ code: 'INVALID_FITTING_ROOM_QUERY' });
       const product = await app.prisma.commerceProduct.findFirst({
         where: {
-          OR: [{ id: params.data.identifier }, { slug: params.data.identifier }, { publicId: params.data.identifier }],
+          OR: [
+            { id: params.data.identifier },
+            { slug: params.data.identifier },
+            { publicId: params.data.identifier },
+            { legacyPublicId: params.data.identifier },
+          ],
           status: 'PUBLISHED',
         },
         include: {
