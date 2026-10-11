@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import Fastify from "fastify";
 import fastifyJwt from "@fastify/jwt";
+import fastifyMultipart from "@fastify/multipart";
 import { AdminRole, PrismaClient, Role } from "@prisma/client";
+import { createFittingRoomModule } from "../src/modules/commerce/fitting-room";
 import { commerceModule } from "../src/modules/commerce";
 
 const prisma = new PrismaClient();
@@ -13,6 +15,51 @@ const importIds: string[] = [];
 let productId: string | undefined;
 let adminId: string | undefined;
 let token: string | undefined;
+let fittingRoomApp: ReturnType<typeof Fastify> | undefined;
+
+function makeValidGlb() {
+  const document = {
+    asset: { version: "2.0" },
+    buffers: [{ byteLength: 36 }],
+    bufferViews: [{ buffer: 0, byteLength: 36 }],
+    accessors: [
+      {
+        bufferView: 0,
+        componentType: 5126,
+        count: 3,
+        type: "VEC3",
+        min: [0, 0, 0],
+        max: [0, 0, 0],
+      },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  };
+  const json = Buffer.from(JSON.stringify(document));
+  const paddedJson = Buffer.concat([
+    json,
+    Buffer.alloc((4 - (json.length % 4)) % 4, 0x20),
+  ]);
+  const header = Buffer.alloc(12);
+  header.write("glTF", 0, "ascii");
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(12 + 8 + paddedJson.length + 8 + 36, 8);
+  const jsonHeader = Buffer.alloc(8);
+  jsonHeader.writeUInt32LE(paddedJson.length, 0);
+  jsonHeader.writeUInt32LE(0x4e4f534a, 4);
+  const binaryHeader = Buffer.alloc(8);
+  binaryHeader.writeUInt32LE(36, 0);
+  binaryHeader.writeUInt32LE(0x004e4942, 4);
+  return Buffer.concat([
+    header,
+    jsonHeader,
+    paddedJson,
+    binaryHeader,
+    Buffer.alloc(36),
+  ]);
+}
 
 async function createPendingImport(sourceProductId: string) {
   const response = await app.inject({
@@ -277,11 +324,131 @@ async function main() {
       persistedAttributes?.attributes,
     );
 
+    const storageObjects = new Map<string, Buffer>();
+    const fittingRoomStorage = {
+      upload: async (data: Buffer, fileHash: string) => {
+        const key = `private/fitting-room/${fileHash}.glb`;
+        storageObjects.set(key, Buffer.from(data));
+        return key;
+      },
+      signedUrl: (key: string) =>
+        `https://signed-storage.example/${encodeURIComponent(key)}?signature=test-only`,
+      delete: async (key: string) => {
+        storageObjects.delete(key);
+      },
+    };
+    fittingRoomApp = Fastify({ logger: false });
+    fittingRoomApp.decorate("prisma", prisma);
+    await fittingRoomApp.register(fastifyJwt, {
+      secret: "integration-only-jwt-secret-not-for-production",
+    });
+    await fittingRoomApp.register(fastifyMultipart, {
+      limits: { fileSize: 20 * 1024 * 1024, files: 1, fields: 0 },
+    });
+    await fittingRoomApp.register(
+      createFittingRoomModule(() => fittingRoomStorage),
+      {
+        prefix: "/api/v1",
+      },
+    );
+    await fittingRoomApp.ready();
+    const fittingAuthorization = {
+      authorization: `Bearer ${fittingRoomApp.jwt.sign({ userId: admin.id, role: "ADMIN" })}`,
+    };
+    const uploadUrl = `/api/v1/admin/products/${product.id}/fitting-room/assets?layer=BASE_TOP`;
+    const unauthenticatedGlbUpload = await fittingRoomApp.inject({
+      method: "POST",
+      url: uploadUrl,
+      headers: {
+        "content-type": "multipart/form-data; boundary=averon-http-glb",
+      },
+      payload: Buffer.from("--averon-http-glb--\r\n"),
+    });
+    assert.equal(unauthenticatedGlbUpload.statusCode, 401);
+
+    const glb = makeValidGlb();
+    const multipartBody = Buffer.concat([
+      Buffer.from(
+        '--averon-http-glb\r\nContent-Disposition: form-data; name="file"; filename="fixture.glb"\r\nContent-Type: model/gltf-binary\r\n\r\n',
+      ),
+      glb,
+      Buffer.from("\r\n--averon-http-glb--\r\n"),
+    ]);
+    const glbUpload = await fittingRoomApp.inject({
+      method: "POST",
+      url: uploadUrl,
+      headers: {
+        ...fittingAuthorization,
+        "content-type": "multipart/form-data; boundary=averon-http-glb",
+      },
+      payload: multipartBody,
+    });
+    assert.equal(
+      glbUpload.statusCode,
+      201,
+      `GLB upload must succeed: ${glbUpload.body}`,
+    );
+    const uploadedAsset = glbUpload.json() as {
+      id: string;
+      status: string;
+      previewUrl: string;
+    };
+    assert.equal(uploadedAsset.status, "NEEDS_REVIEW");
+    assert.match(
+      uploadedAsset.previewUrl,
+      /^https:\/\/signed-storage\.example\//,
+    );
+    const persistedAsset = await prisma.product3DAsset.findUnique({
+      where: { id: uploadedAsset.id },
+      select: { fileKey: true, fileHash: true, fileSize: true, status: true },
+    });
+    assert.ok(persistedAsset);
+    assert.equal(persistedAsset.status, "NEEDS_REVIEW");
+    assert.equal(persistedAsset.fileSize, glb.length);
+    assert.deepEqual(storageObjects.get(persistedAsset.fileKey), glb);
+
+    const assetReview = await fittingRoomApp.inject({
+      method: "POST",
+      url: `/api/v1/admin/fitting-room/assets/${uploadedAsset.id}/review`,
+      headers: fittingAuthorization,
+      payload: { action: "approve" },
+    });
+    assert.equal(assetReview.statusCode, 200, assetReview.body);
+    assert.equal((assetReview.json() as { status: string }).status, "APPROVED");
+    const persistedReviewedAsset = await prisma.product3DAsset.findUnique({
+      where: { id: uploadedAsset.id },
+      select: { status: true, reviewedById: true, approvedAt: true },
+    });
+    assert.equal(persistedReviewedAsset?.status, "APPROVED");
+    assert.equal(persistedReviewedAsset?.reviewedById, admin.id);
+    assert.ok(persistedReviewedAsset?.approvedAt);
+    assert.ok(
+      await prisma.auditLog.findFirst({
+        where: {
+          action: "PRODUCT_3D_ASSET_UPLOADED",
+          resourceId: uploadedAsset.id,
+          userId: admin.id,
+        },
+        select: { id: true },
+      }),
+    );
+    assert.ok(
+      await prisma.auditLog.findFirst({
+        where: {
+          action: "PRODUCT_3D_ASSET_APPROVED",
+          resourceId: uploadedAsset.id,
+          userId: admin.id,
+        },
+        select: { id: true },
+      }),
+    );
+
     console.log(
-      "PASS PostgreSQL HTTP integration: parser ingestion, admin import details/draft approval/rejection audit, localized composition/care save and public read",
+      "PASS PostgreSQL HTTP integration: parser-to-admin import review, localized composition/care, authenticated GLB upload/review and audit persistence",
     );
   } finally {
     await app.close().catch(() => undefined);
+    await fittingRoomApp?.close().catch(() => undefined);
     if (productId)
       await prisma.commerceProduct
         .deleteMany({ where: { id: productId } })
