@@ -5,7 +5,7 @@ import { adminModule } from '../index';
 
 const apps: ReturnType<typeof Fastify>[] = [];
 
-async function makeApp(adminRole: 'SUPPORT' | 'MODERATOR') {
+async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'SUPPORT' | 'MODERATOR') {
   const app = Fastify();
   apps.push(app);
   await app.register(fastifyJwt, {
@@ -22,7 +22,15 @@ async function makeApp(adminRole: 'SUPPORT' | 'MODERATOR') {
         }
       : null
   ));
-  app.decorate('prisma', { user: { findUnique } } as never);
+  app.decorate('prisma', {
+    user: { findUnique },
+    userActivityLog: {
+      findMany: vi.fn(async () => []),
+      count: vi.fn(async () => 0),
+    },
+    authSession: { findMany: vi.fn(async () => []) },
+    $transaction: vi.fn(async (operations: Promise<unknown>[]) => Promise.all(operations)),
+  } as never);
   await app.register(adminModule, { prefix: '/admin' });
   await app.ready();
   return { app, findUnique };
@@ -66,6 +74,58 @@ describe('admin user detail authorization', () => {
       expect(findUnique).toHaveBeenCalledWith(expect.objectContaining({
         where: { id: 'acting-admin' },
       }));
+    },
+  );
+
+  it.each([
+    '/admin/users/private-user-id/activity',
+    '/admin/users/private-user-id/sessions',
+  ])('does not expose private account activity and session metadata at %s to support', async (url) => {
+    const { app } = await makeApp('SUPPORT');
+    const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it.each([
+    '/admin/users/private-user-id/activity',
+    '/admin/users/private-user-id/sessions',
+  ])('does not expose private account activity and session metadata at %s to moderators', async (url) => {
+    const { app } = await makeApp('MODERATOR');
+    const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it.each(['ADMIN', 'SUPER_ADMIN'] as const)(
+    'allows %s to view account activity and active sessions',
+    async (adminRole) => {
+      const { app } = await makeApp(adminRole);
+      const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPPORT' });
+
+      for (const url of [
+        '/admin/users/private-user-id/activity',
+        '/admin/users/private-user-id/sessions',
+      ]) {
+        const response = await app.inject({
+          method: 'GET',
+          url,
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.statusCode).toBe(200);
+      }
     },
   );
 });

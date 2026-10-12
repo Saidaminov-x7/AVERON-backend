@@ -129,7 +129,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
    */
   server.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string; action?: string } }>(
     '/users/:id/activity',
-    { preHandler: supportHandler },
+    { preHandler: userActionHandler },
     async (request, reply) => {
       const page = Math.max(1, parseInt(request.query.page || '1', 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit || '50', 10)));
@@ -159,7 +159,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     },
   );
 
-  server.get<{ Params: { id: string } }>('/users/:id/sessions', { preHandler: supportHandler }, async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/users/:id/sessions', { preHandler: userActionHandler }, async (request, reply) => {
     const items = await request.server.prisma.authSession.findMany({
       where: { userId: request.params.id, revokedAt: null, expiresAt: { gt: new Date() } },
       orderBy: { lastSeenAt: 'desc' },
