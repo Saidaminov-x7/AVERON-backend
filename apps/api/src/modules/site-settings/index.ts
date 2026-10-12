@@ -34,8 +34,6 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         autoModerationEnabled: true,
         logoUrl: true,
         navLinks: true,
-        yandexMetrikaId: true,
-        yandexMetrikaEnabled: true,
         mobilePinchZoomEnabled: true,
       },
     });
@@ -53,8 +51,6 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         autoModerationEnabled: false,
         logoUrl: null,
         navLinks: null,
-        yandexMetrikaId: '112059980',
-        yandexMetrikaEnabled: true,
         mobilePinchZoomEnabled: true,
       };
     }

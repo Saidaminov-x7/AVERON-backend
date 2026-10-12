@@ -105,8 +105,6 @@ export const updateSiteSettingsSchema = z.object({
   webPushEnabled: z.boolean().optional(),
   oneIdAuthEnabled: z.boolean().optional(),
   openTelemetryEnabled: z.boolean().optional(),
-  yandexMetrikaId: z.string().max(50).optional(),
-  yandexMetrikaEnabled: z.boolean().optional(),
   navLinks: z.array(
     z.object({
       label: z.string().min(1),

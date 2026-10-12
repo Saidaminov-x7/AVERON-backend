@@ -42,8 +42,6 @@ const SITE_SETTINGS_ADMIN_SELECT = {
   webPushEnabled: true,
   oneIdAuthEnabled: true,
   openTelemetryEnabled: true,
-  yandexMetrikaId: true,
-  yandexMetrikaEnabled: true,
   maintenanceBypassPassword: true,
   maintenancePasswordEnabled: true,
   mobilePinchZoomEnabled: true,
