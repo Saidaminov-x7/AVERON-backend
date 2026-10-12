@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Redis } from 'ioredis';
 import { startTelegramBot, stopTelegramBot } from '../lib/telegram';
 
@@ -24,9 +25,12 @@ const shutdown = async () => {
   shuttingDown = true;
   stopTelegramBot();
   try {
-    await redis.quit();
-  } finally {
-    process.exit(0);
+    if (redis.status === 'ready') await redis.quit();
+    else redis.disconnect();
+    console.info('[Telegram] Dedicated polling worker stopped');
+  } catch {
+    redis.disconnect();
+    process.exitCode = 1;
   }
 };
 

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 import { runScheduledBackup } from '../lib/jobs/scheduled-backup';
 import { retryPendingWebhookDeliveries } from '../lib/webhookDelivery';
