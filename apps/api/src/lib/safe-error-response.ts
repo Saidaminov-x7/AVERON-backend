@@ -2,8 +2,22 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 
 type ErrorWithStatus = {
   statusCode?: unknown;
-  message?: unknown;
 };
+
+/** Stable public messages for uncaught HTTP errors; never reflect exception text. */
+export function safeHttpErrorMessage(statusCode: number): string {
+  if (statusCode >= 500) return 'An unexpected error occurred';
+  switch (statusCode) {
+    case 400: return 'Invalid request';
+    case 401: return 'Authentication required';
+    case 403: return 'Access denied';
+    case 404: return 'Resource not found';
+    case 409: return 'Request conflicts with the current resource state';
+    case 422: return 'Request could not be processed';
+    case 429: return 'Too many requests. Try again later.';
+    default: return 'Request could not be completed';
+  }
+}
 
 export function toSafeErrorResponse(
   error: unknown,
@@ -24,10 +38,7 @@ export function toSafeErrorResponse(
     return { statusCode, message: internalMessage };
   }
 
-  const message = candidate && typeof candidate.message === 'string'
-    ? candidate.message
-    : 'Request could not be completed';
-  return { statusCode, message };
+  return { statusCode, message: safeHttpErrorMessage(statusCode) };
 }
 
 export function sendSafeErrorReply(

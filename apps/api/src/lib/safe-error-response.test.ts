@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { toSafeErrorResponse } from './safe-error-response';
+import { safeHttpErrorMessage, toSafeErrorResponse } from './safe-error-response';
 
 describe('toSafeErrorResponse', () => {
-  it('preserves explicit client errors with their intended status', () => {
+  it('preserves explicit client status codes without reflecting exception messages', () => {
     expect(toSafeErrorResponse(Object.assign(new Error('User not found'), { statusCode: 404 })))
-      .toEqual({ statusCode: 404, message: 'User not found' });
+      .toEqual({ statusCode: 404, message: 'Resource not found' });
+    expect(toSafeErrorResponse(Object.assign(new Error('private account detail'), { statusCode: 403 })))
+      .toEqual({ statusCode: 403, message: 'Access denied' });
+  });
+
+  it('uses stable messages for known HTTP failures', () => {
+    expect(safeHttpErrorMessage(401)).toBe('Authentication required');
+    expect(safeHttpErrorMessage(429)).toBe('Too many requests. Try again later.');
+    expect(safeHttpErrorMessage(503)).toBe('An unexpected error occurred');
   });
 
   it('hides internal error details and normalizes the status to 500', () => {

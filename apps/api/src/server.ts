@@ -43,6 +43,9 @@ import { monitorAuthenticatedAuthorizationDenial } from './lib/security-denial-m
 import { monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './lib/unmatched-route-monitor';
 import { monitorSuccessfulResourceEnumeration } from './lib/successful-resource-enumeration-monitor';
 import { serializeSafeRequest } from './lib/safe-request-logger';
+import { safeErrorLogFields } from './lib/safe-error-log';
+import { registerTemporarySourceRestrictionGuard } from './lib/temporary-source-restriction';
+import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
@@ -110,7 +113,7 @@ const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
 );
 
 redis.on('error', (err) => {
-  server.log.error({ err }, '[Redis] Connection error');
+  server.log.error(safeErrorLogFields(err), '[Redis] Connection error');
 });
 
 // ─── Плагины безопасности ─────────────────────────────────────────────────────
@@ -168,6 +171,12 @@ server.register(fastifyRateLimit, {
     message: `Rate limit exceeded. Try again in ${Math.ceil(context.ttl / 1000)}s`,
   }),
 });
+
+// Confirmed anonymous route scans receive a short Redis-backed restriction.
+// Redis errors fail open, and the restriction never targets account IDs.
+if (config.TRUST_PROXY_ADDRESSES.length > 0) {
+  registerTemporarySourceRestrictionGuard(server, redis);
+}
 
 server.register(fastifyJwt, {
   secret: config.JWT_SECRET,
@@ -278,7 +287,7 @@ server.get('/health', {
     await redis.ping();
     return reply.send({ status: 'ok', db: 'up', redis: 'up', timestamp: new Date().toISOString() });
   } catch (err) {
-    server.log.error({ err }, 'Health check failed');
+    server.log.error(safeErrorLogFields(err), 'Health check failed');
     return reply.status(503).send({ status: 'degraded', db: 'unknown', redis: 'unknown' });
   }
 });
@@ -407,7 +416,7 @@ server.addHook('onResponse', async (request, reply) => {
         userAgent: request.headers['user-agent'] ?? null,
         timestamp: new Date(),
       },
-    }).catch((err) => server.log.error({ err }, 'Failed to write security audit log'));
+    }).catch((err) => server.log.error(safeErrorLogFields(err), 'Failed to write security audit log'));
   }
 
   // Escalate only repeated denials tied to an authenticated principal. Never
@@ -431,6 +440,12 @@ server.addHook('onResponse', async (request, reply) => {
   }, {
     sourceIp: request.ip,
     routeMatched: Boolean(request.routeOptions.url),
+    routeFingerprint: createHash('sha256')
+      .update(request.url.split('?', 1)[0].slice(0, 512))
+      .digest('hex'),
+    method: request.method,
+    authenticated: Boolean(request.user?.userId),
+    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
     statusCode: reply.statusCode,
   });
 
@@ -442,6 +457,12 @@ server.addHook('onResponse', async (request, reply) => {
   }, {
     sourceIp: request.ip,
     routeTemplate: request.routeOptions.url,
+    resourceFingerprint: createHash('sha256')
+      .update(JSON.stringify(request.params ?? {}).slice(0, 512))
+      .digest('hex'),
+    method: request.method,
+    authenticated: Boolean(request.user?.userId),
+    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
     statusCode: reply.statusCode,
   });
 
@@ -467,8 +488,6 @@ server.setErrorHandler((error, request, reply) => {
     ? error as Record<string, unknown>
     : {};
   const errorType = error instanceof Error ? error.name : 'UnknownError';
-  const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
-  const errorCode = typeof errorProperties.code === 'string' ? errorProperties.code : undefined;
   const diagnosticStage = typeof errorProperties.diagnosticStage === 'string'
     ? errorProperties.diagnosticStage
     : 'request_handler';
@@ -478,8 +497,7 @@ server.setErrorHandler((error, request, reply) => {
   request.log.error({
     requestId: request.id,
     diagnosticStage,
-    errorType,
-    errorCode,
+    ...safeErrorLogFields(error),
     method: request.method,
     route: request.routeOptions.url,
     userIdHash: request.user?.userId
@@ -523,7 +541,7 @@ server.setErrorHandler((error, request, reply) => {
     statusCode,
     error: statusCode === 500 ? 'Internal Server Error' : errorType,
     // В проде не отдаём детали 500-ых ошибок наружу
-    message: statusCode >= 500 ? 'An unexpected error occurred' : errorMessage,
+    message: safeHttpErrorMessage(statusCode),
   });
 });
 
@@ -573,20 +591,20 @@ const start = async () => {
     // Первичная очистка истёкших промо-акций сразу при старте
     // Первичная запись снапшота целостности базы данных
     runScheduledBackup(prisma, server.log).catch((err) => {
-      server.log.error({ err }, '[Backup] Error during startup runScheduledBackup check');
+      server.log.error(safeErrorLogFields(err), '[Backup] Startup backup check failed');
     });
 
     // Периодическая проверка целостности и снапшот данных (каждые 24 часа)
     scheduledBackupInterval = setInterval(() => {
       runScheduledBackup(prisma, server.log).catch((err) => {
-        server.log.error({ err }, '[Backup] Error in runScheduledBackup interval');
+        server.log.error(safeErrorLogFields(err), '[Backup] Scheduled backup failed');
       });
     }, 24 * 60 * 60 * 1000);
 
     // Периодический воркер повторной доставки вебхуков (каждые 60 секунд)
     webhookRetryInterval = setInterval(() => {
       retryPendingWebhookDeliveries(prisma, server.log).catch((err) => {
-        server.log.error({ err }, '[Webhook] Error in retryPendingWebhookDeliveries');
+        server.log.error(safeErrorLogFields(err), '[Webhook] Pending delivery retry failed');
       });
     }, 60 * 1000);
 
