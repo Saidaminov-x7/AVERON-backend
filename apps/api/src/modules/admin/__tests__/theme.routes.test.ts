@@ -70,6 +70,33 @@ describe('admin theme routes authorization', () => {
   });
 
   it.each([
+    ['blocked', { isBlocked: true, isDeleted: false }],
+    ['deleted', { isBlocked: false, isDeleted: true }],
+  ] as const)('%s admin account cannot access theme routes with a valid super-admin JWT', async (_state, accountState) => {
+    const app = await makeApp({
+      id: 'inactive-admin',
+      role: 'ADMIN',
+      adminRole: 'SUPER_ADMIN',
+      ...accountState,
+    });
+    const token = app.jwt.sign({ userId: 'inactive-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+
+    for (const [method, url] of [
+      ['GET', '/admin/admin-theme'],
+      ['PATCH', '/admin/admin-theme'],
+    ] as const) {
+      const response = await app.inject({
+        method,
+        url,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { primaryColor: '#123456' },
+      });
+
+      expect(response.statusCode).toBe(403);
+    }
+  });
+
+  it.each([
     ['GET', '/admin/admin-theme'],
     ['PATCH', '/admin/admin-theme'],
   ] as const)('%s %s rejects an authenticated non-admin', async (method, url) => {
