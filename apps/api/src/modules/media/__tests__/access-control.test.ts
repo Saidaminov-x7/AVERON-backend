@@ -43,6 +43,34 @@ function token(app: ReturnType<typeof Fastify>, claims: Record<string, unknown>)
 }
 
 describe('media management access control', () => {
+  it('requires authentication before listing the media library', async () => {
+    const { app, findUser } = makeApp({});
+    await registerRoutes(app);
+
+    const response = await app.inject({ method: 'GET', url: '/media' });
+
+    expect(response.statusCode).toBe(401);
+    expect(findUser).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('does not let SUPPORT enumerate the media library', async () => {
+    const { app, findUser } = makeApp({
+      id: 'support-1', role: 'ADMIN', adminRole: 'SUPPORT', isBlocked: false, isDeleted: false,
+    });
+    await registerRoutes(app);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/media',
+      headers: { authorization: `Bearer ${token(app, { userId: 'support-1', role: 'ADMIN', adminRole: 'SUPER_ADMIN' })}` },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(findUser).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
   it('requires an authenticated account for product photo uploads', async () => {
     const { app, findUser } = makeApp({});
     await registerRoutes(app);
