@@ -42,8 +42,6 @@ const SITE_SETTINGS_ADMIN_SELECT = {
   webPushEnabled: true,
   oneIdAuthEnabled: true,
   openTelemetryEnabled: true,
-  yandexMetrikaId: true,
-  yandexMetrikaEnabled: true,
   maintenanceBypassPassword: true,
   maintenancePasswordEnabled: true,
   mobilePinchZoomEnabled: true,
@@ -675,7 +673,6 @@ export class AdminService {
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
@@ -688,8 +685,6 @@ export class AdminService {
       visitorsYesterday,
       activeListings,
       activeListingsPrevMonth,
-      newUsersToday,
-      newUsersYesterday,
       newUsersLast30Days,
       newUsersPrev30Days,
       activeUsers,
@@ -721,8 +716,6 @@ export class AdminService {
         },
       }),
       // Новые пользователи (сегодня и вчера)
-      this.prisma.user.count({ where: { createdAt: { gte: todayStart } } }),
-      this.prisma.user.count({ where: { createdAt: { gte: yesterdayStart, lt: todayStart } } }),
       // Новые пользователи (последние 30 дней)
       this.prisma.user.count({
         where: { createdAt: { gte: thirtyDaysAgo } },
@@ -1147,7 +1140,7 @@ export class AdminService {
 
   async updateSiteSettings(dto: UpdateSiteSettingsDto, adminId: string, ip?: string) {
     const { navLinks, ...restDto } = dto;
-    const updateData: any = {
+    const updateData: Prisma.SiteSettingsUncheckedUpdateInput = {
       ...restDto,
       updatedById: adminId,
     };
@@ -1155,7 +1148,7 @@ export class AdminService {
       updateData.navLinks = navLinks === null ? Prisma.DbNull : navLinks;
     }
 
-    const createData: any = {
+    const createData: Prisma.SiteSettingsUncheckedCreateInput = {
       maintenanceMode: dto.maintenanceMode ?? false,
       siteName: dto.siteName ?? 'AVERON',
       contactEmail: dto.contactEmail ?? process.env.ADMIN_EMAIL?.trim().toLowerCase() ?? '',

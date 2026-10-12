@@ -2,6 +2,7 @@ import { AdminRole, Prisma } from '@prisma/client';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { config } from '../../config';
+import { createStorageAdapter } from '../media/storage';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { productCountrySchema } from '../commerce/schemas';
 import {
@@ -19,6 +20,7 @@ import {
   vectorSearchRepository,
   visualSimilarityService,
 } from './runtime';
+import { PrismaProductImageSource, PrismaVectorSearchRepository } from './prisma-adapters';
 import { featureFlags } from '../features/feature-flags';
 import { publicProductDto } from '../commerce/public-product-dto';
 import {
@@ -626,4 +628,15 @@ export function createVisualSearchModule(
   };
 }
 
-export const visualSearchModule = createVisualSearchModule();
+export const visualSearchModule: FastifyPluginAsync = async (app) => {
+  const dependencies = createVisualSearchDependencies({
+    provider: imageEmbeddingProvider,
+    repository: config.VISUAL_SEARCH_VECTOR_ENABLED
+      ? new PrismaVectorSearchRepository(app.prisma, true)
+      : vectorSearchRepository,
+    productImageSource: config.VISUAL_SEARCH_VECTOR_ENABLED
+      ? new PrismaProductImageSource(app.prisma, createStorageAdapter(app.log))
+      : productImageSource,
+  });
+  await createVisualSearchModule(dependencies)(app, {});
+};

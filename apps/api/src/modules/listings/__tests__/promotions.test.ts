@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PromotionsService } from '../promotions.service';
 
 describe('PromotionsService.expirePromotions', () => {
-  let prismaMock: any;
+  let prismaMock: { listing: { updateMany: ReturnType<typeof vi.fn> } };
   let service: PromotionsService;
 
   beforeEach(() => {
@@ -13,7 +13,7 @@ describe('PromotionsService.expirePromotions', () => {
         updateMany: vi.fn().mockResolvedValue({ count: 3 }),
       },
     };
-    service = new PromotionsService(prismaMock);
+    service = new PromotionsService(prismaMock as unknown as ConstructorParameters<typeof PromotionsService>[0]);
   });
 
   it('снимает VIP-статус и продвижение у объявлений с истёкшим сроком', async () => {

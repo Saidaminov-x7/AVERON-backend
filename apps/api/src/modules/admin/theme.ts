@@ -31,7 +31,7 @@ export const themeModule: FastifyPluginAsync = async (server) => {
   /**
    * PATCH /admin/theme — обновить дизайн-токены САЙТА
    */
-  server.patch('/theme', { preHandler: [requireAdminRole('SUPER_ADMIN')] }, async (request: FastifyRequest, reply: FastifyReply) => {
+  server.patch('/theme', { preHandler: [requireAdminRole('SUPER_ADMIN')] }, async (request: FastifyRequest) => {
     const dto = updateThemeSchema.parse(request.body);
     const service = getService(request);
     const settings = await service.updateThemeSettings(dto, request.user.userId, request.ip);

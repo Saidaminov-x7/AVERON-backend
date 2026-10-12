@@ -31,8 +31,8 @@ function createTestApp({
   maxProductPhotoSizeMb?: number;
   mediaSize?: number;
   categoryActive?: boolean;
-  publicProduct?: Record<string, any> | null;
-  manualProduct?: Record<string, any> | null;
+  publicProduct?: Record<string, unknown> | null;
+  manualProduct?: Record<string, unknown> | null;
 } = {}) {
   const category = {
     id: categoryId,
@@ -47,10 +47,10 @@ function createTestApp({
     images: [{ id: '00000000-0000-4000-8000-000000000005', mediaId, url: 'https://cdn.example/photo.jpg', sortOrder: 0 }],
     variants: [],
   };
-  const idempotentProducts = new Map<string, Record<string, any>>();
+  const idempotentProducts = new Map<string, Record<string, unknown>>();
   const tx = {
     commerceProduct: {
-      create: vi.fn(async ({ data }: { data: Record<string, any> }) => {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const product = { ...createdProduct, ...data };
         if (typeof data.manualCreationKey === 'string') idempotentProducts.set(data.manualCreationKey, product);
         return product;
@@ -386,7 +386,8 @@ describe('commerce admin routes', () => {
     }));
     expect(tx.auditLog.create).toHaveBeenCalledOnce();
     expect(tx.commerceProduct.create.mock.calls[0][0].data).toMatchObject({ stock: 9 });
-    expect(tx.commerceProduct.create.mock.calls[0][0].data.variants.create).toEqual([
+    const createdData = tx.commerceProduct.create.mock.calls[0][0].data as { variants: { create: unknown[] } };
+    expect(createdData.variants.create).toEqual([
       expect.objectContaining({ color: 'Red::#FF0000', size: 'S', stock: 2, salePriceUzs: 180000 }),
       expect.objectContaining({ color: 'Red::#FF0000', size: 'M', stock: 7, salePriceUzs: 180000 }),
     ]);

@@ -1,7 +1,7 @@
 // apps/api/src/modules/chat/index.ts
 // Модуль обмена сообщениями и чатов между пользователями (арендатор <-> арендодатель)
 
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../lib/authMiddleware';
 
@@ -48,7 +48,17 @@ export const chatModule = async (server: FastifyInstance) => {
     });
 
     // Группируем по собеседнику (peerId)
-    const conversationsMap = new Map<string, any>();
+    const conversationsMap = new Map<string, {
+      id: string;
+      peerId: string;
+      peerName: string;
+      peerAvatar: string | null;
+      peerPhone: string | null;
+      lastMessage: string;
+      time: string;
+      unread: number;
+      listing: { id: string; title: string; city: string | null; price: number; image: string | null } | null;
+    }>();
 
     for (const msg of allMessages) {
       const isSender = msg.senderId === userId;

@@ -63,15 +63,22 @@ export class SavedSearchesService {
     const matchedUsers: string[] = [];
 
     for (const search of activeSearches) {
-      const f = search.filters as Record<string, any>;
-      if (!f) continue;
+      const rawFilters = search.filters;
+      if (!rawFilters || typeof rawFilters !== 'object' || Array.isArray(rawFilters)) continue;
+      const f = rawFilters as Record<string, unknown>;
+      const city = typeof f.city === 'string' ? f.city : '';
+      const district = typeof f.district === 'string' ? f.district : '';
+      const minPrice = typeof f.minPrice === 'number' || typeof f.minPrice === 'string' ? Number(f.minPrice) : null;
+      const maxPrice = typeof f.maxPrice === 'number' || typeof f.maxPrice === 'string' ? Number(f.maxPrice) : null;
+      const rooms = typeof f.rooms === 'number' || typeof f.rooms === 'string' ? Number(f.rooms) : null;
+      const type = typeof f.type === 'string' ? f.type : null;
 
-      const matchesCity = !f.city || (listing.city && listing.city.toLowerCase().includes(f.city.toLowerCase()));
-      const matchesDistrict = !f.district || (listing.district && listing.district.toLowerCase().includes(f.district.toLowerCase()));
-      const matchesMinPrice = !f.minPrice || Number(listing.price) >= Number(f.minPrice);
-      const matchesMaxPrice = !f.maxPrice || Number(listing.price) <= Number(f.maxPrice);
-      const matchesRooms = !f.rooms || listing.rooms === Number(f.rooms);
-      const matchesType = !f.type || listing.type === f.type;
+      const matchesCity = !city || Boolean(listing.city && listing.city.toLowerCase().includes(city.toLowerCase()));
+      const matchesDistrict = !district || Boolean(listing.district && listing.district.toLowerCase().includes(district.toLowerCase()));
+      const matchesMinPrice = minPrice === null || Number(listing.price) >= minPrice;
+      const matchesMaxPrice = maxPrice === null || Number(listing.price) <= maxPrice;
+      const matchesRooms = rooms === null || listing.rooms === rooms;
+      const matchesType = type === null || listing.type === type;
 
       if (matchesCity && matchesDistrict && matchesMinPrice && matchesMaxPrice && matchesRooms && matchesType) {
         matchedUsers.push(search.userId);

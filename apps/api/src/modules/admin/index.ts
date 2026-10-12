@@ -11,7 +11,6 @@ import { sendSafeErrorReply } from '../../lib/safe-error-response';
 import {
   adminUsersFilterSchema,
   blockUserSchema,
-  changeRoleSchema,
   createPageSchema,
   updatePageSchema,
   updateSiteSettingsSchema,
@@ -127,12 +126,11 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   server.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string; action?: string } }>(
     '/users/:id/activity',
     { preHandler: supportHandler },
-    async (request, reply) => {
+    async (request, _reply) => {
       const page = Math.max(1, parseInt(request.query.page || '1', 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit || '50', 10)));
       const action = request.query.action;
-      const where: any = { userId: request.params.id };
-      if (action) where.action = action;
+      const where = { userId: request.params.id, ...(action ? { action } : {}) };
 
       const [items, total] = await request.server.prisma.$transaction([
         request.server.prisma.userActivityLog.findMany({
@@ -444,7 +442,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   });
 
   // ─── [ФИЧА 18] PROMO CODES ──────────────────────────────────────────────────
-  server.get('/promo-codes', { preHandler: settingsHandler }, async (request, reply) => {
+  server.get('/promo-codes', { preHandler: settingsHandler }, async (request) => {
     return request.server.prisma.promoCode.findMany({
       orderBy: { createdAt: 'desc' },
     });
@@ -467,13 +465,13 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     },
   );
 
-  server.delete<{ Params: { id: string } }>('/promo-codes/:id', { preHandler: settingsHandler }, async (request, reply) => {
+  server.delete<{ Params: { id: string } }>('/promo-codes/:id', { preHandler: settingsHandler }, async (request) => {
     await request.server.prisma.promoCode.delete({ where: { id: request.params.id } });
     return { success: true };
   });
 
   // ─── [ФИЧА 26] SYSTEM HEALTH MONITORING ─────────────────────────────────────
-  server.get('/system/health', { preHandler: settingsHandler }, async (request, reply) => {
+  server.get('/system/health', { preHandler: settingsHandler }, async (request) => {
     let dbStatus = 'UP';
     let dbLatencyMs = 0;
     const startDb = Date.now();
@@ -517,7 +515,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   });
 
   // ─── [ФИЧА 27] WEBHOOKS ─────────────────────────────────────────────────────
-  server.get('/webhooks', { preHandler: settingsHandler }, async (request, reply) => {
+  server.get('/webhooks', { preHandler: settingsHandler }, async (request) => {
     return request.server.prisma.systemWebhook.findMany({ orderBy: { createdAt: 'desc' } });
   });
 
@@ -533,7 +531,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     },
   );
 
-  server.delete<{ Params: { id: string } }>('/webhooks/:id', { preHandler: settingsHandler }, async (request, reply) => {
+  server.delete<{ Params: { id: string } }>('/webhooks/:id', { preHandler: settingsHandler }, async (request, _reply) => {
     await request.server.prisma.systemWebhook.delete({ where: { id: request.params.id } });
     return { success: true };
   });
@@ -550,7 +548,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       timestamp: new Date().toISOString(),
       data: {
         message: 'Тестовое уведомление из панели управления Ijarauz',
-        adminUserId: (request as any).user?.userId,
+        adminUserId: request.user.userId,
       },
     };
 
@@ -584,7 +582,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   });
 
   // ─── [ФИЧА: ГЛОБАЛЬНЫЙ ПОИСК] ───────────────────────────────────────────────
-  server.get('/search/quick', { preHandler: supportHandler }, async (request, reply) => {
+  server.get('/search/quick', { preHandler: supportHandler }, async (request, _reply) => {
     const { q, type } = request.query as { q?: string; type?: 'products' | 'users' };
     if (!q || q.trim().length < 2) return [];
     const query = q.trim();

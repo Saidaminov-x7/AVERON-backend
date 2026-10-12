@@ -96,12 +96,18 @@ function setup(overrides: Partial<{
 
 describe('visual similarity service', () => {
   it('normalizes embeddings and returns only published candidates within the requested limit', async () => {
-    const { service, repository } = setup();
+    const { service, repository, provider } = setup();
 
-    const results = await service.searchImage(Buffer.from('normalized'), { limit: 1 }, 100);
+    const image = Buffer.from('normalized');
+    const results = await service.searchImage(image, { limit: 1 }, 100);
 
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe('PUBLISHED');
+    expect(provider.generateEmbedding).toHaveBeenCalledWith(
+      image,
+      expect.any(AbortSignal),
+      'retrieval.query',
+    );
     expect(repository.searchCandidates).toHaveBeenCalledWith(
       [1, 0, 0],
       descriptor,

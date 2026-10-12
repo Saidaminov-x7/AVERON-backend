@@ -111,7 +111,7 @@ export const listingsModule: FastifyPluginAsync = async (server) => {
     const dto = reportListingSchema.parse(request.body);
     const service = getService(request);
     try {
-      const reporterId = (request as any).user?.userId || null;
+      const reporterId = request.user.userId || null;
       const report = await service.createReport(
         request.params.id,
         reporterId,

@@ -474,8 +474,6 @@ model SiteSettings {
   oneIdAuthEnabled           Boolean @default(false) // 37. Верификация через OneID
   yandexRealtyXmlEnabled     Boolean @default(true) // 41. Генератор Yandex Realty XML фида
   openTelemetryEnabled       Boolean @default(true) // 47. Трассировка OpenTelemetry
-  yandexMetrikaId            String  @default("112059980") // ID счетчика Яндекс.Метрики
-  yandexMetrikaEnabled       Boolean @default(true) // Включить/выключить Яндекс.Метрику
   maintenanceBypassPassword  String? // Пароль для обхода режима техобслуживания
   maintenancePasswordEnabled Boolean @default(false) // Требовать пароль при техобслуживании
   mobilePinchZoomEnabled     Boolean @default(true) // Масштабирование двумя пальцами на смартфонах
@@ -1080,6 +1078,7 @@ model ProductImageEmbedding {
   productImageId    String
   productImage      CommerceProductImage         @relation(fields: [productImageId], references: [id], onDelete: Cascade)
   embeddingBytes    Bytes?
+  embeddingVector   Unsupported("vector(1024)")?
   provider          String
   model             String
   dimensions        Int

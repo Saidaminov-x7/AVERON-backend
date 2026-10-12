@@ -46,6 +46,28 @@ async function registerRoutes(app: ReturnType<typeof Fastify>) {
 }
 
 describe('admin user API security', () => {
+  it.each([
+    ['SUPER_ADMIN', 200],
+    ['ADMIN', 200],
+    ['MODERATOR', 403],
+    ['SUPPORT', 403],
+  ] as const)('applies the live admin-user permission boundary for %s', async (adminRole, expectedStatus) => {
+    const { app, findMany } = makeApp(adminRole, async () => [], 0);
+    await registerRoutes(app);
+    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN', adminRole });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/admin/users?page=1&limit=5',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(expectedStatus);
+    if (expectedStatus === 403) expect(findMany).not.toHaveBeenCalled();
+    else expect(findMany).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
   it('requires authentication even when the exact users endpoint and query are known', async () => {
     const { app, findUnique, findMany } = makeApp('SUPER_ADMIN');
     await registerRoutes(app);

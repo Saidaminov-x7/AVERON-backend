@@ -464,7 +464,7 @@ describe('fitting-room routes', () => {
   });
 
   it('rejects generation requests that reuse an idempotency key with different inputs', async () => {
-    const { app, tx, prisma, storage } = createTestApp();
+    const { app, tx, storage } = createTestApp();
     vi.mocked(featureFlags.isEnabled).mockImplementation((flag) => flag === 'LOCAL_3D_GENERATION');
     await start(app, storage);
     const headers = { 'idempotency-key': 'fit-gen-2' };
