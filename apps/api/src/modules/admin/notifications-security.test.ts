@@ -14,11 +14,11 @@ import { notificationsModule } from './notifications';
 
 const secret = 'test-admin-notifications-access-secret';
 
-function makeApp() {
+function makeApp(adminRole = 'SUPPORT') {
   const findUser = vi.fn(async () => ({
     id: 'admin-recipient',
     role: 'ADMIN',
-    adminRole: 'SUPPORT',
+    adminRole,
     isBlocked: false,
     isDeleted: false,
   }));
@@ -108,6 +108,25 @@ describe('admin notification API access control', () => {
     expect(findUser).toHaveBeenCalledOnce();
     expect(findNotification).toHaveBeenCalledOnce();
     expect(updateNotification).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it('preserves the explicit super-admin override for another admin’s notification', async () => {
+    const { app, updateNotification } = makeApp('SUPER_ADMIN');
+    await registerRoutes(app);
+    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/admin/notifications/notification-for-another-admin/read',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(updateNotification).toHaveBeenCalledWith({
+      where: { id: 'notification-for-another-admin' },
+      data: { isRead: true },
+    });
     await app.close();
   });
 });
