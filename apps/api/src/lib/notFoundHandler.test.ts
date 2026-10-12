@@ -21,4 +21,17 @@ describe('registerNotFoundHandler', () => {
     assert.doesNotMatch(response.body, /private-user-secret|must-not-reflect|GET/);
     await app.close();
   });
+
+  it('uses a generic 429 when a temporary source restriction is active', async () => {
+    const app = fastify();
+    registerNotFoundHandler(app, async () => true);
+    const response = await app.inject({ method: 'GET', url: '/admin/users?all=1' });
+    assert.equal(response.statusCode, 429);
+    assert.deepEqual(response.json(), {
+      statusCode: 429,
+      error: 'Too Many Requests',
+      message: 'Too many requests. Try again later.',
+    });
+    await app.close();
+  });
 });

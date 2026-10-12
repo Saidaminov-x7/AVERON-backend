@@ -43,6 +43,7 @@ import { monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './lib/
 import { monitorSuccessfulResourceEnumeration } from './lib/successful-resource-enumeration-monitor';
 import { safeErrorLogFields } from './lib/safe-error-log';
 import { safeHttpErrorMessage } from './lib/safe-error-response';
+import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
@@ -244,6 +245,23 @@ server.decorate('prisma', prisma);
 server.decorate('redis', redis);
 registerN8nEventPublisher(redis, server.log);
 registerTelegramProductPublisher(server);
+
+const temporarilyRestrictedResourceRoutes = new Set([
+  '/api/v1/orders/me/:orderNumber',
+  '/api/v1/admin/orders/:orderNumber',
+  '/admin/users/:id/ai-sessions',
+]);
+server.addHook('onRequest', async (request, reply) => {
+  const routeScope = request.routeOptions.url;
+  if (!routeScope || !temporarilyRestrictedResourceRoutes.has(routeScope)) return;
+  if (await isSourceTemporarilyRestricted(redis, request.ip, routeScope, server.log)) {
+    return reply.status(429).send({
+      statusCode: 429,
+      error: 'Too Many Requests',
+      message: 'Too many requests. Try again later.',
+    });
+  }
+});
 
 // ─── Единый обработчик ошибок ────────────────────────────────────────────────
 registerErrorHandler(server);
@@ -521,7 +539,7 @@ server.setErrorHandler((error, request, reply) => {
 
 // ─── Not Found handler ────────────────────────────────────────────────────────
 
-registerNotFoundHandler(server);
+registerNotFoundHandler(server, (request) => isSourceTemporarilyRestricted(redis, request.ip, '/unmatched', server.log));
 
 import { startTelegramBot, stopTelegramBot } from './lib/telegram';
 import { runScheduledBackup } from './lib/jobs/scheduled-backup';

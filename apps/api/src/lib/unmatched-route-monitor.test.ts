@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, vi } from 'vitest';
 import { RESOURCE_PROBE_ALERT_THRESHOLD, SCAN_ALERT_THRESHOLD, monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './unmatched-route-monitor';
+import { TEMPORARY_SOURCE_RESTRICTION_SECONDS } from './temporary-source-restriction';
 
 function fixture() {
   const sets = new Map<string, Set<string>>();
@@ -14,7 +15,7 @@ function fixture() {
       sets.set(key, values);
       return values.size;
     }),
-    set: vi.fn(async (key: string) => {
+    set: vi.fn(async (key: string, _value?: string, _expiry?: string, _seconds?: number, _mode?: string) => {
       if (alerts.has(key)) return null;
       alerts.add(key);
       return 'OK';
@@ -34,6 +35,7 @@ describe('unknown-route and resource probe monitoring', () => {
     await monitorUnmatchedRouteScan({ ...base, routeMatched: false, requestPath: '/private' } as never);
     await monitorUnmatchedRouteScan({ ...base, routeMatched: false, sourceIp: '203.0.113.1', requestPath: '/private' } as never);
     assert.equal(state.redis.eval.mock.calls.length, 1);
+    assert.equal(state.redis.set.mock.calls.length, 0);
     assert.equal(state.prisma.adminNotification.create.mock.calls.length, 0);
   });
 
@@ -50,6 +52,7 @@ describe('unknown-route and resource probe monitoring', () => {
     }
     assert.equal(state.prisma.adminNotification.create.mock.calls.length, 1);
     assert.ok(state.keys.every((key) => !key.includes('198.51.100.25')));
+    assert.ok(state.redis.set.mock.calls.some((call) => call[1] === '1' && call[2] === 'EX' && call[3] === TEMPORARY_SOURCE_RESTRICTION_SECONDS));
     assert.doesNotMatch(JSON.stringify(state.prisma.adminNotification.create.mock.calls), /198\.51\.100/);
   });
 
@@ -66,6 +69,9 @@ describe('unknown-route and resource probe monitoring', () => {
       } as never);
     }
     assert.equal(state.prisma.adminNotification.create.mock.calls.length, 1);
+    const restrictionKey = state.redis.set.mock.calls.find((call) => call[1] === '1')?.[0];
+    assert.ok(restrictionKey?.includes('source-restriction'));
+    assert.ok(state.redis.set.mock.calls.some((call) => call[1] === '1' && call[2] === 'EX' && call[3] === TEMPORARY_SOURCE_RESTRICTION_SECONDS));
     assert.doesNotMatch(JSON.stringify(state.prisma.adminNotification.create.mock.calls), /order-secret/);
   });
 });

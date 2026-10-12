@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import type { Redis } from 'ioredis';
 import { writeSecurityIncident } from './security-incident';
+import { restrictSourceTemporarily } from './temporary-source-restriction';
 
 export const SCAN_ALERT_THRESHOLD = 40;
 export const RESOURCE_PROBE_ALERT_THRESHOLD = 60;
@@ -37,6 +38,7 @@ export async function monitorUnmatchedRouteScan(input: CommonInput & {
       String(SCAN_WINDOW_SECONDS),
     ));
     if (count < SCAN_ALERT_THRESHOLD) return;
+    await restrictSourceTemporarily(input.redis, input.sourceIp, '/unmatched', input.logger);
     const alertKey = `${key}:alert`;
     const claimed = await input.redis.set(alertKey, '1', 'EX', ALERT_DEDUP_SECONDS, 'NX');
     if (claimed !== 'OK') return;
@@ -78,6 +80,7 @@ export async function monitorResourceNotFoundProbes(input: CommonInput & {
       String(RESOURCE_PROBE_WINDOW_SECONDS),
     ));
     if (count < RESOURCE_PROBE_ALERT_THRESHOLD) return;
+    await restrictSourceTemporarily(input.redis, input.sourceIp, route, input.logger);
     const alertKey = `${key}:alert`;
     const claimed = await input.redis.set(alertKey, '1', 'EX', ALERT_DEDUP_SECONDS, 'NX');
     if (claimed !== 'OK') return;
