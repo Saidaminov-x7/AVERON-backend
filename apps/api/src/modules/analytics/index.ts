@@ -1,7 +1,9 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { Prisma } from '@prisma/client';
+import { AdminRole, Prisma } from '@prisma/client';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
+
+const analyticsAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
 const visitSchema = z.object({
   deviceId: z.string().uuid(),
@@ -199,7 +201,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     return reply.status(204).send();
   });
 
-  server.get('/admin/visitors', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/visitors', { preHandler: analyticsAdminHandler }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -223,7 +225,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
-  server.get('/admin/range', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/range', { preHandler: analyticsAdminHandler }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -312,7 +314,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
-  server.get('/admin/export', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/admin/export', { preHandler: analyticsAdminHandler }, async (request, reply) => {
     const parsed = exportQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_EXPORT_QUERY' });
     const { startDate, endDate } = getDateRange(parsed.data);
@@ -395,7 +397,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     return reply.send(`\uFEFF${csv}`);
   });
 
-  server.get('/funnel', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/funnel', { preHandler: analyticsAdminHandler }, async (request, reply) => {
     const parsed = dateRangeQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
     const { startDate, endDate } = getDateRange(parsed.data);
