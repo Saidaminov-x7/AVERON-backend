@@ -305,6 +305,21 @@ const validateManualVariantStocks = (
   }
 };
 
+const validateManualSizeShape = (
+  value: { size?: string | null; sizes?: string[] },
+  context: z.RefinementCtx,
+) => {
+  const singleSize = value.size?.trim();
+  const hasSeparateSizes = value.sizes?.some((size) => size.trim().length > 0) ?? false;
+  if (singleSize && !hasSeparateSizes && singleSize.split(/[\n,;]+/).filter((part) => part.trim()).length > 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['size'],
+      message: 'Use the sizes array for multiple sizes; size must contain one option',
+    });
+  }
+};
+
 export const createManualProductSchema = z.object({
   title: z.string().min(2).max(500),
   country: productCountrySchema,
@@ -341,6 +356,7 @@ export const createManualProductSchema = z.object({
   publish: z.boolean().default(true),
 }).superRefine((value, context) => {
   validateManualVariantStocks(value, context);
+  validateManualSizeShape(value, context);
   if (value.preorderEnabled && value.preorderLimit < 1) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -384,7 +400,10 @@ export const updateManualProductSchema = z.object({
   publish: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one product field must be provided',
-}).superRefine(validateManualVariantStocks);
+}).superRefine((value, context) => {
+  validateManualVariantStocks(value, context);
+  validateManualSizeShape(value, context);
+});
 
 const localizedCategoryNameSchema = z.object({
   ru: z.string().trim().min(1).max(120),

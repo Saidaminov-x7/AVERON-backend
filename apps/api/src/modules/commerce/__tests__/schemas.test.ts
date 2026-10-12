@@ -74,6 +74,26 @@ describe('commerce product country validation', () => {
     expect(updateManualProductSchema.safeParse({ variantStocks: [{ ...variant, stock: -1 }] }).success).toBe(false);
   });
 
+  it('requires multiple sizes to be represented as separate options, not one aggregate variant size', () => {
+    const aggregateSize = 'XS, S, M, XL';
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      size: aggregateSize,
+    }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({ size: aggregateSize }).success).toBe(false);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      size: aggregateSize,
+      sizes: ['XS', 'S', 'M', 'XL'],
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({
+      size: aggregateSize,
+      sizes: ['XS', 'S', 'M', 'XL'],
+    }).success).toBe(true);
+  });
+
   it('accepts localized composition and care text but rejects overlong values and generated color names', () => {
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
