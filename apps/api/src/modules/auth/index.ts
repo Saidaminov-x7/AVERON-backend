@@ -16,6 +16,14 @@ import { listMySessions, revokeMySession, revokeOtherSessions } from './sessions
 import { requestPhonePasswordLogin, requestPhonePasswordReset, requestPhoneRegistration, verifyPhonePasswordLogin, verifyPhonePasswordReset, verifyPhoneRegistration } from './phone-password';
 import { adminTotpModule } from './admin-totp';
 import { telegramAuthModule } from './telegram';
+import { createAuthRateLimitKey } from './rate-limit-key';
+
+function authRateLimitKey(scope: string, request: import('fastify').FastifyRequest, fields: string[] = []) {
+  const body = request.body && typeof request.body === 'object'
+    ? request.body as Record<string, unknown>
+    : {};
+  return createAuthRateLimitKey(config.JWT_SECRET, scope, request.ip, fields.map((field) => body[field]));
+}
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.addHook('onRequest', async (request, reply) => {
@@ -33,11 +41,11 @@ export const authModule: FastifyPluginAsync = async (server) => {
   server.post('/password/phone/request-code', { config: { rateLimit: { max: 3, timeWindow: '15 minutes' } } }, requestPhonePasswordReset);
   server.post('/password/phone/verify-code', { config: { rateLimit: { max: 8, timeWindow: '15 minutes' } } }, verifyPhonePasswordReset);
   server.post('/phone/request-code', {
-    config: { rateLimit: { max: 3, timeWindow: '10 minutes', keyGenerator: (req) => `${req.ip}:${(req.body as any)?.phone || 'unknown'}` } },
+    config: { rateLimit: { max: 3, timeWindow: '10 minutes', keyGenerator: (req) => authRateLimitKey('phone-request-code', req, ['phone']) } },
   }, requestPhoneOtp);
 
   server.post('/phone/verify-code', {
-    config: { rateLimit: { max: 10, timeWindow: '10 minutes', keyGenerator: (req) => `${req.ip}:${(req.body as any)?.phone || 'unknown'}` } },
+    config: { rateLimit: { max: 10, timeWindow: '10 minutes', keyGenerator: (req) => authRateLimitKey('phone-verify-code', req, ['phone']) } },
   }, verifyPhoneOtp);
 
   // Запрос на сброс пароля (rate limit: 5 запросов за 15 минут с одного IP)
@@ -46,7 +54,7 @@ export const authModule: FastifyPluginAsync = async (server) => {
       rateLimit: {
         max: 5,
         timeWindow: '15 minutes',
-        keyGenerator: (req) => `${req.ip}:${(req.body as any)?.email || 'unknown'}`,
+        keyGenerator: (req) => authRateLimitKey('forgot-password', req, ['email']),
       },
     },
   }, forgotPasswordHandler);
@@ -57,6 +65,7 @@ export const authModule: FastifyPluginAsync = async (server) => {
       rateLimit: {
         max: 10,
         timeWindow: '15 minutes',
+        keyGenerator: (req) => authRateLimitKey('reset-password', req, ['token']),
       },
     },
   }, resetPasswordHandler);
@@ -67,7 +76,7 @@ export const authModule: FastifyPluginAsync = async (server) => {
       rateLimit: {
         max: 5,
         timeWindow: '15 minutes',
-        keyGenerator: (req) => `${req.ip}:${(req.body as any)?.email || (req.body as any)?.phone || 'unknown'}`,
+        keyGenerator: (req) => authRateLimitKey('register', req, ['email', 'phone']),
       },
     },
   }, registerHandler);
@@ -79,7 +88,7 @@ export const authModule: FastifyPluginAsync = async (server) => {
       rateLimit: {
         max: 20,
         timeWindow: '15 minutes',
-        keyGenerator: (req) => `${req.ip}:${(req.body as any)?.email || 'unknown'}`,
+        keyGenerator: (req) => authRateLimitKey('login', req, ['email']),
       },
     },
   }, loginHandler);
@@ -90,7 +99,7 @@ export const authModule: FastifyPluginAsync = async (server) => {
       rateLimit: {
         max: 20,
         timeWindow: '15 minutes',
-        keyGenerator: (req) => `${req.ip}:${(req.body as any)?.tempToken || 'unknown'}`,
+        keyGenerator: (req) => authRateLimitKey('verify-2fa', req, ['tempToken']),
       },
     },
   }, verify2faHandler);

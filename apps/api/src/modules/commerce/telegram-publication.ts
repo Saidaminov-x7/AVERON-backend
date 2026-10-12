@@ -3,6 +3,7 @@ import { AdminRole, Prisma, TelegramPublicationStatus } from '@prisma/client';
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireAdminRole } from '../../lib/adminMiddleware';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 import { config } from '../../config';
 import { featureFlags } from '../features/feature-flags';
 import { buildTelegramCard, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from './telegram-publisher';
@@ -96,7 +97,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
         },
       });
     } catch (error) {
-      request.log.warn({ err: error, productId }, 'Telegram transition analytics could not be recorded');
+      request.log.warn({ ...safeErrorLogFields(error), productId }, 'Telegram transition analytics could not be recorded');
     }
   };
   app.get('/admin/products/:id/telegram-publication', { preHandler: telegramAdminHandler }, async (request, reply) => {

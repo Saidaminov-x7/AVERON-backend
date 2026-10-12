@@ -1,7 +1,4 @@
-export function trustProxyOption(
-  addresses: readonly string[],
-  managedPlatformProxy = false,
-): false | true | string[] {
+export function trustProxyOption(addresses: readonly string[]): false | string[] {
   if (addresses.length) return [...addresses];
-  return managedPlatformProxy ? true : false;
+  return false;
 }

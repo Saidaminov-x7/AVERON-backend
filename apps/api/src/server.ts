@@ -37,6 +37,12 @@ import { productAiModule } from './modules/commerce/product-ai';
 import { visualSearchModule } from './modules/visual-search';
 import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
 import { trustProxyOption } from './lib/trust-proxy';
+import { registerNotFoundHandler } from './lib/notFoundHandler';
+import { monitorAuthenticatedAuthorizationDenial } from './lib/security-denial-monitor';
+import { monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './lib/unmatched-route-monitor';
+import { monitorSuccessfulResourceEnumeration } from './lib/successful-resource-enumeration-monitor';
+import { safeErrorLogFields } from './lib/safe-error-log';
+import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
@@ -67,16 +73,27 @@ mkdirSync(config.STORAGE_PATH, { recursive: true });
 
 // ─── Создание сервера ─────────────────────────────────────────────────────────
 
-const isRailwayRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID);
-
 const server = fastify({
   logger: {
     level: config.LOG_LEVEL,
+    serializers: {
+      req(request) {
+        const fastifyRequest = request as typeof request & {
+          id?: string;
+          routeOptions?: { url?: string };
+        };
+        return {
+          requestId: fastifyRequest.id,
+          method: fastifyRequest.method,
+          route: fastifyRequest.routeOptions?.url ?? 'unmatched',
+        };
+      },
+    },
     ...(config.NODE_ENV === 'development'
       ? { transport: { target: 'pino-pretty', options: { colorize: true } } }
       : {}),
   },
-  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES, isRailwayRuntime),
+  trustProxy: trustProxyOption(config.TRUST_PROXY_ADDRESSES),
   ajv: {
     customOptions: {
       strict: 'log',
@@ -85,7 +102,7 @@ const server = fastify({
   },
 });
 
-if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0 && !isRailwayRuntime) {
+if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0) {
   server.log.warn(
     'TRUST_PROXY_ADDRESSES is empty; forwarded client IP headers are ignored and rate limits use the direct peer address',
   );
@@ -99,11 +116,11 @@ const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
     });
     return settings?.adaptiveRateLimitEnabled === true;
   },
-  (error) => server.log.warn({ err: error }, '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
+  (error) => server.log.warn(safeErrorLogFields(error), '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
 );
 
 redis.on('error', (err) => {
-  server.log.error({ err }, '[Redis] Connection error');
+  server.log.error(safeErrorLogFields(err), '[Redis] Connection error');
 });
 
 // ─── Плагины безопасности ─────────────────────────────────────────────────────
@@ -271,7 +288,7 @@ server.get('/health', {
     await redis.ping();
     return reply.send({ status: 'ok', db: 'up', redis: 'up', timestamp: new Date().toISOString() });
   } catch (err) {
-    server.log.error({ err }, 'Health check failed');
+    server.log.error(safeErrorLogFields(err), 'Health check failed');
     return reply.status(503).send({ status: 'degraded', db: 'unknown', redis: 'unknown' });
   }
 });
@@ -376,24 +393,66 @@ server.get('/health/ready', {
 
 // B1: Запись в AuditLog при 401/403 (security events)
 server.addHook('onResponse', async (request, reply) => {
-  const routineAuthProbe = request.url.startsWith('/auth/refresh') || request.url.startsWith('/auth/me') || request.url.startsWith('/admin/theme');
+  const routeTemplate = request.routeOptions.url;
+  const routineAuthProbe = routeTemplate === '/auth/refresh' || routeTemplate === '/auth/me' || routeTemplate?.startsWith('/admin/theme');
+  const userId = request.user?.userId as string | undefined;
+  const params = request.params && typeof request.params === 'object' ? request.params as Record<string, unknown> : {};
+  const resourceId = [params.orderNumber, params.id].find((value): value is string => typeof value === 'string');
+
   if ((reply.statusCode === 401 || reply.statusCode === 403) && !routineAuthProbe) {
-    prisma.auditLog.create({
+    await prisma.auditLog.create({
       data: {
-        userId: (request as any).user?.userId ?? null,
+        userId: userId ?? null,
         action: 'SECURITY_DENIED',
-        resource: request.url,
+        resource: 'api_route',
         meta: {
-          path: request.url,
+          ...(routeTemplate ? { routeTemplate } : {}),
           method: request.method,
           statusCode: reply.statusCode,
-          ip: request.ip,
         },
-        ip: request.ip,
-        userAgent: request.headers['user-agent'] ?? null,
         timestamp: new Date(),
       },
-    }).catch((err) => server.log.error({ err }, 'Failed to write security audit log'));
+    }).catch(() => server.log.warn({ event: 'security_audit_write_failed' }, 'Security audit write failed'));
+  }
+
+  if (reply.statusCode === 403 && userId) {
+    await monitorAuthenticatedAuthorizationDenial({ redis, prisma, logger: server.log, statusCode: reply.statusCode, userId, routeTemplate });
+  }
+
+  if (reply.statusCode === 404) {
+    const routeMatched = Boolean(routeTemplate);
+    await monitorUnmatchedRouteScan({
+      redis,
+      prisma,
+      logger: server.log,
+      statusCode: reply.statusCode,
+      routeMatched,
+      sourceIp: request.ip,
+      requestPath: request.url.split('?', 1)[0],
+    });
+    await monitorResourceNotFoundProbes({
+      redis,
+      prisma,
+      logger: server.log,
+      statusCode: reply.statusCode,
+      routeMatched,
+      sourceIp: request.ip,
+      routeTemplate,
+      resourceId,
+    });
+  }
+
+  if (reply.statusCode === 200 && request.method === 'GET') {
+    await monitorSuccessfulResourceEnumeration({
+      redis,
+      prisma,
+      logger: server.log,
+      method: request.method,
+      statusCode: reply.statusCode,
+      userId,
+      routeTemplate,
+      resourceId,
+    });
   }
 });
 
@@ -405,7 +464,6 @@ server.setErrorHandler((error, request, reply) => {
     ? error as Record<string, unknown>
     : {};
   const errorType = error instanceof Error ? error.name : 'UnknownError';
-  const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
   const errorCode = typeof errorProperties.code === 'string' ? errorProperties.code : undefined;
   const diagnosticStage = typeof errorProperties.diagnosticStage === 'string'
     ? errorProperties.diagnosticStage
@@ -420,7 +478,6 @@ server.setErrorHandler((error, request, reply) => {
     errorCode,
     method: request.method,
     route: request.routeOptions.url,
-    userId: request.user?.userId,
   }, 'Request error');
 
   if (error instanceof ZodError) {
@@ -450,7 +507,7 @@ server.setErrorHandler((error, request, reply) => {
     return reply.status(429).send({
       statusCode: 429,
       error: 'Too Many Requests',
-      message: errorMessage,
+      message: 'Too many requests. Try again later.',
     });
   }
 
@@ -458,20 +515,13 @@ server.setErrorHandler((error, request, reply) => {
   return reply.status(statusCode).send({
     statusCode,
     error: statusCode === 500 ? 'Internal Server Error' : errorType,
-    // В проде не отдаём детали 500-ых ошибок наружу
-    message: statusCode === 500 && isProduction ? 'An unexpected error occurred' : errorMessage,
+    message: safeHttpErrorMessage(statusCode),
   });
 });
 
 // ─── Not Found handler ────────────────────────────────────────────────────────
 
-server.setNotFoundHandler((request, reply) => {
-  reply.status(404).send({
-    statusCode: 404,
-    error: 'Not Found',
-    message: `Route ${request.method} ${request.url} not found`,
-  });
-});
+registerNotFoundHandler(server);
 
 import { startTelegramBot, stopTelegramBot } from './lib/telegram';
 import { runScheduledBackup } from './lib/jobs/scheduled-backup';
@@ -515,20 +565,20 @@ const start = async () => {
     // Первичная очистка истёкших промо-акций сразу при старте
     // Первичная запись снапшота целостности базы данных
     runScheduledBackup(prisma, server.log).catch((err) => {
-      server.log.error({ err }, '[Backup] Error during startup runScheduledBackup check');
+      server.log.error(safeErrorLogFields(err), '[Backup] Error during startup runScheduledBackup check');
     });
 
     // Периодическая проверка целостности и снапшот данных (каждые 24 часа)
     scheduledBackupInterval = setInterval(() => {
       runScheduledBackup(prisma, server.log).catch((err) => {
-        server.log.error({ err }, '[Backup] Error in runScheduledBackup interval');
+        server.log.error(safeErrorLogFields(err), '[Backup] Error in runScheduledBackup interval');
       });
     }, 24 * 60 * 60 * 1000);
 
     // Периодический воркер повторной доставки вебхуков (каждые 60 секунд)
     webhookRetryInterval = setInterval(() => {
       retryPendingWebhookDeliveries(prisma, server.log).catch((err) => {
-        server.log.error({ err }, '[Webhook] Error in retryPendingWebhookDeliveries');
+        server.log.error(safeErrorLogFields(err), '[Webhook] Error in retryPendingWebhookDeliveries');
       });
     }, 60 * 1000);
 

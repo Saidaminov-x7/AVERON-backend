@@ -10,6 +10,7 @@ import { saveAuthSession } from './sessions';
 import { Role } from '@prisma/client';
 import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLoginFailure } from './login-throttle';
 import { dummyPasswordHash } from './dummy-password';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
@@ -17,7 +18,7 @@ export const loginHandler = async (
 ) => {
   const dto = loginSchema.parse(request.body);
   try {
-    const failureKey = loginFailureKey('email', dto.email);
+    const failureKey = loginFailureKey('email', dto.email, request.ip);
     if (await isLoginTemporarilyLocked(request.server.redis, failureKey)) {
       return reply.status(429).send({ message: 'Неверный email или пароль. Попробуйте позже.' });
     }
@@ -65,7 +66,7 @@ export const loginHandler = async (
       });
       twoFactorAuthEnabled = settings?.twoFactorAuthEnabled === true;
     } catch (err) {
-      request.log.warn({ err }, 'Failed to fetch siteSettings in loginHandler');
+      request.log.warn(safeErrorLogFields(err), 'Failed to fetch siteSettings in loginHandler');
     }
 
     const require2FA =
@@ -146,7 +147,7 @@ export const loginHandler = async (
       },
     });
   } catch (error) {
-    request.log.error({ err: error, requestId: request.id }, 'Authentication attempt failed');
+    request.log.error({ ...safeErrorLogFields(error), requestId: request.id }, 'Authentication attempt failed');
     return reply.status(500).send({
       message: 'Ошибка авторизации на сервере',
     });

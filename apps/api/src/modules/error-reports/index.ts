@@ -3,6 +3,7 @@ import { FastifyPluginAsync } from 'fastify';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { createErrorReportSchema, errorReportFilterSchema } from './schemas';
 import { sanitizeErrorReportUrl, sanitizeErrorText } from './sanitize';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 
 const errorSupportHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.SUPPORT)];
 
@@ -54,7 +55,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
 
         return reply.status(201).send({ id: report.id });
       } catch (err) {
-        request.log.warn({ err }, 'Failed to save client error report');
+        request.log.warn(safeErrorLogFields(err), 'Failed to save client error report');
         return reply.status(500).send({ message: 'Failed to record error report' });
       }
     },

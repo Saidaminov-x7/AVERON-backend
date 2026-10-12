@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { AdminRole, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { requireAdminRole } from '../../lib/adminMiddleware';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 
 const analyticsAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
@@ -171,7 +172,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         return reply.status(204).send();
       }
-      request.log.warn({ err: error }, 'Commerce analytics event could not be recorded');
+      request.log.warn(safeErrorLogFields(error), 'Commerce analytics event could not be recorded');
       return reply.status(503).send({ code: 'ANALYTICS_UNAVAILABLE' });
     }
     return reply.status(204).send();
@@ -196,7 +197,7 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
         create: { deviceId, dayKey, path, ip: request.ip, userAgent },
       });
     } catch (error) {
-      request.log.warn({ err: error }, 'Analytics visit could not be recorded');
+      request.log.warn(safeErrorLogFields(error), 'Analytics visit could not be recorded');
     }
     return reply.status(204).send();
   });

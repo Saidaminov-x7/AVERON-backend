@@ -2,6 +2,8 @@
 
 import { FastifyInstance, FastifyError, FastifyRequest, FastifyReply } from 'fastify';
 import { ZodError } from 'zod';
+import { safeErrorLogFields } from './safe-error-log';
+import { safeHttpErrorMessage } from './safe-error-response';
 
 export function registerErrorHandler(server: FastifyInstance) {
   server.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
@@ -26,7 +28,7 @@ export function registerErrorHandler(server: FastifyInstance) {
         }, `Request failed during ${diagnosticStage}`);
       } else {
         request.log.error({
-          err: error,
+          ...safeErrorLogFields(error),
           requestId: request.id,
           method: request.method,
           route: request.routeOptions.url,
@@ -39,7 +41,7 @@ export function registerErrorHandler(server: FastifyInstance) {
     }
 
     reply.status(statusCode).send({
-      message: error.message || 'Произошла ошибка',
+      message: safeHttpErrorMessage(statusCode),
     });
   });
 }

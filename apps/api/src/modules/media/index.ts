@@ -3,13 +3,16 @@
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { fileTypeFromBuffer } from 'file-type';
 import { authMiddleware } from '../../lib/authMiddleware';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { MediaService } from './service';
 import { uploadQuerySchema, mediaListQuerySchema } from './schemas';
+import { AdminRole } from '@prisma/client';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES = 25 * 1024 * 1024;
+const mediaListAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
 async function validateFileType(buffer: Buffer) {
   const detected = await fileTypeFromBuffer(buffer);
@@ -74,7 +77,7 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
       const error = err as Error & { statusCode?: number };
       const statusCode = error.statusCode ?? 500;
       if (statusCode >= 500) {
-        request.log.error({ err: error }, '[MediaUpload] Failed to upload media');
+        request.log.error(safeErrorLogFields(error), '[MediaUpload] Failed to upload media');
         return reply.status(500).send({ message: 'Не удалось загрузить файл, попробуйте позже' });
       }
       return reply.status(statusCode).send({ message: error.message });
@@ -102,7 +105,7 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
    * GET /media — список всех медиафайлов (для библиотеки и админки)
    */
   server.get('/', {
-    preHandler: [adminMiddleware],
+    preHandler: mediaListAdminHandler,
   }, async (request: FastifyRequest, _reply: FastifyReply) => {
     const query = mediaListQuerySchema.parse(request.query);
     const service = getService(request);

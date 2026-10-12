@@ -7,6 +7,7 @@ import { fileTypeFromBuffer } from 'file-type';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { AdminService } from './service';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 import {
   adminUsersFilterSchema,
   blockUserSchema,
@@ -321,12 +322,12 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       try {
         await request.server.redis.del('site:settings:public');
       } catch (redisErr) {
-        request.log.warn({ err: redisErr }, 'Failed to clear redis cache for site:settings:public');
+        request.log.warn(safeErrorLogFields(redisErr), 'Failed to clear redis cache for site:settings:public');
       }
 
       return settings;
     } catch (err) {
-      request.log.error({ err }, 'Error updating site settings');
+      request.log.error(safeErrorLogFields(err), 'Error updating site settings');
       const error = err as Error & { statusCode?: number };
       return reply.status(error.statusCode ?? 500).send({
         message: error.message || 'Ошибка сохранения настроек сайта',

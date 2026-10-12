@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomUUID } from 'node:crypto';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 import { AdminRole, Prisma, ProductPublicationStatus } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
@@ -784,7 +785,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const mediaService = new MediaService(app.prisma, undefined, request.log);
       for (const media of mediaToDelete) {
         await mediaService.delete(media.id, request.user.userId, true).catch((error) => {
-          request.log.error({ err: error, mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
+          request.log.error({ ...safeErrorLogFields(error), mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
         });
       }
     }

@@ -3,6 +3,7 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 
 const uuid = z.string().uuid();
 const reviewAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)];
@@ -355,7 +356,7 @@ export const productReviewsModule: FastifyPluginAsync = async (app) => {
     } catch (error) {
       if (error instanceof ReviewRequestError) return reply.status(error.statusCode).send({ code: error.code });
       if (isUniqueConflict(error)) return reply.status(409).send({ code: 'REVIEW_ALREADY_EXISTS' });
-      request.log.error({ error }, 'Unable to create product review');
+      request.log.error(safeErrorLogFields(error), 'Unable to create product review');
       return reply.status(500).send({ code: 'REVIEW_CREATE_FAILED' });
     }
   });
@@ -405,7 +406,7 @@ export const productReviewsModule: FastifyPluginAsync = async (app) => {
       return { status: result.status, message: 'REVIEW_UPDATED' };
     } catch (error) {
       if (isUniqueConflict(error)) return reply.status(409).send({ code: 'REVIEW_MEDIA_ALREADY_USED' });
-      request.log.error({ error }, 'Unable to update product review');
+      request.log.error(safeErrorLogFields(error), 'Unable to update product review');
       return reply.status(500).send({ code: 'REVIEW_UPDATE_FAILED' });
     }
   });
@@ -506,7 +507,7 @@ export const productReviewsModule: FastifyPluginAsync = async (app) => {
       }
       return result;
     } catch (error) {
-      request.log.error({ error }, 'Unable to moderate product review');
+      request.log.error(safeErrorLogFields(error), 'Unable to moderate product review');
       return reply.status(500).send({ code: 'REVIEW_MODERATION_FAILED' });
     }
   });
