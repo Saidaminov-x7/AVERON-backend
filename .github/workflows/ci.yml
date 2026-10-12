@@ -23,6 +23,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Generate Prisma Client
+        run: pnpm --filter api prisma:generate
       - name: Test
         run: pnpm --filter api test
       - name: Type-check
