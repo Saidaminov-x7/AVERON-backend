@@ -4,7 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PromotionsService } from '../promotions.service';
 
 describe('PromotionsService - Promo Codes & Per-User Usage Limit', () => {
-  let prismaMock: any;
+  let prismaMock: {
+    promoCode: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+    promoCodeUsage: { findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
+    $transaction: ReturnType<typeof vi.fn>;
+    listing: { updateMany: ReturnType<typeof vi.fn> };
+  };
   let service: PromotionsService;
 
   beforeEach(() => {
@@ -22,7 +27,7 @@ describe('PromotionsService - Promo Codes & Per-User Usage Limit', () => {
         updateMany: vi.fn(),
       },
     };
-    service = new PromotionsService(prismaMock);
+    service = new PromotionsService(prismaMock as unknown as ConstructorParameters<typeof PromotionsService>[0]);
   });
 
   it('успешно валидирует активный промокод при первом использовании', async () => {

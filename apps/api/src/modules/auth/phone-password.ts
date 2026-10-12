@@ -102,7 +102,7 @@ export async function verifyPhoneRegistration(request: FastifyRequest, reply: Fa
 
 export async function requestPhonePasswordLogin(request: FastifyRequest, reply: FastifyReply) {
   const data = loginSchema.parse(request.body);
-  const failureKey = loginFailureKey('phone', data.phone);
+  const failureKey = loginFailureKey('phone', data.phone, request.ip);
   if (await isLoginTemporarilyLocked(request.server.redis, failureKey)) {
     return reply.status(429).send({ message: 'Неверный номер телефона или пароль. Попробуйте позже.' });
   }

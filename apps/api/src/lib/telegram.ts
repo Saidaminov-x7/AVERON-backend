@@ -3,10 +3,9 @@
 
 import { Redis } from 'ioredis';
 import { FastifyBaseLogger } from 'fastify';
-import { config } from '../config';
 
 function getTelegramApiBase(): string | null {
-  const token = config.TELEGRAM_TOKEN_2FA || config.TELEGRAM_BOT_TOKEN;
+  const token = process.env.TELEGRAM_TOKEN_2FA || process.env.TELEGRAM_BOT_TOKEN;
   return token ? `https://api.telegram.org/bot${token}` : null;
 }
 
@@ -15,6 +14,7 @@ const REDIS_CHAT_ID_KEY = 'telegram:admin:chat_id';
 let pollingActive = false;
 let lastUpdateId = 0;
 let pollingTimeout: NodeJS.Timeout | null = null;
+let activePollAbortController: AbortController | null = null;
 
 /**
  * Отправка сообщения в Telegram
@@ -62,8 +62,8 @@ export async function sendTelegramMessage(
  * Получить сохраненный Chat ID администратора
  */
 export async function getAdminChatId(redis: Redis): Promise<string | null> {
-  if (config.TELEGRAM_ADMIN_CHAT_ID) {
-    return config.TELEGRAM_ADMIN_CHAT_ID;
+  if (process.env.TELEGRAM_ADMIN_CHAT_ID) {
+    return process.env.TELEGRAM_ADMIN_CHAT_ID;
   }
   return await redis.get(REDIS_CHAT_ID_KEY);
 }
@@ -107,7 +107,8 @@ export async function sendTelegram2FACode(
  * Запуск Long Polling для обработки команд бота (/start)
  */
 export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
-  if (!config.TELEGRAM_TOKEN_2FA && !config.TELEGRAM_BOT_TOKEN) {
+  const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+  if (!process.env.TELEGRAM_TOKEN_2FA && !process.env.TELEGRAM_BOT_TOKEN) {
     logger?.warn('[Telegram] TELEGRAM_TOKEN_2FA not configured. Bot polling skipped.');
     return;
   }
@@ -120,10 +121,13 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
 
     const apiBase = getTelegramApiBase();
     if (!apiBase) return;
+    const abortController = new AbortController();
+    activePollAbortController = abortController;
+    const requestTimeout = setTimeout(() => abortController.abort(), 35_000);
 
     try {
       const res = await fetch(`${apiBase}/getUpdates?offset=${lastUpdateId + 1}&timeout=30`, {
-        signal: AbortSignal.timeout(35000),
+        signal: abortController.signal,
       });
 
       if (res.ok) {
@@ -151,8 +155,8 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
             const firstName = msg.from?.first_name || 'Администратор';
 
             // Если владелец задан в Railway, бот полностью игнорирует всех остальных.
-            if (config.TELEGRAM_ADMIN_CHAT_ID && String(chatId) !== config.TELEGRAM_ADMIN_CHAT_ID) {
-              logger?.warn({ chatId }, '[Telegram] Ignored message from unauthorized chat');
+            if (adminChatId && String(chatId) !== adminChatId) {
+              logger?.warn('[Telegram] Ignored message from unauthorized chat');
               continue;
             }
 
@@ -163,7 +167,7 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
 
               // Отправляем подтверждение только один раз, если не был привязан этот же chat_id
               if (currentBoundId !== String(chatId)) {
-                logger?.info({ chatId, username: msg.from?.username }, '[Telegram] Admin registered new chat ID for 2FA');
+                logger?.info('[Telegram] Admin registered a chat ID for 2FA');
                 const welcomeMsg = `
 👋 Здравствуйте, <b>${firstName}</b>!
 
@@ -193,6 +197,9 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
       if (error.name !== 'TimeoutError' && error.name !== 'AbortError') {
         logger?.debug({ err: error.message }, '[Telegram] Polling loop notice');
       }
+    } finally {
+      clearTimeout(requestTimeout);
+      if (activePollAbortController === abortController) activePollAbortController = null;
     }
 
     if (pollingActive) {
@@ -208,6 +215,8 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
  */
 export function stopTelegramBot() {
   pollingActive = false;
+  activePollAbortController?.abort();
+  activePollAbortController = null;
   if (pollingTimeout) {
     clearTimeout(pollingTimeout);
     pollingTimeout = null;

@@ -1,7 +1,7 @@
 // apps/api/src/modules/reviews/index.ts
 // Модуль отзывов об объектах и арендодателях с поддержкой премодерации
 
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../lib/authMiddleware';
 

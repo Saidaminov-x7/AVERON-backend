@@ -1,7 +1,7 @@
-import type { Prisma } from '@prisma/client';
+import { AdminRole, type Prisma } from '@prisma/client';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { featureFlags } from '../features/feature-flags';
 import type { IPostProvider, IPostShipmentResult } from '../integrations/contracts';
 import { createIpostShipment, getIpostShipment, IPostBoundaryError } from '../integrations/ipost-shipping';
@@ -65,10 +65,11 @@ export function createIpostShippingModule(options: {
   isFeatureEnabled?: () => boolean;
 }): FastifyPluginAsync {
   const isFeatureEnabled = options.isFeatureEnabled ?? (() => featureFlags.isEnabled('IPOST'));
+  const shippingAdmin = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
   return async (app) => {
     app.post<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/ipost-shipment', {
-      preHandler: adminMiddleware,
+      preHandler: shippingAdmin,
       config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     }, async (request, reply) => {
       const parsedParams = orderParamsSchema.safeParse(request.params);
@@ -193,7 +194,7 @@ export function createIpostShippingModule(options: {
     });
 
     app.get<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/ipost-shipment', {
-      preHandler: adminMiddleware,
+      preHandler: shippingAdmin,
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     }, async (request, reply) => {
       const parsedParams = orderParamsSchema.safeParse(request.params);

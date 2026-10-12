@@ -1,7 +1,9 @@
 export function trustProxyOption(
   addresses: readonly string[],
-  managedPlatformProxy = false,
-): false | true | string[] {
+): false | string[] {
   if (addresses.length) return [...addresses];
-  return managedPlatformProxy ? true : false;
+  // Never infer trust from a hosting-platform environment variable. A public
+  // client can supply X-Forwarded-* headers unless the immediate proxy is
+  // explicitly trusted by address.
+  return false;
 }

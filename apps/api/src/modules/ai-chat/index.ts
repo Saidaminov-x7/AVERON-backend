@@ -2,6 +2,7 @@
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../../lib/authMiddleware';
+import { sendSafeErrorReply, toSafeErrorResponse } from '../../lib/safe-error-response';
 import { AIChatService } from './service';
 import { PublicAIService } from './public-service';
 import { sendMessageSchema, createSessionSchema, SendMessageDto, CreateSessionDto } from './schemas';
@@ -32,7 +33,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
     try {
       return reply.send(await publicService.chat(message, request.body.history));
     } catch (err) {
-      server.log.error({ err }, 'Public AI chat error');
+      server.log.error({ errorName: safeErrorName(err) }, 'Public AI chat error');
       return reply.status(503).send({ message: 'AI-сервис временно недоступен' });
     }
   });
@@ -77,8 +78,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
       );
       return messages;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'AI chat operation failed');
     }
   });
 
@@ -96,8 +96,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
       await service.deleteSession(request.params.sessionId, request.user.userId);
       return reply.status(204).send();
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'AI chat operation failed');
     }
   });
 
@@ -124,8 +123,8 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
         timestamp: new Date().toISOString(),
       });
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      server.log.error({ err }, 'AI chat error');
+      const error = toSafeErrorResponse(err, 'AI service is temporarily unavailable. Please try again later.');
+      server.log.error({ errorName: safeErrorName(err) }, 'AI chat error');
       return reply.status(error.statusCode ?? 503).send({
         message: error.statusCode ? error.message : 'AI-сервис временно недоступен. Пожалуйста, повторите попытку позже.',
       });
@@ -164,8 +163,8 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
 
       reply.raw.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     } catch (err) {
-      const error = err as Error;
-      server.log.error({ err }, 'AI stream error');
+      const error = new Error('AI service is temporarily unavailable. Please try again later.');
+      server.log.error({ errorName: safeErrorName(err) }, 'AI stream error');
       reply.raw.write(`data: ${JSON.stringify({ error: error.message || 'AI-сервис временно недоступен' })}\n\n`);
     } finally {
       reply.raw.end();
@@ -173,3 +172,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
   });
 
 };
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}

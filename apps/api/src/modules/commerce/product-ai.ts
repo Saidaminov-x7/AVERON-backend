@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { AdminRole } from '@prisma/client';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { featureFlags } from '../features/feature-flags';
 import { productAiInputSchema, productAiRequestSchema } from './product-ai.schemas';
 import { productAiProvider } from './product-ai-provider';
@@ -7,7 +8,7 @@ import { MediaService } from '../media/service';
 
 export const productAiModule: FastifyPluginAsync = async (app) => {
   app.post('/admin/products/ai-suggestions', {
-    preHandler: adminMiddleware,
+    preHandler: [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)],
     config: { rateLimit: { max: 5, timeWindow: '1 minute', skipOnError: false } },
   }, async (request, reply) => {
     if (!featureFlags.isEnabled('AI_PRODUCT_FILL')) {

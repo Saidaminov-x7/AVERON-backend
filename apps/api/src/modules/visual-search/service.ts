@@ -82,7 +82,11 @@ export function createVisualSimilarityService(
     return value;
   };
 
-  const generateEmbedding = async (image: Buffer, timeoutMs: number) => {
+  const generateEmbedding = async (
+    image: Buffer,
+    timeoutMs: number,
+    task: 'retrieval.query' | 'retrieval.passage',
+  ) => {
     const imageDescriptor = descriptor();
     const controller = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -94,7 +98,7 @@ export function createVisualSimilarityService(
         }, timeoutMs);
       });
       const embedding = await Promise.race([
-        provider.generateEmbedding(image, controller.signal),
+        provider.generateEmbedding(image, controller.signal, task),
         timedOut,
       ]);
       return {
@@ -128,11 +132,15 @@ export function createVisualSimilarityService(
     isAvailable: () => provider.isConfigured() && provider.descriptor() !== null && repository.isAvailable(),
 
     async searchImage(normalizedImage, filters, timeoutMs) {
-      const { descriptor: imageDescriptor, embedding } = await generateEmbedding(normalizedImage, timeoutMs);
+      const { descriptor: imageDescriptor, embedding } = await generateEmbedding(
+        normalizedImage,
+        timeoutMs,
+        'retrieval.query',
+      );
       return search(embedding, imageDescriptor, filters);
     },
 
-    async findSimilarProducts(identifier, filters, timeoutMs) {
+    async findSimilarProducts(identifier, filters, _timeoutMs) {
       const imageDescriptor = descriptor();
       const seed = await repository.getPublishedProductSeed(identifier, imageDescriptor);
       if (!seed || !seed.embedding) throw new VisualSearchError('EMBEDDING_NOT_AVAILABLE');
@@ -159,7 +167,7 @@ export function createVisualSimilarityService(
       };
       if (await repository.hasIndexedFingerprint(key)) return;
 
-      const { embedding } = await generateEmbedding(normalizedImage.data, timeoutMs);
+      const { embedding } = await generateEmbedding(normalizedImage.data, timeoutMs, 'retrieval.passage');
       await repository.storeEmbedding({ ...key, productId, embedding });
     },
 

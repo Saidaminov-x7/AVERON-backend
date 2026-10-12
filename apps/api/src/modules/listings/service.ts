@@ -365,7 +365,7 @@ export class ListingsService {
   /**
    * Получить одно объявление по ID (инкремент просмотров)
    */
-  async findById(id: string, incrementViews = false): Promise<any | null> {
+  async findById(id: string, incrementViews = false) {
     const visibilityWhere: Prisma.ListingWhereInput = {
       id,
       status: ListingStatus.ACTIVE,

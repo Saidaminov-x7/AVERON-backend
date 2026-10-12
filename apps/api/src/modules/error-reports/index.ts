@@ -1,9 +1,11 @@
 import { FastifyPluginAsync } from 'fastify';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { AdminRole, Prisma } from '@prisma/client';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { createErrorReportSchema, errorReportFilterSchema } from './schemas';
 import { sanitizeErrorReportUrl, sanitizeErrorText } from './sanitize';
 
 export const errorReportsModule: FastifyPluginAsync = async (server) => {
+  const errorReportAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   /**
    * POST /error-reports — публичный эндпоинт для отправки клиентских ошибок с фронтенда
    */
@@ -51,7 +53,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
 
         return reply.status(201).send({ id: report.id });
       } catch (err) {
-        request.log.warn({ err }, 'Failed to save client error report');
+        request.log.warn({ errorName: err instanceof Error ? err.name : 'UnknownError' }, 'Failed to save client error report');
         return reply.status(500).send({ message: 'Failed to record error report' });
       }
     },
@@ -60,11 +62,11 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
    * GET /error-reports — список ошибок для админ-панели (требует прав ADMIN)
    */
-  server.get('/', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/', { preHandler: errorReportAccess }, async (request, _reply) => {
     const filter = errorReportFilterSchema.parse(request.query);
     const { page, limit, severity, resolved } = filter;
 
-    const where: any = {};
+    const where: Prisma.ClientErrorReportWhereInput = {};
     if (severity) where.severity = severity;
     if (resolved !== undefined) where.resolved = resolved;
 
@@ -92,7 +94,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
    * PATCH /error-reports/:id/resolve — пометить ошибку как решённую
    */
-  server.patch<{ Params: { id: string } }>('/:id/resolve', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.patch<{ Params: { id: string } }>('/:id/resolve', { preHandler: errorReportAccess }, async (request, reply) => {
     const { id } = request.params;
     try {
       const updated = await server.prisma.clientErrorReport.update({

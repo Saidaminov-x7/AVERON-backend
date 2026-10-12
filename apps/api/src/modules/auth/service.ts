@@ -2,7 +2,6 @@
 
 import { PrismaClient, User } from '@prisma/client';
 import argon2 from 'argon2';
-import { config } from '../../config';
 import { RegisterDto } from './schemas';
 
 class AuthService {

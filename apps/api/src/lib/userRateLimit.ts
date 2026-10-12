@@ -8,7 +8,7 @@ export function createUserRateLimit(
   opts: { keyPrefix: string; max: number; windowSec: number },
 ) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
-    const identifier = (request as any).user?.userId || request.ip || 'anonymous';
+    const identifier = request.user?.userId || request.ip || 'anonymous';
     const redis = getRedis(request);
     if (!redis) return;
 

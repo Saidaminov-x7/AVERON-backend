@@ -124,7 +124,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
   it('создает WebhookDelivery и сохраняет статус SUCCESS при успешной доставке', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
 
-    const prismaMock: any = {
+    const prismaMock = {
       systemWebhook: {
         findMany: vi.fn().mockResolvedValue([
           { id: 'wh-1', url: 'https://api.crm.uz/hook', secret: 'sec', isActive: true, events: ['FRAUD_DETECTED'] },
@@ -136,7 +136,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
       },
     };
 
-    const count = await dispatchWebhookEvent(prismaMock, 'FRAUD_DETECTED', { score: 95 }, undefined, publicResolver);
+    const count = await dispatchWebhookEvent(prismaMock as unknown as Parameters<typeof dispatchWebhookEvent>[0], 'FRAUD_DETECTED', { score: 95 }, undefined, publicResolver);
 
     expect(count).toBe(1);
     expect(prismaMock.webhookDelivery.create).toHaveBeenCalled();
@@ -149,7 +149,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
   it('повторяет упавшие доставки при запуске retryPendingWebhookDeliveries', async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
 
-    const prismaMock: any = {
+    const prismaMock = {
       webhookDelivery: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -164,7 +164,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
       },
     };
 
-    const result = await retryPendingWebhookDeliveries(prismaMock, undefined, publicResolver);
+    const result = await retryPendingWebhookDeliveries(prismaMock as unknown as Parameters<typeof retryPendingWebhookDeliveries>[0], undefined, publicResolver);
 
     expect(result.retried).toBe(1);
     expect(result.succeeded).toBe(1);

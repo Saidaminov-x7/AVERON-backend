@@ -35,6 +35,14 @@ vi.mock('../../../lib/adminMiddleware', () => ({
     if (request.headers['x-test-role'] !== 'admin') return reply.status(403).send({ code: 'FORBIDDEN' });
     Object.assign(request, { user: { userId: '00000000-0000-4000-8000-000000000006', role: 'ADMIN', adminRole: 'ADMIN' } });
   },
+  requireAdminRole: (...allowedRoles: string[]) => async (
+    request: { headers: Record<string, string | string[] | undefined>; user?: { adminRole?: string } },
+    reply: { sent: boolean; status: (code: number) => { send: (body: unknown) => unknown } },
+  ) => {
+    if (request.headers['x-test-role'] !== 'admin') return reply.status(403).send({ code: 'FORBIDDEN' });
+    Object.assign(request, { user: { userId: '00000000-0000-4000-8000-000000000006', role: 'ADMIN', adminRole: 'ADMIN' } });
+    if (!allowedRoles.includes(request.user?.adminRole ?? '')) return reply.status(403).send({ code: 'FORBIDDEN' });
+  },
 }));
 
 function createApp() {

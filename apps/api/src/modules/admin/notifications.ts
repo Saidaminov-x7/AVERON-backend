@@ -38,7 +38,7 @@ export const notificationsModule: FastifyPluginAsync = async (server) => {
   server.patch<{ Params: { id: string } }>('/:id/read', { preHandler }, async (request, reply) => {
     const { id } = request.params;
     const adminId = request.user.userId;
-    const isSuperAdmin = request.user.role === 'ADMIN' || (request.user as any).adminRole === 'SUPER_ADMIN';
+    const isSuperAdmin = request.user.adminRole === 'SUPER_ADMIN';
 
     const existing = await server.prisma.adminNotification.findUnique({ where: { id } });
     if (!existing) {

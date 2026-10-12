@@ -1,15 +1,16 @@
 // apps/api/src/lib/webhookDelivery.ts
 // Сервис безопасной доставки вебхуков с HMAC-подписью и экспоненциальными повторными попытками (Retry backoff)
 
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
+import type { FastifyBaseLogger } from 'fastify';
 import crypto from 'crypto';
 import { isSafePublicHttpUrl, type OutboundAddressResolver } from './safeOutboundUrl';
 
-export interface WebhookPayload {
+export type WebhookPayload = Prisma.InputJsonObject & {
   event: string;
   timestamp: string;
-  data: Record<string, any>;
-}
+  data: Prisma.InputJsonObject;
+};
 
 // Задержки повторных попыток в миллисекундах: 1 мин, 5 мин, 15 мин, 30 мин, 60 мин
 const RETRY_DELAYS_MS = [
@@ -32,7 +33,7 @@ export function calculateWebhookSignature(payload: string, secret: string): stri
  */
 export async function sendWebhookRequest(
   url: string,
-  payload: Record<string, any>,
+  payload: Record<string, unknown>,
   secret?: string | null,
   fetcher: typeof fetch = fetch,
   resolveAddresses?: OutboundAddressResolver,
@@ -44,8 +45,8 @@ export async function sendWebhookRequest(
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'User-Agent': 'Ijarauz-Webhook-Delivery/1.0',
-    'X-Ijarauz-Event': payload.event || 'GENERAL',
-    'X-Ijarauz-Timestamp': payload.timestamp || new Date().toISOString(),
+    'X-Ijarauz-Event': typeof payload.event === 'string' ? payload.event : 'GENERAL',
+    'X-Ijarauz-Timestamp': typeof payload.timestamp === 'string' ? payload.timestamp : new Date().toISOString(),
   };
 
   if (secret) {
@@ -76,7 +77,7 @@ export async function sendWebhookRequest(
       statusCode: response.status,
       error: `HTTP status ${response.status}`,
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     clearTimeout(timeout);
     return {
       success: false,
@@ -93,8 +94,8 @@ export async function sendWebhookRequest(
 export async function dispatchWebhookEvent(
   prisma: PrismaClient,
   event: string,
-  data: Record<string, any>,
-  logger?: any,
+  data: Prisma.InputJsonObject,
+  logger?: FastifyBaseLogger,
   resolveOutboundAddresses?: OutboundAddressResolver,
 ): Promise<number> {
   try {
@@ -123,7 +124,7 @@ export async function dispatchWebhookEvent(
         data: {
           webhookId: webhook.id,
           event,
-          payload: payload as any,
+          payload,
           attempts: 1,
           maxAttempts: 5,
           status: 'PENDING',
@@ -172,7 +173,7 @@ export async function dispatchWebhookEvent(
  */
 export async function retryPendingWebhookDeliveries(
   prisma: PrismaClient,
-  logger?: any,
+  logger?: FastifyBaseLogger,
   resolveOutboundAddresses?: OutboundAddressResolver,
 ): Promise<{ retried: number; succeeded: number; failed: number }> {
   const now = new Date();
@@ -202,9 +203,18 @@ export async function retryPendingWebhookDeliveries(
 
       results.retried++;
       const currentAttempt = delivery.attempts + 1;
+      const payload = delivery.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        await prisma.webhookDelivery.update({
+          where: { id: delivery.id },
+          data: { status: 'CANCELLED', lastError: 'Stored webhook payload is invalid' },
+        });
+        continue;
+      }
+
       const res = await sendWebhookRequest(
         delivery.webhook.url,
-        delivery.payload as any,
+        payload,
         delivery.webhook.secret,
         fetch,
         resolveOutboundAddresses,

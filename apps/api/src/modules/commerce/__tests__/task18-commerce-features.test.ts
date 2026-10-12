@@ -137,6 +137,8 @@ describe('Task 18 wishlist sharing boundary', () => {
       email: 'private@example.test',
       phone: '+998000000000',
       address: 'private',
+      passwordHash: 'private-password-hash',
+      refreshToken: 'private-refresh-token',
     };
     const findFirst = vi.fn(async () => owner);
     const app = makeApp({ user: { findFirst } }, [wishlistModule]);
@@ -156,6 +158,10 @@ describe('Task 18 wishlist sharing boundary', () => {
       }],
     });
     expect(response.body).not.toContain('private@example.test');
+    expect(response.body).not.toContain('+998000000000');
+    expect(response.body).not.toContain('private');
+    expect(response.body).not.toContain('private-password-hash');
+    expect(response.body).not.toContain('private-refresh-token');
     expect(response.body).not.toContain(OTHER_USER_ID);
     expect(response.headers['cache-control']).toBe('private, no-store');
     await app.close();

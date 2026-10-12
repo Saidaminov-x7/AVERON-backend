@@ -1,5 +1,5 @@
 // apps/api/src/lib/activityLogger.ts
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { FastifyRequest } from 'fastify';
 
 export async function logUserActivity(
@@ -7,14 +7,14 @@ export async function logUserActivity(
   userId: string,
   action: string,
   request: FastifyRequest,
-  meta?: Record<string, unknown>,
+  meta?: Prisma.InputJsonObject,
 ) {
   try {
     await prisma.userActivityLog.create({
       data: {
         userId,
         action,
-        meta: meta ? (meta as any) : undefined,
+        meta,
         ip: request.ip,
         userAgent:
           typeof request.headers['user-agent'] === 'string'

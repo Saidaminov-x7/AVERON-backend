@@ -4,9 +4,12 @@ import type { Redis } from 'ioredis';
 export const LOGIN_FAILURE_LIMIT = 8;
 export const LOGIN_FAILURE_TTL_SECONDS = 15 * 60;
 
-export function loginFailureKey(identifierType: 'email' | 'phone', identifier: string) {
+export function loginFailureKey(identifierType: 'email' | 'phone', identifier: string, sourceIp: string) {
   const normalized = identifier.trim().toLowerCase();
-  const digest = createHash('sha256').update(`${identifierType}:${normalized}`).digest('hex');
+  // Bind temporary failure throttles to the source as well as the account so
+  // an attacker cannot lock a victim out from every device by guessing their ID.
+  // Hashing keeps identifiers and IPs out of Redis key names.
+  const digest = createHash('sha256').update(`${identifierType}:${normalized}:${sourceIp}`).digest('hex');
   return `averon:v1:auth:login-failures:${digest}`;
 }
 

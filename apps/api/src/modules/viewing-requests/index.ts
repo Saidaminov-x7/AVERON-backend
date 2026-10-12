@@ -1,6 +1,6 @@
 // apps/api/src/modules/viewing-requests/index.ts
 
-import { FastifyPluginAsync } from 'fastify';
+import { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { createUserRateLimit } from '../../lib/userRateLimit';
 import { createViewingRequestsService } from './service';
@@ -8,7 +8,7 @@ import { createViewingRequestSchema, updateViewingStatusSchema } from './schemas
 import { ViewingStatus } from '@prisma/client';
 
 export const viewingRequestsModule: FastifyPluginAsync = async (server) => {
-  const getService = (req: any) => createViewingRequestsService(req.prisma);
+  const getService = (req: FastifyRequest) => createViewingRequestsService(req.server.prisma);
 
   const viewingRequestRateLimit = createUserRateLimit((req) => req.server.redis, {
     keyPrefix: 'viewing-requests:create',

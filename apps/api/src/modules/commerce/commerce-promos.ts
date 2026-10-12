@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { AdminRole } from '@prisma/client';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
 
 const codeSchema = z.string().trim().min(3).max(40).regex(/^[A-Za-z0-9_-]+$/);
@@ -45,6 +46,7 @@ function remainingActivations(max: number | null, used: number): number | null {
 }
 
 export const commercePromosModule: FastifyPluginAsync = async (app) => {
+  const promoAdmin = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   app.post('/promo-codes/validate', {
     preHandler: authMiddleware,
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
@@ -70,7 +72,7 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get('/admin/commerce/promo-codes', { preHandler: adminMiddleware }, async () => {
+  app.get('/admin/commerce/promo-codes', { preHandler: promoAdmin }, async () => {
     const promos = await app.prisma.commercePromoCode.findMany({
       orderBy: { createdAt: 'desc' },
       take: 100,
@@ -82,7 +84,7 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
     }));
   });
 
-  app.post('/admin/commerce/promo-codes', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/commerce/promo-codes', { preHandler: promoAdmin }, async (request, reply) => {
     const parsed = createSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'PROMO_INVALID', message: 'Promo code configuration is invalid' });
     if (parsed.data.startsAt && parsed.data.expiresAt &&
@@ -116,7 +118,7 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
   });
 
   app.patch<{ Params: { promoId: string } }>('/admin/commerce/promo-codes/:promoId', {
-    preHandler: adminMiddleware,
+    preHandler: promoAdmin,
   }, async (request, reply) => {
     const parsed = updateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'PROMO_INVALID', message: 'Promo code configuration is invalid' });
@@ -173,7 +175,7 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
   });
 
   app.delete<{ Params: { promoId: string } }>('/admin/commerce/promo-codes/:promoId', {
-    preHandler: adminMiddleware,
+    preHandler: promoAdmin,
   }, async (request, reply) => {
     const promo = await app.prisma.commercePromoCode.findUnique({
       where: { id: request.params.promoId },
@@ -195,7 +197,7 @@ export const commercePromosModule: FastifyPluginAsync = async (app) => {
   });
 
   app.get<{ Params: { promoId: string } }>('/admin/commerce/promo-codes/:promoId/usages', {
-    preHandler: adminMiddleware,
+    preHandler: promoAdmin,
   }, async (request, reply) => {
     const promo = await app.prisma.commercePromoCode.findUnique({
       where: { id: request.params.promoId },

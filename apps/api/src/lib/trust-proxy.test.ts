@@ -28,8 +28,8 @@ describe('trustProxyOption', () => {
     assert.equal(trustProxyOption([]), false);
   });
 
-  it('trusts the managed platform proxy when Railway terminates HTTPS', async () => {
-    const app = fastify({ trustProxy: trustProxyOption([], true) });
+  it('does not trust forwarded protocol headers without explicit proxy addresses', async () => {
+    const app = fastify({ trustProxy: trustProxyOption([]) });
     app.get('/protocol', async (request) => ({ protocol: request.protocol }));
 
     const response = await app.inject({
@@ -39,7 +39,7 @@ describe('trustProxyOption', () => {
     });
 
     assert.equal(response.statusCode, 200);
-    assert.equal(response.json().protocol, 'https');
+    assert.equal(response.json().protocol, 'http');
     await app.close();
   });
 });

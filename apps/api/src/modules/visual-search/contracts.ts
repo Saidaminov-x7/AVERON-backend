@@ -8,7 +8,11 @@ export interface ImageEmbeddingDescriptor {
 export interface ImageEmbeddingProvider {
   descriptor(): ImageEmbeddingDescriptor | null;
   isConfigured(): boolean;
-  generateEmbedding(image: Buffer, signal: AbortSignal): Promise<readonly number[]>;
+  generateEmbedding(
+    image: Buffer,
+    signal: AbortSignal,
+    task?: 'retrieval.query' | 'retrieval.passage',
+  ): Promise<readonly number[]>;
 }
 
 export interface VisualSearchFilters {
