@@ -1,14 +1,27 @@
 // apps/api/src/modules/viewing-requests/index.ts
 
-import { FastifyPluginAsync } from 'fastify';
+import { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { createUserRateLimit } from '../../lib/userRateLimit';
 import { createViewingRequestsService } from './service';
 import { createViewingRequestSchema, updateViewingStatusSchema } from './schemas';
-import { ViewingStatus } from '@prisma/client';
+import { AdminRole, ViewingStatus } from '@prisma/client';
 
 export const viewingRequestsModule: FastifyPluginAsync = async (server) => {
-  const getService = (req: any) => createViewingRequestsService(req.prisma);
+  const getService = (req: FastifyRequest) => createViewingRequestsService(req.server.prisma);
+  const getCurrentAdminAccess = async (request: FastifyRequest) => {
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: request.user.userId },
+      select: { role: true, adminRole: true, isBlocked: true, isDeleted: true },
+    });
+    const isPrivilegedRole = user?.adminRole === AdminRole.SUPER_ADMIN ||
+      user?.adminRole === AdminRole.ADMIN ||
+      (user?.adminRole == null && user?.role === 'ADMIN');
+    return {
+      active: Boolean(user && !user.isBlocked && !user.isDeleted),
+      isAdmin: Boolean(user && !user.isBlocked && !user.isDeleted && user.role === 'ADMIN' && isPrivilegedRole),
+    };
+  };
 
   const viewingRequestRateLimit = createUserRateLimit((req) => req.server.redis, {
     keyPrefix: 'viewing-requests:create',
@@ -48,10 +61,11 @@ export const viewingRequestsModule: FastifyPluginAsync = async (server) => {
    */
   server.get('/admin/viewing-requests', {
     preHandler: [authMiddleware],
-  }, async (request) => {
+  }, async (request, reply) => {
+    const access = await getCurrentAdminAccess(request);
+    if (!access.active) return reply.status(403).send({ message: 'Access denied' });
     const service = getService(request);
-    const isAdmin = request.user.role === 'ADMIN' || request.user.role === 'SUPER_ADMIN';
-    return service.getAdminOrOwnerRequests(request.user.userId, isAdmin);
+    return service.getAdminOrOwnerRequests(request.user.userId, access.isAdmin);
   });
 
   /**
@@ -60,10 +74,11 @@ export const viewingRequestsModule: FastifyPluginAsync = async (server) => {
   server.patch<{ Params: { id: string }; Body: { status: ViewingStatus } }>('/viewing-requests/:id/status', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
+    const access = await getCurrentAdminAccess(request);
+    if (!access.active) return reply.status(403).send({ message: 'Access denied' });
     const dto = updateViewingStatusSchema.parse(request.body);
     const service = getService(request);
-    const isAdmin = request.user.role === 'ADMIN' || request.user.role === 'SUPER_ADMIN';
-    const updated = await service.updateStatus(request.params.id, request.user.userId, isAdmin, dto.status);
+    const updated = await service.updateStatus(request.params.id, request.user.userId, access.isAdmin, dto.status);
     return reply.send(updated);
   });
 };

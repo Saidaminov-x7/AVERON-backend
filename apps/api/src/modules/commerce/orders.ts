@@ -1,8 +1,12 @@
 import type { AveronOrderStatus, CommerceDeliveryStatus, Prisma } from '@prisma/client';
+import { AdminRole } from '@prisma/client';
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
+
+const orderReadHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.SUPPORT)];
+const orderWriteHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
 const statusSchema = z.object({
   status: z.enum([
@@ -450,7 +454,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get('/admin/orders', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.get('/admin/orders', { preHandler: orderReadHandler }, async (request, reply) => {
     try {
       const orders = await app.prisma.commerceOrder.findMany({
         select: adminOrderSelect,
@@ -465,7 +469,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
   });
 
   app.patch<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/shipping', {
-    preHandler: adminMiddleware,
+    preHandler: orderWriteHandler,
   }, async (request, reply) => {
     const parsed = deliveryUpdateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_SHIPPING_DETAILS', message: 'Invalid shipping details' });
@@ -555,7 +559,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
   });
 
   app.get<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber', {
-    preHandler: adminMiddleware,
+    preHandler: orderReadHandler,
   }, async (request, reply) => {
     try {
       const order = await app.prisma.commerceOrder.findUnique({
@@ -571,7 +575,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
   });
 
   app.patch<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/status', {
-    preHandler: adminMiddleware,
+    preHandler: orderWriteHandler,
   }, async (request, reply) => {
     const parsed = statusSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ORDER_STATUS', message: 'Invalid order status' });

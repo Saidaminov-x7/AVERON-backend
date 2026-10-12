@@ -1,7 +1,10 @@
+import { AdminRole } from '@prisma/client';
 import { FastifyPluginAsync } from 'fastify';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { createErrorReportSchema, errorReportFilterSchema } from './schemas';
 import { sanitizeErrorReportUrl, sanitizeErrorText } from './sanitize';
+
+const errorSupportHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.SUPPORT)];
 
 export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
@@ -60,7 +63,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
    * GET /error-reports — список ошибок для админ-панели (требует прав ADMIN)
    */
-  server.get('/', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.get('/', { preHandler: errorSupportHandler }, async (request, reply) => {
     const filter = errorReportFilterSchema.parse(request.query);
     const { page, limit, severity, resolved } = filter;
 
@@ -92,7 +95,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
    * PATCH /error-reports/:id/resolve — пометить ошибку как решённую
    */
-  server.patch<{ Params: { id: string } }>('/:id/resolve', { preHandler: [adminMiddleware] }, async (request, reply) => {
+  server.patch<{ Params: { id: string } }>('/:id/resolve', { preHandler: errorSupportHandler }, async (request, reply) => {
     const { id } = request.params;
     try {
       const updated = await server.prisma.clientErrorReport.update({

@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { Prisma, TelegramPublicationStatus } from '@prisma/client';
+import { AdminRole, Prisma, TelegramPublicationStatus } from '@prisma/client';
 import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { adminMiddleware } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { config } from '../../config';
 import { featureFlags } from '../features/feature-flags';
 import { buildTelegramCard, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from './telegram-publisher';
+
+const telegramAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 import { domainEventBus } from '../integrations/domain-events';
 
 const productParams = z.object({ id: z.string().uuid() });
@@ -97,7 +99,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
       request.log.warn({ err: error, productId }, 'Telegram transition analytics could not be recorded');
     }
   };
-  app.get('/admin/products/:id/telegram-publication', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.get('/admin/products/:id/telegram-publication', { preHandler: telegramAdminHandler }, async (request, reply) => {
     const { id } = productParams.parse(request.params);
     const product = await getPublishedProduct(app, id);
     if (!product) return reply.status(404).send({ code: 'PRODUCT_NOT_FOUND' });
@@ -130,7 +132,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.post('/admin/products/:id/telegram-preview', { preHandler: adminMiddleware }, async (request, reply) => {
+  app.post('/admin/products/:id/telegram-preview', { preHandler: telegramAdminHandler }, async (request, reply) => {
     const { id } = productParams.parse(request.params);
     const input = previewBody.parse(request.body ?? {});
     const product = await getPublishedProduct(app, id);
@@ -157,7 +159,7 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/admin/products/:id/telegram-publish', {
-    preHandler: adminMiddleware,
+    preHandler: telegramAdminHandler,
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     if (!featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH')) {

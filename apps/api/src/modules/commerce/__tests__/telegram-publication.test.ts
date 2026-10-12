@@ -16,6 +16,14 @@ vi.mock('../../../lib/adminMiddleware', () => ({
       user: { userId: '00000000-0000-4000-8000-000000000001', role: 'ADMIN', adminRole: 'SUPER_ADMIN' },
     });
   },
+  requireAdminRole: () => async (request: { headers: Record<string, string | string[] | undefined> }, reply: { status: (code: number) => { send: (data: unknown) => unknown } }) => {
+    if (request.headers['x-test-role'] !== 'admin') {
+      return reply.status(request.headers['x-test-role'] ? 403 : 401).send({ code: 'FORBIDDEN' });
+    }
+    Object.assign(request, {
+      user: { userId: '00000000-0000-4000-8000-000000000001', role: 'ADMIN', adminRole: 'SUPER_ADMIN' },
+    });
+  },
 }));
 vi.mock('../../../config', () => ({
   config: {
