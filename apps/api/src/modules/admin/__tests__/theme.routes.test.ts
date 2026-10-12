@@ -57,4 +57,28 @@ describe('admin theme routes authorization', () => {
 
     expect(response.statusCode).toBe(403);
   });
+
+  it.each([
+    ['GET', '/admin/admin-theme'],
+    ['PATCH', '/admin/admin-theme'],
+  ] as const)('%s %s rejects an admin without the required role, regardless of JWT claims', async (method, url) => {
+    const app = await makeApp({
+      id: 'limited-admin',
+      role: 'ADMIN',
+      adminRole: 'ADMIN',
+      isBlocked: false,
+      isDeleted: false,
+    });
+    const token = app.jwt.sign({ userId: 'limited-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+
+    const response = await app.inject({
+      method,
+      url,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { primaryColor: '#123456' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ requiredRoles: ['SUPER_ADMIN'] });
+  });
 });
