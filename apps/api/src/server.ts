@@ -41,6 +41,8 @@ import { registerNotFoundHandler } from './lib/notFoundHandler';
 import { monitorAuthenticatedAuthorizationDenial } from './lib/security-denial-monitor';
 import { monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './lib/unmatched-route-monitor';
 import { monitorSuccessfulResourceEnumeration } from './lib/successful-resource-enumeration-monitor';
+import { isCoreApiReady } from './lib/health-readiness';
+import { getRuntimeCommitSha } from './lib/runtime-commit';
 import { safeErrorLogFields } from './lib/safe-error-log';
 import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
@@ -313,7 +315,11 @@ server.get('/health', {
 
 server.get('/health/live', {
   schema: { tags: ['Health'] },
-}, async () => ({ status: 'live', timestamp: new Date().toISOString() }));
+}, async () => ({
+  status: 'live',
+  commit: getRuntimeCommitSha(process.env.RAILWAY_GIT_COMMIT_SHA),
+  timestamp: new Date().toISOString(),
+}));
 
 server.get('/health/ai', {
   schema: { tags: ['Health'] },
@@ -401,7 +407,9 @@ server.get('/health/ready', {
     checks.aiService = false;
   }
 
-  const allHealthy = Object.values(checks).every(Boolean);
+  // AI and Cloudinary are optional integrations: report their state, but only
+  // database and Redis availability determine whether the core API is ready.
+  const allHealthy = isCoreApiReady(checks.database, checks.redis);
   return reply.status(allHealthy ? 200 : 503).send({
     status: allHealthy ? 'ready' : 'degraded',
     checks,
