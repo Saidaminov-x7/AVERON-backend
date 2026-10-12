@@ -4,7 +4,7 @@
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { AdminRole } from '@prisma/client';
 import { fileTypeFromBuffer } from 'file-type';
-import { adminMiddleware, requireAdminRole } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { AdminService } from './service';
 import {
@@ -18,7 +18,6 @@ import {
 
 export const adminModule: FastifyPluginAsync = async (server) => {
   // Все маршруты требуют роли ADMIN
-  const preHandler = [adminMiddleware];
   // Роли для каждого типа действий
   const userActionHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   const cmsHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
@@ -71,7 +70,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   /**
    * GET /admin/users/:id — детальная карточка пользователя
    */
-  server.get<{ Params: { id: string } }>('/users/:id', { preHandler }, async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/users/:id', { preHandler: userActionHandler }, async (request, reply) => {
     const service = getService(request);
     try {
       return await service.getUserById(request.params.id);
