@@ -66,6 +66,15 @@ describe('admin theme routes authorization', () => {
     expect(response.statusCode).toBe(expectedStatus);
     if (expectedStatus === 200) {
       expect(response.json()).toMatchObject({ primaryColor: '#2563eb' });
+    } else {
+      const updateResponse = await app.inject({
+        method: 'PATCH',
+        url: '/admin/admin-theme',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { primaryColor: '#123456' },
+      });
+
+      expect(updateResponse.statusCode).toBe(expectedStatus);
     }
   });
 
