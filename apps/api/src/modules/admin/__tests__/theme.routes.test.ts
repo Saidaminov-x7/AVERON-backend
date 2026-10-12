@@ -14,6 +14,9 @@ async function makeApp(user: Record<string, unknown> | null) {
   });
   app.decorate('prisma', {
     user: { findUnique: vi.fn(async () => user) },
+    adminThemeSettings: {
+      upsert: vi.fn(async () => ({ id: 'singleton', primaryColor: '#2563eb' })),
+    },
   } as never);
   await app.register(profileModule, { prefix: '/admin' });
   await app.register(themeModule, { prefix: '/admin' });
@@ -35,6 +38,35 @@ describe('admin theme routes authorization', () => {
     const response = await app.inject({ method, url, payload: { primaryColor: '#123456' } });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it.each([
+    ['CUSTOMER', null, 403],
+    ['ADMIN', 'SUPPORT', 403],
+    ['ADMIN', 'MODERATOR', 403],
+    ['ADMIN', 'ADMIN', 403],
+    ['ADMIN', 'SUPER_ADMIN', 200],
+  ] as const)('GET /admin/admin-theme enforces current database role %s/%s', async (role, adminRole, expectedStatus) => {
+    const userId = 'role-matrix-user';
+    const app = await makeApp({
+      id: userId,
+      role,
+      adminRole,
+      isBlocked: false,
+      isDeleted: false,
+    });
+    const token = app.jwt.sign({ userId, role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/admin/admin-theme',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(expectedStatus);
+    if (expectedStatus === 200) {
+      expect(response.json()).toMatchObject({ primaryColor: '#2563eb' });
+    }
   });
 
   it.each([
