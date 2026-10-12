@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { fastifyJwt } from '@fastify/jwt';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { profileModule } from '../profile';
 import { themeModule } from '../theme';
 
 const apps: ReturnType<typeof Fastify>[] = [];
@@ -14,6 +15,7 @@ async function makeApp(user: Record<string, unknown> | null) {
   app.decorate('prisma', {
     user: { findUnique: vi.fn(async () => user) },
   } as never);
+  await app.register(profileModule, { prefix: '/admin' });
   await app.register(themeModule, { prefix: '/admin' });
   await app.ready();
   return app;
@@ -80,5 +82,41 @@ describe('admin theme routes authorization', () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ requiredRoles: ['SUPER_ADMIN'] });
+  });
+});
+
+describe('admin profile routes authorization', () => {
+  it.each([
+    ['PATCH', '/admin/profile'],
+    ['PATCH', '/admin/profile/password'],
+  ] as const)('%s %s rejects requests without a token', async (method, url) => {
+    const app = await makeApp(null);
+
+    const response = await app.inject({ method, url, payload: {} });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it.each([
+    ['PATCH', '/admin/profile'],
+    ['PATCH', '/admin/profile/password'],
+  ] as const)('%s %s rejects an authenticated non-admin before accepting profile fields', async (method, url) => {
+    const app = await makeApp({
+      id: 'customer-1',
+      role: 'CUSTOMER',
+      adminRole: null,
+      isBlocked: false,
+      isDeleted: false,
+    });
+    const token = app.jwt.sign({ userId: 'customer-1', role: 'CUSTOMER' });
+
+    const response = await app.inject({
+      method,
+      url,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: 'Changed Name', role: 'SUPER_ADMIN', id: 'another-user' },
+    });
+
+    expect(response.statusCode).toBe(403);
   });
 });
