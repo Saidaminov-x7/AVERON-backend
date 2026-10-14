@@ -39,10 +39,12 @@ export class TelegramPublishError extends Error {
   }
 }
 
+const AVERON_TELEGRAM_GROUP = '@averon_fashion';
+
 export function isTelegramProductPublisherConfigured(): boolean {
   return Boolean(
     config.TELEGRAM_ADMIN_BOT?.trim() &&
-    config.TELEGRAM_CHANNEL_ID?.trim(),
+    config.TELEGRAM_CHANNEL_ID?.trim().toLowerCase() === AVERON_TELEGRAM_GROUP,
   );
 }
 
@@ -131,24 +133,7 @@ export function buildTelegramCard(
       : availability === 'PREORDER'
         ? labels.preorder
         : labels.out;
-  const miniAppUrl = config.TELEGRAM_MINI_APP_URL?.trim();
-  let productUrl: URL;
-  if (miniAppUrl) {
-    productUrl = new URL(miniAppUrl);
-    if (
-      productUrl.protocol !== 'https:' ||
-      productUrl.hostname !== 't.me' ||
-      productUrl.username ||
-      productUrl.password ||
-      productUrl.search ||
-      productUrl.hash ||
-      !/^\/[A-Za-z0-9_]{5,32}\/[A-Za-z0-9_-]{1,64}$/.test(productUrl.pathname)
-    ) throw new TelegramPublishError('INVALID_MINI_APP_URL');
-    productUrl.searchParams.set('startapp', `p_${product.slug}`);
-  } else {
-    productUrl = new URL(`/${locale}/mini-app`, config.PUBLIC_SITE_URL);
-    productUrl.searchParams.set('product', product.slug);
-  }
+  const productUrl = new URL(`/${locale}/catalog/${encodeURIComponent(product.slug)}`, config.PUBLIC_SITE_URL);
   const price = Number(product.salePriceUzs);
   if (!Number.isFinite(price) || price < 0) throw new TelegramPublishError('INVALID_PRODUCT_PRICE');
   const override = options.captionOverride?.trim();
@@ -185,6 +170,9 @@ export function buildTelegramCard(
 export async function sendTelegramCard(card: TelegramCard, channelId: string): Promise<string> {
   const token = config.TELEGRAM_ADMIN_BOT?.trim();
   if (!token) throw new TelegramPublishError('TELEGRAM_NOT_CONFIGURED');
+  if (channelId.trim().toLowerCase() !== AVERON_TELEGRAM_GROUP) {
+    throw new TelegramPublishError('TELEGRAM_CHANNEL_NOT_ALLOWED');
+  }
   if (!/^@[A-Za-z0-9_]{5,32}$/.test(channelId) && !/^-100\d{5,20}$/.test(channelId)) {
     throw new TelegramPublishError('TELEGRAM_CHANNEL_NOT_CONFIGURED');
   }
