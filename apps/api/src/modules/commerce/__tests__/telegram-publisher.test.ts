@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   miniAppUrl: 'https://t.me/averon_store/app',
+  adminBotToken: 'admin-token',
   productBotToken: 'product-token',
   miniAppBotToken: undefined as string | undefined,
 }));
 
 vi.mock('../../../config', () => ({
   config: {
+    get TELEGRAM_ADMIN_BOT() { return mocks.adminBotToken; },
     get TELEGRAM_BOT_TOKEN() { return mocks.productBotToken; },
     get TELEGRAM_MINI_APP_BOT_TOKEN() { return mocks.miniAppBotToken; },
     TELEGRAM_CHANNEL_ID: '@averon_test',
@@ -37,6 +39,7 @@ const product: TelegramCardProduct = {
 describe('Telegram product cards', () => {
   afterEach(() => {
     mocks.miniAppUrl = 'https://t.me/averon_store/app';
+    mocks.adminBotToken = 'admin-token';
     mocks.productBotToken = 'product-token';
     mocks.miniAppBotToken = undefined;
     vi.unstubAllGlobals();
@@ -81,7 +84,7 @@ describe('Telegram product cards', () => {
 
     await expect(sendTelegramCard(card, '@averon_test')).resolves.toBe('42');
     const request = fetchMock.mock.calls[0]?.[1];
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/botproduct-token/sendPhoto');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/botadmin-token/sendPhoto');
     expect(request).toBeDefined();
     const body = JSON.parse(String(request?.body)) as { caption?: string; text?: string };
     const sentText = body.caption ?? body.text ?? '';
