@@ -13,8 +13,12 @@ vi.mock('../../../lib/adminMiddleware', () => ({
     });
   },
 }));
+vi.mock('../../integrations/domain-events', () => ({
+  dispatchDomainEvent: vi.fn(),
+}));
 
 import { buildManualVariantOptions, commerceModule } from '../index';
+import { dispatchDomainEvent } from '../../integrations/domain-events';
 
 const mediaId = '00000000-0000-4000-8000-000000000002';
 const categoryId = '00000000-0000-4000-8000-000000000003';
@@ -391,6 +395,73 @@ describe('commerce admin routes', () => {
       expect.objectContaining({ color: 'Red::#FF0000', size: 'S', stock: 2, salePriceUzs: 180000 }),
       expect.objectContaining({ color: 'Red::#FF0000', size: 'M', stock: 7, salePriceUzs: 180000 }),
     ]);
+    await app.close();
+  });
+
+  it('dispatches product.published when a manual product is created published', async () => {
+    const { app } = createTestApp();
+    await start(app);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/products',
+      headers: { 'idempotency-key': 'test-publish-product' },
+      payload: {
+        title: 'Test jacket',
+        titleUz: 'Sinov kurtkasi',
+        titleEn: 'Test jacket',
+        country: 'CN',
+        salePriceUzs: 180000,
+        images: [{ mediaId }],
+        publish: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(dispatchDomainEvent).toHaveBeenCalledOnce();
+    expect(vi.mocked(dispatchDomainEvent).mock.calls[0][1]).toMatchObject({
+      type: 'product.published',
+      productId: '00000000-0000-4000-8000-000000000004',
+      actorId: '00000000-0000-4000-8000-000000000001',
+      occurredAt: expect.any(String),
+    });
+    await app.close();
+  });
+
+  it('dispatches product.published when a draft transitions to published', async () => {
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL',
+      status: 'DRAFT',
+      publishedAt: null,
+      categoryId: null,
+      preorderEnabled: false,
+      preorderLimit: 0,
+      preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } },
+      description: null,
+      attributes: {},
+      images: [],
+      variants: [],
+      salePriceUzs: 180000,
+    };
+    const { app } = createTestApp({ manualProduct });
+    await start(app);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: { publish: true },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(dispatchDomainEvent).toHaveBeenCalledOnce();
+    expect(vi.mocked(dispatchDomainEvent).mock.calls[0][1]).toMatchObject({
+      type: 'product.published',
+      productId: manualProduct.id,
+      actorId: '00000000-0000-4000-8000-000000000001',
+      occurredAt: expect.any(String),
+    });
     await app.close();
   });
 
