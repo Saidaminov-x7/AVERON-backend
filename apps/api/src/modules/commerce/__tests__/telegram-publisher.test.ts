@@ -50,6 +50,10 @@ describe('Telegram product cards', () => {
     expect(card.productUrl).toBe('https://t.me/averon_store/app?startapp=p_red-jacket');
     expect(card.availability).toBe('PREORDER');
     expect(card.captionText).toContain('Preorder · 5 available');
+    expect(card.captionText).toContain('💰 Price: 125,000 UZS');
+    expect(card.captionText).not.toContain('https://t.me/averon_store/app');
+    expect(card.captionHtml).toContain('<b>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; Jacket</b>');
+    expect(card.captionHtml).toContain('<i>📦 Preorder · 5 available</i>');
     expect(card.estimatedAvailableAt).toBeNull();
     expect(card.productUrl).not.toContain('internal-id');
   });

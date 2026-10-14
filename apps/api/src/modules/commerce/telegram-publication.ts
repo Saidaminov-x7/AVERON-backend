@@ -147,7 +147,18 @@ export const telegramPublicationModule: FastifyPluginAsync = async (app) => {
           meta: { slug: product.slug },
         },
       });
-      return { ...card, channelId: config.TELEGRAM_CHANNEL_ID?.trim() || null };
+      const previewCard = {
+        title: card.title,
+        description: card.description,
+        priceUzs: card.priceUzs,
+        availability: card.availability,
+        estimatedAvailableAt: card.estimatedAvailableAt,
+        imageUrl: card.imageUrl,
+        productUrl: card.productUrl,
+        captionText: card.captionText,
+        buttonText: card.buttonText,
+      };
+      return { ...previewCard, channelId: config.TELEGRAM_CHANNEL_ID?.trim() || null };
     } catch (error) {
       if (error instanceof TelegramPublishError) {
         return reply.status(400).send({ code: error.code });
