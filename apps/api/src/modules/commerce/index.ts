@@ -529,6 +529,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
       throw error;
     }
+    if (input.publish) {
+      dispatchDomainEvent(app, {
+        type: 'product.published',
+        productId: product.id,
+        actorId: request.user.userId,
+        occurredAt: new Date().toISOString(),
+      });
+    }
     return reply.status(201).send(product);
   });
 
@@ -553,6 +561,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       },
     });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
+    const wasPublished = product.status === ProductPublicationStatus.PUBLISHED;
 
     let removedMediaIds: string[] = [];
     const updated = await app.prisma.$transaction(async (tx) => {
@@ -759,6 +768,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           request.log.error({ err: error, mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
         });
       }
+    }
+    if (input.publish && !wasPublished) {
+      dispatchDomainEvent(app, {
+        type: 'product.published',
+        productId: updated.id,
+        actorId: request.user.userId,
+        occurredAt: new Date().toISOString(),
+      });
     }
     return updated;
   });
