@@ -3,11 +3,16 @@
 
 import { Redis } from 'ioredis';
 import { FastifyBaseLogger } from 'fastify';
-import { config } from '../config';
+
+// Keep this integration independent from the API's full environment parser.
+// The Telegram worker does not need database or JWT credentials just to poll
+// Telegram, so reading its three settings directly keeps that service least
+// privileged while the API continues to validate the complete environment.
+const telegramToken = process.env.TELEGRAM_TOKEN_2FA || process.env.TELEGRAM_BOT_TOKEN;
+const telegramAdminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
 
 function getTelegramApiBase(): string | null {
-  const token = config.TELEGRAM_TOKEN_2FA || config.TELEGRAM_BOT_TOKEN;
-  return token ? `https://api.telegram.org/bot${token}` : null;
+  return telegramToken ? `https://api.telegram.org/bot${telegramToken}` : null;
 }
 
 const REDIS_CHAT_ID_KEY = 'telegram:admin:chat_id';
@@ -62,8 +67,8 @@ export async function sendTelegramMessage(
  * Получить сохраненный Chat ID администратора
  */
 export async function getAdminChatId(redis: Redis): Promise<string | null> {
-  if (config.TELEGRAM_ADMIN_CHAT_ID) {
-    return config.TELEGRAM_ADMIN_CHAT_ID;
+  if (telegramAdminChatId) {
+    return telegramAdminChatId;
   }
   return await redis.get(REDIS_CHAT_ID_KEY);
 }
@@ -107,7 +112,7 @@ export async function sendTelegram2FACode(
  * Запуск Long Polling для обработки команд бота (/start)
  */
 export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
-  if (!config.TELEGRAM_TOKEN_2FA && !config.TELEGRAM_BOT_TOKEN) {
+  if (!telegramToken) {
     logger?.warn('[Telegram] TELEGRAM_TOKEN_2FA not configured. Bot polling skipped.');
     return;
   }
@@ -151,7 +156,7 @@ export function startTelegramBot(redis: Redis, logger?: FastifyBaseLogger) {
             const firstName = msg.from?.first_name || 'Администратор';
 
             // Если владелец задан в Railway, бот полностью игнорирует всех остальных.
-            if (config.TELEGRAM_ADMIN_CHAT_ID && String(chatId) !== config.TELEGRAM_ADMIN_CHAT_ID) {
+            if (telegramAdminChatId && String(chatId) !== telegramAdminChatId) {
               logger?.warn({ chatId }, '[Telegram] Ignored message from unauthorized chat');
               continue;
             }
