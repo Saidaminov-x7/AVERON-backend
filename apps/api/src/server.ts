@@ -39,6 +39,7 @@ import { createAdaptiveRateLimitCache } from './lib/adaptive-rate-limit-cache';
 import { trustProxyOption } from './lib/trust-proxy';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
+import { createIdleConnectionManager } from './lib/idle-connection-manager';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -83,6 +84,39 @@ const server = fastify({
       keywords: ['kind', 'modifier'],
     },
   },
+});
+
+const idleConnections = createIdleConnectionManager({
+  idleMs: 60_000,
+  connect: async () => {
+    await prisma.$connect();
+    if (redis.status === 'end') await redis.connect();
+    else if (redis.status !== 'ready') await redis.ping();
+  },
+  disconnect: async () => {
+    const results = await Promise.allSettled([
+      redis.status === 'ready' ? redis.quit() : Promise.resolve(),
+      prisma.$disconnect(),
+    ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  },
+  onError: (error) => server.log.warn({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[Idle] Could not close idle database/cache connections'),
+});
+const leasedRequests = new WeakSet<object>();
+
+server.addHook('onRequest', async (request, reply) => {
+  try {
+    await idleConnections.acquire();
+    leasedRequests.add(request);
+  } catch (error) {
+    server.log.error({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[Idle] Could not reconnect API dependencies');
+    return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Service is temporarily unavailable' });
+  }
+});
+server.addHook('onResponse', (request, _reply, done) => {
+  if (leasedRequests.delete(request)) idleConnections.release();
+  done();
 });
 
 if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0 && !isRailwayRuntime) {
@@ -477,14 +511,7 @@ server.setNotFoundHandler((request, reply) => {
   });
 });
 
-import { startTelegramBot, stopTelegramBot } from './lib/telegram';
-import { runScheduledBackup } from './lib/jobs/scheduled-backup';
-import { retryPendingWebhookDeliveries } from './lib/webhookDelivery';
-
 // ─── Запуск и Graceful Shutdown ───────────────────────────────────────────────
-
-let scheduledBackupInterval: NodeJS.Timeout | null = null;
-let webhookRetryInterval: NodeJS.Timeout | null = null;
 
 const start = async () => {
   try {
@@ -513,29 +540,6 @@ const start = async () => {
     await server.listen({ port: config.PORT, host: '0.0.0.0' });
     server.log.info(`✅ Server listening on port ${config.PORT} (${config.NODE_ENV})`);
 
-    // Запускаем Telegram-бота для 2FA
-    startTelegramBot(redis, server.log);
-
-    // Первичная очистка истёкших промо-акций сразу при старте
-    // Первичная запись снапшота целостности базы данных
-    runScheduledBackup(prisma, server.log).catch((err) => {
-      server.log.error({ err }, '[Backup] Error during startup runScheduledBackup check');
-    });
-
-    // Периодическая проверка целостности и снапшот данных (каждые 24 часа)
-    scheduledBackupInterval = setInterval(() => {
-      runScheduledBackup(prisma, server.log).catch((err) => {
-        server.log.error({ err }, '[Backup] Error in runScheduledBackup interval');
-      });
-    }, 24 * 60 * 60 * 1000);
-
-    // Периодический воркер повторной доставки вебхуков (каждые 60 секунд)
-    webhookRetryInterval = setInterval(() => {
-      retryPendingWebhookDeliveries(prisma, server.log).catch((err) => {
-        server.log.error({ err }, '[Webhook] Error in retryPendingWebhookDeliveries');
-      });
-    }, 60 * 1000);
-
     // Предупреждение о включённых флагах Категории 2 (без полной бэкенд-интеграции)
     try {
       const siteSettings = await prisma.siteSettings.findUnique({ where: { id: 'singleton' } });
@@ -563,6 +567,7 @@ const start = async () => {
         );
       }
     } catch {}
+    idleConnections.scheduleClose();
   } catch (err) {
     server.log.error(err, 'Failed to start server');
     process.exit(1);
@@ -572,16 +577,8 @@ const start = async () => {
 const shutdown = async (signal: string) => {
   server.log.info(`Received ${signal}, graceful shutdown...`);
   try {
-    if (scheduledBackupInterval) {
-      clearInterval(scheduledBackupInterval);
-    }
-    if (webhookRetryInterval) {
-      clearInterval(webhookRetryInterval);
-    }
-    stopTelegramBot();
     await server.close();
-    await prisma.$disconnect();
-    redis.disconnect();
+    await idleConnections.close();
     server.log.info('Server closed gracefully');
     process.exit(0);
   } catch (err) {
