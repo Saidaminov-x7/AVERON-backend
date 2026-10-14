@@ -58,8 +58,21 @@ describe('Telegram product cards', () => {
     expect(card.productUrl).not.toContain('internal-id');
   });
 
-  it('considers the product bot token configured without requiring a Mini App token', () => {
+  it('uses the dedicated admin bot token for product publication', () => {
     expect(isTelegramProductPublisherConfigured()).toBe(true);
+  });
+
+  it('does not fall back to the 2FA/general or Mini App bot token for product posts', async () => {
+    mocks.adminBotToken = '';
+    mocks.productBotToken = 'general-or-2fa-token';
+    mocks.miniAppBotToken = 'mini-app-token';
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(isTelegramProductPublisherConfigured()).toBe(false);
+    await expect(sendTelegramCard(buildTelegramCard(product, { locale: 'en' }), '@averon_test'))
+      .rejects.toThrowError(new TelegramPublishError('TELEGRAM_NOT_CONFIGURED'));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects non-published products and unsafe public identifiers', () => {
