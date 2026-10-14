@@ -41,7 +41,7 @@ export class TelegramPublishError extends Error {
 
 export function isTelegramProductPublisherConfigured(): boolean {
   return Boolean(
-    (config.TELEGRAM_ADMIN_BOT?.trim() || config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim()) &&
+    config.TELEGRAM_ADMIN_BOT?.trim() &&
     config.TELEGRAM_CHANNEL_ID?.trim(),
   );
 }
@@ -183,7 +183,7 @@ export function buildTelegramCard(
 }
 
 export async function sendTelegramCard(card: TelegramCard, channelId: string): Promise<string> {
-  const token = config.TELEGRAM_ADMIN_BOT?.trim() || config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim();
+  const token = config.TELEGRAM_ADMIN_BOT?.trim();
   if (!token) throw new TelegramPublishError('TELEGRAM_NOT_CONFIGURED');
   if (!/^@[A-Za-z0-9_]{5,32}$/.test(channelId) && !/^-100\d{5,20}$/.test(channelId)) {
     throw new TelegramPublishError('TELEGRAM_CHANNEL_NOT_CONFIGURED');
