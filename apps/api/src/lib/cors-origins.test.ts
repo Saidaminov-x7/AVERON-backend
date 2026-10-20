@@ -14,5 +14,6 @@ describe('CORS origin allowlist', () => {
   it('does not broaden the allowlist to arbitrary Vercel previews or lookalikes', () => {
     expect(isCorsOriginAllowed('https://averon-frontend-three-git-preview.vercel.app', origins)).toBe(false);
     expect(isCorsOriginAllowed('https://averon.uz.attacker.example', origins)).toBe(false);
+    expect(isCorsOriginAllowed('https://attacker.example', origins)).toBe(false);
   });
 });

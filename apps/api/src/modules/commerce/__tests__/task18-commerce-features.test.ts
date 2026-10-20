@@ -27,7 +27,8 @@ async function tokenFor(app: ReturnType<typeof Fastify>, userId = USER_ID, role 
 describe('Task 18 outfit boundary', () => {
   it('scopes saved-outfit reads to the authenticated owner', async () => {
     const findFirst = vi.fn(async () => null);
-    const app = makeApp({ outfit: { findFirst } }, [outfitsModule]);
+    const findActiveUser = vi.fn(async () => ({ isBlocked: false, isDeleted: false }));
+    const app = makeApp({ user: { findUnique: findActiveUser }, outfit: { findFirst } }, [outfitsModule]);
     const token = await tokenFor(app);
     const response = await app.inject({
       method: 'GET',
@@ -38,13 +39,16 @@ describe('Task 18 outfit boundary', () => {
     expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: '00000000-0000-4000-8000-000000000004', userId: USER_ID },
     }));
+    expect(findActiveUser).toHaveBeenCalledOnce();
     await app.close();
   });
 
   it('rejects client-provided prices and IDs that do not resolve to published products', async () => {
     const findMany = vi.fn(async () => []);
+    const findActiveUser = vi.fn(async () => ({ isBlocked: false, isDeleted: false }));
     const create = vi.fn();
     const app = makeApp({
+      user: { findUnique: findActiveUser },
       commerceProduct: { findMany },
       outfit: { create },
     }, [outfitsModule]);
@@ -65,13 +69,15 @@ describe('Task 18 outfit boundary', () => {
     expect(fakeProduct.statusCode).toBe(409);
     expect(fakeProduct.json().code).toBe('PRODUCT_NOT_AVAILABLE');
     expect(create).not.toHaveBeenCalled();
+    expect(findActiveUser).toHaveBeenCalledTimes(2);
     await app.close();
   });
 
   it('rejects invalid outfit IDs and keeps newly unpublished products out of saved views', async () => {
     const findFirst = vi.fn(async () => null);
     const findMany = vi.fn(async () => []);
-    const app = makeApp({ outfit: { findFirst, findMany } }, [outfitsModule]);
+    const findActiveUser = vi.fn(async () => ({ isBlocked: false, isDeleted: false }));
+    const app = makeApp({ user: { findUnique: findActiveUser }, outfit: { findFirst, findMany } }, [outfitsModule]);
     const token = await tokenFor(app);
     const invalidId = await app.inject({
       method: 'GET',
@@ -93,12 +99,18 @@ describe('Task 18 outfit boundary', () => {
         }),
       }),
     }));
+    expect(findActiveUser).toHaveBeenCalledTimes(2);
     await app.close();
   });
 
   it('rejects oversized outfit item lists before looking up products', async () => {
     const findMany = vi.fn(async () => []);
-    const app = makeApp({ commerceProduct: { findMany }, outfit: { create: vi.fn() } }, [outfitsModule]);
+    const findActiveUser = vi.fn(async () => ({ isBlocked: false, isDeleted: false }));
+    const app = makeApp({
+      user: { findUnique: findActiveUser },
+      commerceProduct: { findMany },
+      outfit: { create: vi.fn() },
+    }, [outfitsModule]);
     const token = await tokenFor(app);
     const response = await app.inject({
       method: 'POST',
@@ -113,6 +125,7 @@ describe('Task 18 outfit boundary', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(findMany).not.toHaveBeenCalled();
+    expect(findActiveUser).toHaveBeenCalledOnce();
     await app.close();
   });
 });
@@ -221,7 +234,9 @@ describe('Task 18 promo policy', () => {
       usedActivations: 1,
     };
     const create = vi.fn();
+    const findActiveUser = vi.fn(async () => ({ isBlocked: false, isDeleted: false }));
     const app = makeApp({
+      user: { findUnique: findActiveUser },
       commercePromoCode: { findUnique: vi.fn(async () => promo) },
       commercePromoCodeUsage: { findUnique: vi.fn(async () => null), create },
     }, [commercePromosModule]);
@@ -235,6 +250,7 @@ describe('Task 18 promo policy', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ valid: true, code: 'SPRING10', discountPercent: 10, consumed: false });
     expect(create).not.toHaveBeenCalled();
+    expect(findActiveUser).toHaveBeenCalledOnce();
     await app.close();
   });
 

@@ -17,6 +17,9 @@ import { requestPhonePasswordLogin, requestPhonePasswordReset, requestPhoneRegis
 import { adminTotpModule } from './admin-totp';
 import { telegramAuthModule } from './telegram';
 import { createAuthRateLimitKey } from './rate-limit-key';
+import { createCorsOriginAllowlist, isCorsOriginAllowed } from '../../lib/cors-origins';
+
+const authCookieOrigins = createCorsOriginAllowlist(config.CORS_ORIGINS);
 import { isSecureRequest } from '../../lib/secure-request';
 
 export const authModule: FastifyPluginAsync = async (server) => {
@@ -109,10 +112,22 @@ export const authModule: FastifyPluginAsync = async (server) => {
   // Обновление токенов по refreshToken (лимит 30 запросов в минуту)
   server.post('/refresh', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
-  }, refreshHandler);
+  }, async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && !isCorsOriginAllowed(origin, authCookieOrigins)) {
+      return reply.status(403).send({ message: 'Forbidden' });
+    }
+    return refreshHandler(request, reply);
+  });
 
   // Выход
-  server.post('/logout', logoutHandler);
+  server.post('/logout', async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin && !isCorsOriginAllowed(origin, authCookieOrigins)) {
+      return reply.status(403).send({ message: 'Forbidden' });
+    }
+    return logoutHandler(request, reply);
+  });
 
   // Текущий пользователь (требует auth)
   server.get('/me', { preHandler: [authMiddleware] }, meHandler);

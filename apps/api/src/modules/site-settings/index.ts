@@ -2,6 +2,8 @@
 // Публичный эндпоинт настроек сайта — без авторизации, кэшируется в Redis
 
 import { FastifyPluginAsync } from 'fastify';
+import argon2 from 'argon2';
+import { timingSafeEqual } from 'node:crypto';
 
 const CACHE_KEY = 'site:settings:public';
 const CACHE_TTL = 30; // 30 секунд — короткий TTL для быстрого отклика на изменения
@@ -13,11 +15,15 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
    * Кэшируется в Redis с TTL 30 секунд.
    */
   server.get('/public', async (_request, reply) => {
+    const removeMaintenancePassword = (settings: Record<string, unknown>) => {
+      const { maintenanceBypassPassword: _maintenanceBypassPassword, ...safeSettings } = settings;
+      return safeSettings;
+    };
     // 1. Пробуем взять из Redis
     const cached = await server.redis.get(CACHE_KEY);
     if (cached) {
       reply.header('X-Cache', 'HIT');
-      return JSON.parse(cached);
+      return removeMaintenancePassword(JSON.parse(cached) as Record<string, unknown>);
     }
 
     // 2. Берём из БД
@@ -61,8 +67,11 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
     const legacyEmail = normalizedEmail.includes('ijarauz') || demoEmails.has(normalizedEmail);
     const normalizedPhone = settings.contactPhone.replace(/\D/g, '');
     const legacyPhone = ['998712000000', '998900000000'].includes(normalizedPhone);
+    const { maintenanceBypassPassword: _maintenanceBypassPassword, ...publicSettings } = settings as typeof settings & {
+      maintenanceBypassPassword?: string | null;
+    };
     settings = {
-      ...settings,
+      ...publicSettings,
       siteName: legacyName ? 'AVERON' : settings.siteName,
       contactEmail: legacyEmail ? '' : settings.contactEmail,
       contactPhone: legacyPhone ? '' : settings.contactPhone,
@@ -102,9 +111,33 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
       return reply.status(404).send({ message: 'No bypass password configured' });
     }
 
-    if (password === bypassPassword) {
-      return { allowed: true };
+    let allowed = false;
+    if (bypassPassword.startsWith('$argon2')) {
+      allowed = await argon2.verify(bypassPassword, password).catch(() => false);
+    } else {
+      const submitted = Buffer.from(password);
+      const legacy = Buffer.from(bypassPassword);
+      allowed = submitted.length === legacy.length && timingSafeEqual(submitted, legacy);
+      if (allowed) {
+        const passwordHash = await argon2.hash(bypassPassword);
+        const migrated = await server.prisma.siteSettings.updateMany({
+          where: { id: 'singleton', maintenanceBypassPassword: bypassPassword },
+          data: { maintenanceBypassPassword: passwordHash },
+        });
+        if (migrated.count === 0) {
+          const current = await server.prisma.siteSettings.findUnique({
+            where: { id: 'singleton' },
+            select: { maintenanceBypassPassword: true },
+          });
+          const currentHash = current?.maintenanceBypassPassword;
+          allowed = currentHash?.startsWith('$argon2')
+            ? await argon2.verify(currentHash, password).catch(() => false)
+            : false;
+        }
+      }
     }
+
+    if (allowed) return { allowed: true };
 
     return reply.status(401).send({ allowed: false, message: 'Неверный пароль' });
   });

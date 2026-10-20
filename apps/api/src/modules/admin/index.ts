@@ -308,15 +308,10 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     const buffer = data.data;
 
     const detected = await fileTypeFromBuffer(buffer);
-    const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'];
+    const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
     let finalMime: string = detected?.mime || data.mimetype || 'image/png';
     if (!detected || !ALLOWED.includes(detected.mime)) {
-      // Разрешаем также SVG если это валидный XML/SVG
-      const isSvg = buffer.slice(0, 200).toString('utf-8').includes('<svg');
-      if (!isSvg) {
-        return reply.status(400).send({ message: 'INVALID_FILE_TYPE: Поддерживаются только изображения (JPEG, PNG, WEBP, GIF, SVG)' });
-      }
-      finalMime = 'image/svg+xml';
+      return reply.status(400).send({ message: 'INVALID_FILE_TYPE: Поддерживаются только изображения (JPEG, PNG, WEBP, GIF)' });
     }
 
     const service = getService(request);
@@ -632,6 +627,10 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     const restored = await request.server.prisma.user.update({
       where: { id },
       data: { isDeleted: false, deletedAt: null },
+      select: {
+        id: true,
+        isDeleted: true,
+      },
     });
     return reply.send({ success: true, user: restored });
   });

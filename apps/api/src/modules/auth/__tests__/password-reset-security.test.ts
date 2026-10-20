@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { config } from '../../../config';
 
 vi.hoisted(() => {
   process.env.RESEND_API_KEY = '';
@@ -63,6 +64,44 @@ describe('password reset security', () => {
     expect(JSON.stringify(logInfo.mock.calls)).not.toContain(resetToken);
     expect(JSON.stringify(logWarn.mock.calls)).not.toContain(resetToken);
     expect(JSON.stringify(logInfo.mock.calls)).not.toContain('reset-password?token=');
+    expect(JSON.stringify(logInfo.mock.calls)).not.toContain('Password reset link generated');
+  });
+
+  it('logs a provider rejection without including the reset link or response body', async () => {
+    const originalKey = config.RESEND_API_KEY;
+    const fetchMock = vi.fn(async () => new Response('provider failure body', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    Object.assign(config, { RESEND_API_KEY: 'test-only-provider-key' });
+    const redisSet = vi.fn(async (_key: string, ..._args: unknown[]) => 'OK');
+    const logInfo = vi.fn();
+    const logWarn = vi.fn();
+    const logError = vi.fn();
+    const request = {
+      body: { email: 'person@example.test', locale: 'en' },
+      server: {
+        prisma: {
+          user: {
+            findUnique: vi.fn(async () => ({ id: userId, email: 'person@example.test', name: 'Test user', isBlocked: false })),
+          },
+        },
+        redis: { set: redisSet },
+      },
+      log: { info: logInfo, warn: logWarn, error: logError },
+    } as never;
+    const reply = { send: vi.fn() } as never;
+
+    try {
+      await forgotPasswordHandler(request, reply);
+
+      const resetToken = String(redisSet.mock.calls[0][0]).replace('pwd_reset:', '');
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(JSON.stringify(logError.mock.calls)).toContain('503');
+      expect(JSON.stringify(logError.mock.calls)).not.toContain(resetToken);
+      expect(JSON.stringify(logError.mock.calls)).not.toContain('provider failure body');
+    } finally {
+      Object.assign(config, { RESEND_API_KEY: originalKey });
+      vi.unstubAllGlobals();
+    }
   });
 
   it('clears the legacy refresh hash and revokes every active auth session in the password-reset transaction', async () => {

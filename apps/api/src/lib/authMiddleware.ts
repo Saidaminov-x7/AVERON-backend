@@ -14,6 +14,18 @@ export const authMiddleware = async (
   try {
     await request.jwtVerify();
   } catch {
-    reply.status(401).send({ message: 'Unauthorized' });
+    return reply.status(401).send({ message: 'Unauthorized' });
+  }
+
+  const userId = request.user.userId;
+  if (!userId) return reply.status(401).send({ message: 'Unauthorized' });
+
+  const user = await request.server.prisma.user.findUnique({
+    where: { id: userId },
+    select: { isBlocked: true, isDeleted: true },
+  });
+
+  if (!user || user.isBlocked || user.isDeleted) {
+    return reply.status(403).send({ message: 'User account is blocked or unavailable' });
   }
 };

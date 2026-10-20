@@ -8,6 +8,7 @@ import { isDeniedRefreshSecret } from './secret-validation';
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
+  HOST: z.string().default('0.0.0.0'),
   RAILWAY_ENVIRONMENT_ID: z.string().optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   TRUST_PROXY_ADDRESSES: z
