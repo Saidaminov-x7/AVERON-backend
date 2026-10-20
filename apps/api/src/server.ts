@@ -613,8 +613,8 @@ const start = async () => {
       server.log.warn('ADMIN_EMAIL and ADMIN_PASSWORD are not set; admin bootstrap skipped');
     }
 
-    await server.listen({ port: config.PORT, host: '0.0.0.0' });
-    server.log.info(`✅ Server listening on port ${config.PORT} (${config.NODE_ENV})`);
+    await server.listen({ port: config.PORT, host: config.HOST });
+    server.log.info(`✅ Server listening on ${config.HOST}:${config.PORT} (${config.NODE_ENV})`);
 
     // Запускаем Telegram-бота для 2FA
 

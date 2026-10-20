@@ -50,6 +50,14 @@ const SITE_SETTINGS_ADMIN_SELECT = {
   updatedBy: { select: { id: true, name: true } },
 } satisfies Prisma.SiteSettingsSelect;
 
+function toSafeSiteSettings(settings: Prisma.SiteSettingsGetPayload<{ select: typeof SITE_SETTINGS_ADMIN_SELECT }>) {
+  const { maintenanceBypassPassword, ...safeSettings } = settings;
+  return {
+    ...safeSettings,
+    maintenanceBypassPasswordConfigured: Boolean(maintenanceBypassPassword),
+  };
+}
+
 export class AdminService {
   constructor(public readonly prisma: PrismaClient) { }
 
@@ -1120,7 +1128,7 @@ export class AdminService {
   // ─── Настройки сайта ─────────────────────────────────────────────────────────
 
   async getSiteSettings() {
-    return this.prisma.siteSettings.upsert({
+    const settings = await this.prisma.siteSettings.upsert({
       where: { id: 'singleton' },
       update: {},
       create: {
@@ -1136,14 +1144,18 @@ export class AdminService {
       },
       select: SITE_SETTINGS_ADMIN_SELECT,
     });
+    return toSafeSiteSettings(settings);
   }
 
   async updateSiteSettings(dto: UpdateSiteSettingsDto, adminId: string, ip?: string) {
-    const { navLinks, ...restDto } = dto;
+    const { navLinks, maintenanceBypassPassword, ...restDto } = dto;
     const updateData: Prisma.SiteSettingsUncheckedUpdateInput = {
       ...restDto,
       updatedById: adminId,
     };
+    if (maintenanceBypassPassword?.trim()) {
+      updateData.maintenanceBypassPassword = await argon2.hash(maintenanceBypassPassword);
+    }
     if (navLinks !== undefined) {
       updateData.navLinks = navLinks === null ? Prisma.DbNull : navLinks;
     }
@@ -1159,6 +1171,9 @@ export class AdminService {
       maxProductPhotoSizeMb: dto.maxProductPhotoSizeMb ?? 10,
       updatedById: adminId,
     };
+    if (maintenanceBypassPassword?.trim()) {
+      createData.maintenanceBypassPassword = updateData.maintenanceBypassPassword as string;
+    }
     if (navLinks !== undefined && navLinks !== null) {
       createData.navLinks = navLinks;
     }
@@ -1170,16 +1185,17 @@ export class AdminService {
       select: SITE_SETTINGS_ADMIN_SELECT,
     });
 
+    const { maintenanceBypassPassword: _maintenanceBypassPassword, ...safeDto } = dto;
     await this.log({
       adminId,
       action: 'SITE_SETTINGS_UPDATED',
       resource: 'settings',
-      meta: dto,
+      meta: { ...safeDto, ...(maintenanceBypassPassword?.trim() ? { maintenanceBypassPasswordConfigured: true } : {}) },
       ip,
       userAgent: 'admin-panel',
     });
 
-    return settings;
+    return toSafeSiteSettings(settings);
   }
 
   /**

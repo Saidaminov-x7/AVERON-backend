@@ -5,6 +5,20 @@ import { passwordValidation, registerSchema, loginSchema, verify2faSchema, reset
 
 describe('Auth Module Validation & Password Policy', () => {
   describe('registerSchema', () => {
+    it('always assigns the user role for public registration', () => {
+      const input = {
+        email: 'user@ijarauz.uz',
+        phone: '+998901234567',
+        password: 'Password123!',
+        name: 'Vosilhoja',
+        role: 'ADMIN',
+      };
+
+      const result = registerSchema.safeParse(input);
+      expect(result.success).toBe(false);
+      expect(registerSchema.parse({ ...input, role: 'USER' }).role).toBe('USER');
+    });
+
     it('принимает корректные данные с сильным паролем', () => {
       const validData = {
         email: 'user@ijarauz.uz',

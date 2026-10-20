@@ -2,7 +2,7 @@ import sharp from 'sharp';
 
 const MAX_IMAGE_PIXELS = 16_000_000;
 const MAX_IMAGE_DIMENSION = 8_000;
-const SUPPORTED_FORMATS = new Set(['jpeg', 'png', 'webp', 'gif', 'svg']);
+const SUPPORTED_FORMATS = new Set(['jpeg', 'png', 'webp', 'gif']);
 
 export async function processUploadedImage(data: Buffer) {
   try {

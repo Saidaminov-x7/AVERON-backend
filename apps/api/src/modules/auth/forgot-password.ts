@@ -15,6 +15,17 @@ import { config } from '../../config';
 
 const RESET_TOKEN_TTL_SECONDS = 3600; // 1 час
 
+function escapeHtmlText(value: string): string {
+  const entities: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  return value.replace(/[&<>"']/g, (character) => entities[character]!);
+}
+
 /**
  * POST /auth/forgot-password
  * Принимает email пользователя, генерирует криптостойкий токен сброса пароля,
@@ -60,7 +71,7 @@ export const forgotPasswordHandler = async (
 
   request.log.info(
     { userId: user.id, locale: userLocale },
-    'Password reset link generated',
+    'Password reset requested',
   );
 
   // Отправляем уведомление через Telegram, если бот настроен (админу или в канал логов)
@@ -94,10 +105,10 @@ export const forgotPasswordHandler = async (
         : 'Восстановление пароля';
 
       const emailGreeting = userLocale === 'uz'
-        ? `Assalomu alaykum, ${user.name}!`
+        ? `Assalomu alaykum, ${escapeHtmlText(user.name)}!`
         : userLocale === 'en'
-        ? `Hello, ${user.name}!`
-        : `Здравствуйте, ${user.name}!`;
+        ? `Hello, ${escapeHtmlText(user.name)}!`
+        : `Здравствуйте, ${escapeHtmlText(user.name)}!`;
 
       const emailBody = userLocale === 'uz'
         ? 'Siz Ijarauz platformasidagi hisobingiz parolini tiklashni so‘radingiz.'
@@ -117,7 +128,7 @@ export const forgotPasswordHandler = async (
         ? 'This link is valid for 1 hour. If you did not request this, please ignore this email.'
         : 'Ссылка действительна в течение 1 часа. Если вы не запрашивали смену пароля, просто проигнорируйте это письмо.';
 
-      await fetch('https://api.resend.com/emails', {
+      const response = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${config.RESEND_API_KEY}`,
@@ -143,6 +154,9 @@ export const forgotPasswordHandler = async (
           `,
         }),
       });
+      if (!response.ok) {
+        request.log.error({ userId: user.id, statusCode: response.status }, '[ForgotPassword] Email provider rejected the reset message');
+      }
     } catch (err) {
       request.log.error({
         requestId: request.id,

@@ -68,6 +68,10 @@ describe('media management access control', () => {
 
     expect(response.statusCode).toBe(403);
     expect(findUser).toHaveBeenCalledOnce();
+    expect(findUser).toHaveBeenCalledWith({
+      where: { id: 'support-1' },
+      select: { id: true, role: true, adminRole: true, isBlocked: true, isDeleted: true },
+    });
     await app.close();
   });
 
@@ -95,7 +99,15 @@ describe('media management access control', () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(findUser).toHaveBeenCalledOnce();
+    expect(findUser).toHaveBeenCalledTimes(2);
+    expect(findUser).toHaveBeenNthCalledWith(1, {
+      where: { id: 'support-1' },
+      select: { isBlocked: true, isDeleted: true },
+    });
+    expect(findUser).toHaveBeenNthCalledWith(2, {
+      where: { id: 'support-1' },
+      select: { role: true, adminRole: true, isBlocked: true, isDeleted: true },
+    });
     await app.close();
   });
 
