@@ -28,6 +28,7 @@ export type TelegramCard = {
   imageUrl: string | null;
   productUrl: string;
   captionText: string;
+  captionHtml: string;
   buttonText: string;
 };
 
@@ -38,10 +39,12 @@ export class TelegramPublishError extends Error {
   }
 }
 
+const AVERON_TELEGRAM_GROUP = '@averon_fashion';
+
 export function isTelegramProductPublisherConfigured(): boolean {
   return Boolean(
-    (config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim()) &&
-    config.TELEGRAM_CHANNEL_ID?.trim(),
+    config.TELEGRAM_ADMIN_BOT?.trim() &&
+    config.TELEGRAM_CHANNEL_ID?.trim().toLowerCase() === AVERON_TELEGRAM_GROUP,
   );
 }
 
@@ -119,9 +122,9 @@ export function buildTelegramCard(
         : 'OUT_OF_STOCK';
 
   const labels = {
-    ru: { inStock: 'В наличии', lowStock: `Осталось: ${stock}`, preorder: `Предзаказ · доступно ${preorderAvailable}`, out: 'Нет в наличии', price: 'Цена', button: 'Открыть товар' },
-    uz: { inStock: 'Mavjud', lowStock: `Qoldi: ${stock}`, preorder: `Oldindan buyurtma · ${preorderAvailable} dona`, out: 'Mavjud emas', price: 'Narx', button: 'Mahsulotni ochish' },
-    en: { inStock: 'In stock', lowStock: `Only ${stock} left`, preorder: `Preorder · ${preorderAvailable} available`, out: 'Out of stock', price: 'Price', button: 'Open product' },
+    ru: { inStock: 'В наличии', lowStock: `Осталось: ${stock}`, preorder: `Предзаказ · доступно ${preorderAvailable}`, out: 'Нет в наличии', price: 'Цена', currency: 'сум', button: 'Смотреть товар' },
+    uz: { inStock: 'Mavjud', lowStock: `Qoldi: ${stock}`, preorder: `Oldindan buyurtma · ${preorderAvailable} dona`, out: 'Mavjud emas', price: 'Narx', currency: "so'm", button: 'Mahsulotni ko‘rish' },
+    en: { inStock: 'In stock', lowStock: `Only ${stock} left`, preorder: `Preorder · ${preorderAvailable} available`, out: 'Out of stock', price: 'Price', currency: 'UZS', button: 'View product' },
   }[locale];
   const availabilityText = availability === 'IN_STOCK'
     ? labels.inStock
@@ -130,35 +133,23 @@ export function buildTelegramCard(
       : availability === 'PREORDER'
         ? labels.preorder
         : labels.out;
-  const miniAppUrl = config.TELEGRAM_MINI_APP_URL?.trim();
-  let productUrl: URL;
-  if (miniAppUrl) {
-    productUrl = new URL(miniAppUrl);
-    if (
-      productUrl.protocol !== 'https:' ||
-      productUrl.hostname !== 't.me' ||
-      productUrl.username ||
-      productUrl.password ||
-      productUrl.search ||
-      productUrl.hash ||
-      !/^\/[A-Za-z0-9_]{5,32}\/[A-Za-z0-9_-]{1,64}$/.test(productUrl.pathname)
-    ) throw new TelegramPublishError('INVALID_MINI_APP_URL');
-    productUrl.searchParams.set('startapp', `p_${product.slug}`);
-  } else {
-    productUrl = new URL(`/${locale}/mini-app`, config.PUBLIC_SITE_URL);
-    productUrl.searchParams.set('product', product.slug);
-  }
+  const productUrl = new URL(`/${locale}/catalog/${encodeURIComponent(product.slug)}`, config.PUBLIC_SITE_URL);
   const price = Number(product.salePriceUzs);
   if (!Number.isFinite(price) || price < 0) throw new TelegramPublishError('INVALID_PRODUCT_PRICE');
   const override = options.captionOverride?.trim();
-  const summary = (override || description).slice(0, 700);
-  const captionText = [
-    title,
-    summary,
-    `${labels.price}: ${price.toLocaleString(locale === 'en' ? 'en-US' : locale === 'uz' ? 'uz-UZ' : 'ru-RU')} UZS`,
-    availabilityText,
-    productUrl.toString(),
-  ].filter(Boolean).join('\n\n').slice(0, 1024);
+  const safeTitle = title.slice(0, 180);
+  const summary = (override || description).slice(0, 500);
+  const formattedPrice = price.toLocaleString(locale === 'en' ? 'en-US' : locale === 'uz' ? 'uz-UZ' : 'ru-RU');
+  const priceText = `💰 ${labels.price}: ${formattedPrice} ${labels.currency}`;
+  const availabilityLine = availability === 'IN_STOCK' ? '' : `📦 ${availabilityText}`;
+  const captionLines = [safeTitle, summary, priceText, availabilityLine].filter(Boolean);
+  const captionText = captionLines.join('\n\n');
+  const captionHtml = [
+    `<b>${escapeHtml(safeTitle)}</b>`,
+    summary ? escapeHtml(summary) : '',
+    `<b>${escapeHtml(priceText)}</b>`,
+    availabilityLine ? `<i>${escapeHtml(availabilityLine)}</i>` : '',
+  ].filter(Boolean).join('\n\n');
 
   const image = product.images[0]?.url;
   if (image && !isSafeTelegramPhotoUrl(image)) throw new TelegramPublishError('INVALID_PRODUCT_IMAGE_URL');
@@ -171,18 +162,22 @@ export function buildTelegramCard(
     imageUrl: image ?? null,
     productUrl: productUrl.toString(),
     captionText,
+    captionHtml,
     buttonText: labels.button,
   };
 }
 
 export async function sendTelegramCard(card: TelegramCard, channelId: string): Promise<string> {
-  const token = config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim();
+  const token = config.TELEGRAM_ADMIN_BOT?.trim();
   if (!token) throw new TelegramPublishError('TELEGRAM_NOT_CONFIGURED');
+  if (channelId.trim().toLowerCase() !== AVERON_TELEGRAM_GROUP) {
+    throw new TelegramPublishError('TELEGRAM_CHANNEL_NOT_ALLOWED');
+  }
   if (!/^@[A-Za-z0-9_]{5,32}$/.test(channelId) && !/^-100\d{5,20}$/.test(channelId)) {
     throw new TelegramPublishError('TELEGRAM_CHANNEL_NOT_CONFIGURED');
   }
 
-  const htmlCaption = escapeHtml(card.captionText);
+  const htmlCaption = card.captionHtml;
   const method = card.imageUrl ? 'sendPhoto' : 'sendMessage';
   const content = card.imageUrl
     ? { chat_id: channelId, photo: card.imageUrl, caption: htmlCaption, parse_mode: 'HTML' }

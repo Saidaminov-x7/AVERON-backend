@@ -1,17 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  miniAppUrl: 'https://t.me/averon_store/app',
+  adminBotToken: 'admin-token',
   productBotToken: 'product-token',
   miniAppBotToken: undefined as string | undefined,
+  channelId: '@averon_fashion',
 }));
 
 vi.mock('../../../config', () => ({
   config: {
+    get TELEGRAM_ADMIN_BOT() { return mocks.adminBotToken; },
     get TELEGRAM_BOT_TOKEN() { return mocks.productBotToken; },
     get TELEGRAM_MINI_APP_BOT_TOKEN() { return mocks.miniAppBotToken; },
-    TELEGRAM_CHANNEL_ID: '@averon_test',
-    get TELEGRAM_MINI_APP_URL() { return mocks.miniAppUrl; },
+    get TELEGRAM_CHANNEL_ID() { return mocks.channelId; },
     PUBLIC_SITE_URL: 'https://shop.example',
   },
 }));
@@ -36,23 +37,41 @@ const product: TelegramCardProduct = {
 
 describe('Telegram product cards', () => {
   afterEach(() => {
-    mocks.miniAppUrl = 'https://t.me/averon_store/app';
+    mocks.adminBotToken = 'admin-token';
     mocks.productBotToken = 'product-token';
     mocks.miniAppBotToken = undefined;
+    mocks.channelId = '@averon_fashion';
     vi.unstubAllGlobals();
   });
 
-  it('builds a slug-based Mini App deep link and correctly represents preorder', () => {
+  it('links to the AVERON storefront product page and correctly represents preorder', () => {
     const card = buildTelegramCard(product, { locale: 'en' });
-    expect(card.productUrl).toBe('https://t.me/averon_store/app?startapp=p_red-jacket');
+    expect(card.productUrl).toBe('https://shop.example/en/catalog/red-jacket');
     expect(card.availability).toBe('PREORDER');
     expect(card.captionText).toContain('Preorder · 5 available');
+    expect(card.captionText).toContain('💰 Price: 125,000 UZS');
+    expect(card.captionText).not.toContain('/mini-app');
+    expect(card.captionHtml).toContain('<b>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; Jacket</b>');
+    expect(card.captionHtml).toContain('<i>📦 Preorder · 5 available</i>');
     expect(card.estimatedAvailableAt).toBeNull();
     expect(card.productUrl).not.toContain('internal-id');
   });
 
-  it('considers the product bot token configured without requiring a Mini App token', () => {
+  it('uses the dedicated admin bot token for product publication', () => {
     expect(isTelegramProductPublisherConfigured()).toBe(true);
+  });
+
+  it('does not fall back to the 2FA/general or Mini App bot token for product posts', async () => {
+    mocks.adminBotToken = '';
+    mocks.productBotToken = 'general-or-2fa-token';
+    mocks.miniAppBotToken = 'mini-app-token';
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(isTelegramProductPublisherConfigured()).toBe(false);
+    await expect(sendTelegramCard(buildTelegramCard(product, { locale: 'en' }), '@averon_fashion'))
+      .rejects.toThrowError(new TelegramPublishError('TELEGRAM_NOT_CONFIGURED'));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects non-published products and unsafe public identifiers', () => {
@@ -62,10 +81,14 @@ describe('Telegram product cards', () => {
       .toThrowError(new TelegramPublishError('INVALID_PRODUCT_SLUG'));
   });
 
-  it('rejects unexpected Mini App URLs instead of embedding them in channel messages', () => {
-    mocks.miniAppUrl = 'https://evil.example/steal';
-    expect(() => buildTelegramCard(product, {}))
-      .toThrowError(new TelegramPublishError('INVALID_MINI_APP_URL'));
+  it('allows publication only to the AVERON | UK WEAR group', async () => {
+    mocks.channelId = '@another_channel';
+    expect(isTelegramProductPublisherConfigured()).toBe(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(sendTelegramCard(buildTelegramCard(product, {}), '@another_channel'))
+      .rejects.toThrowError(new TelegramPublishError('TELEGRAM_CHANNEL_NOT_ALLOWED'));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('escapes hostile product and caption text before mocked Telegram transport', async () => {
@@ -79,11 +102,16 @@ describe('Telegram product cards', () => {
     }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(sendTelegramCard(card, '@averon_test')).resolves.toBe('42');
+    await expect(sendTelegramCard(card, '@averon_fashion')).resolves.toBe('42');
     const request = fetchMock.mock.calls[0]?.[1];
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/botproduct-token/sendPhoto');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/botadmin-token/sendPhoto');
     expect(request).toBeDefined();
-    const body = JSON.parse(String(request?.body)) as { caption?: string; text?: string };
+    const body = JSON.parse(String(request?.body)) as {
+      caption?: string;
+      text?: string;
+      reply_markup?: { inline_keyboard?: Array<Array<{ url?: string }>> };
+    };
+    expect(body.reply_markup?.inline_keyboard?.[0]?.[0]?.url).toBe('https://shop.example/en/catalog/red-jacket');
     const sentText = body.caption ?? body.text ?? '';
     expect(sentText).toContain('&lt;b&gt;Click&lt;/b&gt; &amp; &quot;buy&quot;');
     expect(sentText).not.toContain('<script>');

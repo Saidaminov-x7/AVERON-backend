@@ -20,10 +20,15 @@ import { createAuthRateLimitKey } from './rate-limit-key';
 import { createCorsOriginAllowlist, isCorsOriginAllowed } from '../../lib/cors-origins';
 
 const authCookieOrigins = createCorsOriginAllowlist(config.CORS_ORIGINS);
+import { isSecureRequest } from '../../lib/secure-request';
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.addHook('onRequest', async (request, reply) => {
-    if (config.NODE_ENV === 'production' && request.protocol !== 'https') {
+    if (config.NODE_ENV === 'production' && !isSecureRequest(
+      request.protocol,
+      request.headers['x-forwarded-proto'],
+      config.RAILWAY_ENVIRONMENT_ID,
+    )) {
       return reply.status(426).send({ message: 'HTTPS is required' });
     }
   });
