@@ -6,7 +6,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import crypto from 'crypto';
 import { Agent } from 'undici';
 import { isIP } from 'node:net';
-import { createPinnedLookup, resolveSafePublicHttpUrl, type OutboundAddressResolver } from './safeOutboundUrl';
+import { createPinnedLookup, resolveSafePublicHttpsUrl, type OutboundAddressResolver } from './safeOutboundUrl';
 
 export type WebhookPayload = Prisma.InputJsonObject & {
   event: string;
@@ -40,7 +40,7 @@ export async function sendWebhookRequest(
   fetcher: typeof fetch = fetch,
   resolveAddresses?: OutboundAddressResolver,
 ): Promise<{ success: boolean; statusCode?: number; error?: string }> {
-  const safeTarget = await resolveSafePublicHttpUrl(url, resolveAddresses);
+  const safeTarget = await resolveSafePublicHttpsUrl(url, resolveAddresses);
   if (!safeTarget) {
     return { success: false, error: 'Webhook destination is not allowed' };
   }

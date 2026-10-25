@@ -93,7 +93,7 @@ function isPublicAddress(address: string): boolean {
   );
 }
 
-export async function resolveSafePublicHttpUrl(
+export async function resolveSafePublicHttpsUrl(
   value: string,
   resolve: OutboundAddressResolver = resolveAddresses,
 ): Promise<SafeOutboundTarget | null> {
@@ -105,7 +105,7 @@ export async function resolveSafePublicHttpUrl(
   }
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
   if (
-    !['http:', 'https:'].includes(url.protocol)
+    url.protocol !== 'https:'
     || url.username.length > 0
     || url.password.length > 0
     || !hostname
@@ -125,9 +125,9 @@ export async function resolveSafePublicHttpUrl(
   }
 }
 
-export async function isSafePublicHttpUrl(
+export async function isSafePublicHttpsUrl(
   value: string,
   resolve: OutboundAddressResolver = resolveAddresses,
 ): Promise<boolean> {
-  return (await resolveSafePublicHttpUrl(value, resolve)) !== null;
+  return (await resolveSafePublicHttpsUrl(value, resolve)) !== null;
 }

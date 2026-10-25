@@ -63,10 +63,10 @@ describe('Webhook Delivery System & Retry Logic', () => {
     );
   });
 
-  it('allows an approved public HTTP endpoint on a custom port', async () => {
+  it('allows an approved public HTTPS endpoint on a custom port', async () => {
     const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 204 });
     const result = await sendWebhookRequest(
-      'http://hooks.example.com:8080/events',
+      'https://hooks.example.com:8080/events',
       { event: 'TEST' },
       undefined,
       fetcher as typeof fetch,
@@ -75,7 +75,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
 
     expect(result.success).toBe(true);
     expect(fetcher).toHaveBeenCalledWith(
-      'http://hooks.example.com:8080/events',
+      'https://hooks.example.com:8080/events',
       expect.objectContaining({ redirect: 'error' }),
     );
   });
@@ -97,6 +97,7 @@ describe('Webhook Delivery System & Retry Logic', () => {
   });
 
   it.each([
+    'http://hooks.example.com/events',
     'http://localhost/admin',
     'http://127.0.0.1/',
     'http://10.0.0.8/',
