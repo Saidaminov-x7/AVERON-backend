@@ -18,6 +18,11 @@ import { adminTotpModule } from './admin-totp';
 import { telegramAuthModule } from './telegram';
 import { createAuthRateLimitKey } from './rate-limit-key';
 import { isSecureRequest } from '../../lib/secure-request';
+import { createCorsOriginAllowlist } from '../../lib/cors-origins';
+import { createTrustedCookieOriginGuard } from '../../lib/trusted-cookie-origin';
+
+const cookieOriginAllowlist = createCorsOriginAllowlist(config.CORS_ORIGINS);
+const requireTrustedCookieOrigin = createTrustedCookieOriginGuard(cookieOriginAllowlist);
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.addHook('onRequest', async (request, reply) => {
@@ -109,10 +114,11 @@ export const authModule: FastifyPluginAsync = async (server) => {
   // Обновление токенов по refreshToken (лимит 30 запросов в минуту)
   server.post('/refresh', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    preHandler: [requireTrustedCookieOrigin],
   }, refreshHandler);
 
   // Выход
-  server.post('/logout', logoutHandler);
+  server.post('/logout', { preHandler: [requireTrustedCookieOrigin] }, logoutHandler);
 
   // Текущий пользователь (требует auth)
   server.get('/me', { preHandler: [authMiddleware] }, meHandler);
