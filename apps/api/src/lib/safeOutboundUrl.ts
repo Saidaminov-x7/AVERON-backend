@@ -1,7 +1,34 @@
 import { lookup } from 'node:dns/promises';
+import type { LookupAddress, LookupOptions } from 'node:dns';
 import { isIP } from 'node:net';
 
 export type OutboundAddressResolver = (hostname: string) => Promise<readonly string[]>;
+
+export type SafeOutboundTarget = { url: URL; addresses: readonly string[] };
+
+type PinnedLookup = (
+  hostname: string,
+  options: LookupOptions,
+  callback: (error: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+) => void;
+
+export function createPinnedLookup(addresses: readonly string[]): PinnedLookup {
+  return (hostname, options, callback) => {
+    const lookupAddresses = addresses.map((address) => ({ address, family: isIP(address) }));
+    if (typeof options === 'object' && options.all) {
+      callback(null, lookupAddresses);
+      return;
+    }
+    const requestedFamily = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family;
+    const selected = lookupAddresses.find(({ family }) => !requestedFamily || requestedFamily === family);
+    if (!selected) {
+      const error = Object.assign(new Error(`No validated address for ${hostname}`), { code: 'ENOTFOUND' });
+      callback(error, '', 0);
+      return;
+    }
+    callback(null, selected.address, selected.family);
+  };
+}
 
 async function resolveAddresses(hostname: string): Promise<readonly string[]> {
   const records = await lookup(hostname, { all: true, verbatim: true });
@@ -66,15 +93,15 @@ function isPublicAddress(address: string): boolean {
   );
 }
 
-export async function isSafePublicHttpUrl(
+export async function resolveSafePublicHttpUrl(
   value: string,
   resolve: OutboundAddressResolver = resolveAddresses,
-): Promise<boolean> {
+): Promise<SafeOutboundTarget | null> {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return false;
+    return null;
   }
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '');
   if (
@@ -87,12 +114,20 @@ export async function isSafePublicHttpUrl(
     || hostname.endsWith('.local')
     || hostname.endsWith('.internal')
   ) {
-    return false;
+    return null;
   }
   try {
     const addresses = isIP(hostname) ? [hostname] : await resolve(hostname);
-    return addresses.length > 0 && addresses.every(isPublicAddress);
+    if (addresses.length === 0 || !addresses.every(isPublicAddress)) return null;
+    return { url, addresses };
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function isSafePublicHttpUrl(
+  value: string,
+  resolve: OutboundAddressResolver = resolveAddresses,
+): Promise<boolean> {
+  return (await resolveSafePublicHttpUrl(value, resolve)) !== null;
 }
