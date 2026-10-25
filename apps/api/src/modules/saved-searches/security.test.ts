@@ -20,6 +20,7 @@ function makeApp(actor: Record<string, unknown>, ownerId: string) {
   const deleteSavedSearch = vi.fn(async () => ({ id: 'search-1' }));
   const app = Fastify();
   app.decorate('prisma', {
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     user: { findUnique: findUser },
     savedSearch: { findUnique: findSavedSearch, delete: deleteSavedSearch },
   } as never);
@@ -36,7 +37,7 @@ async function deleteRequest(
   app: ReturnType<typeof Fastify>,
   claims: Record<string, unknown>,
 ) {
-  const token = app.jwt.sign(claims);
+  const token = app.jwt.sign({ ...claims, sessionId: 'test-session' });
   return app.inject({
     method: 'DELETE',
     url: '/saved-searches/search-1',

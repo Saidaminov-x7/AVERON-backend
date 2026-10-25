@@ -292,6 +292,7 @@ function createTestApp(options: {
   let transactionTail: Promise<void> = Promise.resolve();
   const prisma = {
     ...tx,
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: {
       findUnique: vi.fn(async ({ where }: any) => ({
         id: where.id,
@@ -345,7 +346,7 @@ function createTestApp(options: {
 
 async function tokenFor(app: ReturnType<typeof Fastify>, userId: string) {
   await app.ready();
-  return app.jwt.sign({ userId, role: userId === ADMIN || userId === SUPPORT ? 'ADMIN' : 'USER' });
+  return app.jwt.sign({ userId, role: userId === ADMIN || userId === SUPPORT ? 'ADMIN' : 'USER', sessionId: 'test-session' });
 }
 
 function promoCode(overrides: Record<string, unknown> = {}) {
@@ -377,7 +378,7 @@ describe('commerce cart and checkout API', () => {
   it('derives cart ownership only from the authenticated user', async () => {
     const { app, prisma } = createTestApp();
     const tokenA = await tokenFor(app, USER_A);
-    const tokenB = app.jwt.sign({ userId: USER_B, role: 'USER' });
+    const tokenB = app.jwt.sign({ userId: USER_B, role: 'USER', sessionId: 'test-session' });
     await app.inject({ method: 'GET', url: '/api/v1/cart', headers: { authorization: `Bearer ${tokenA}` } });
     await app.inject({ method: 'GET', url: '/api/v1/cart', headers: { authorization: `Bearer ${tokenB}` } });
 
@@ -653,7 +654,7 @@ describe('commerce cart and checkout API', () => {
       ],
     });
     const tokenA = await tokenFor(app, USER_A);
-    const tokenB = app.jwt.sign({ userId: USER_B, role: 'USER' });
+    const tokenB = app.jwt.sign({ userId: USER_B, role: 'USER', sessionId: 'test-session' });
     const makeRequest = (token: string, key: string) => app.inject({
       method: 'POST',
       url: '/api/v1/checkout',
@@ -1272,7 +1273,7 @@ describe('commerce order ownership and admin workflow', () => {
       }],
     });
     const ownerToken = await tokenFor(app, USER_A);
-    const otherToken = app.jwt.sign({ userId: USER_B, role: 'USER' });
+    const otherToken = app.jwt.sign({ userId: USER_B, role: 'USER', sessionId: 'test-session' });
     const otherCustomer = await app.inject({
       method: 'POST',
       url: '/api/v1/orders/me/AV-CUSTOMER-CANCEL-1/cancel',
@@ -1372,7 +1373,7 @@ describe('commerce order ownership and admin workflow', () => {
       }],
     });
     const token = await tokenFor(app, USER_B);
-    const ownerToken = app.jwt.sign({ userId: USER_A, role: 'USER' });
+    const ownerToken = app.jwt.sign({ userId: USER_A, role: 'USER', sessionId: 'test-session' });
     const ownerList = await app.inject({
       method: 'GET',
       url: '/api/v1/orders/me',
