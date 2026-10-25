@@ -24,6 +24,7 @@ async function makeApp() {
   const create = vi.fn(async ({ select }: { select: Record<string, boolean> }) => selectedWebhook(select));
   const app = Fastify();
   app.decorate('prisma', {
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     user: {
       findUnique: vi.fn().mockResolvedValue({
         id: 'admin-1', role: 'ADMIN', adminRole: 'SUPER_ADMIN', isBlocked: false, isDeleted: false,
@@ -41,14 +42,18 @@ describe('admin webhook signing secret response security', () => {
   it('omits stored secrets from the webhook list response', async () => {
     const { app, findMany } = await makeApp();
     try {
-      const token = app.jwt.sign({ userId: 'admin-1', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+      const token = app.jwt.sign({ userId: 'admin-1', role: 'ADMIN', adminRole: 'SUPER_ADMIN', sessionId: 'test-session' });
       const response = await app.inject({
         method: 'GET', url: '/admin/webhooks', headers: { authorization: `Bearer ${token}` },
       });
 
       expect(response.statusCode).toBe(200);
       expect(response.json()[0]).not.toHaveProperty('secret');
-      expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ select: expect.not.objectContaining({ secret: true }) }));
+      expect(findMany).toHaveBeenCalledWith({
+        orderBy: { createdAt: 'desc' },
+        select: expect.objectContaining({ id: true, name: true, url: true, isActive: true }),
+      });
+      expect(findMany.mock.calls[0][0].select).not.toHaveProperty('secret');
     } finally {
       await app.close();
     }
@@ -57,7 +62,7 @@ describe('admin webhook signing secret response security', () => {
   it('stores a submitted secret without echoing it in the create response', async () => {
     const { app, create } = await makeApp();
     try {
-      const token = app.jwt.sign({ userId: 'admin-1', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+      const token = app.jwt.sign({ userId: 'admin-1', role: 'ADMIN', adminRole: 'SUPER_ADMIN', sessionId: 'test-session' });
       const response = await app.inject({
         method: 'POST',
         url: '/admin/webhooks',
@@ -66,11 +71,12 @@ describe('admin webhook signing secret response security', () => {
       });
 
       expect(response.statusCode).toBe(201);
-      expect(response.json()).not.toHaveProperty('secret');
+      expect(response.json()).toEqual({ success: true });
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ secret: storedWebhook.secret }),
-        select: expect.not.objectContaining({ secret: true }),
+        select: expect.objectContaining({ id: true, name: true, url: true, isActive: true }),
       }));
+      expect(create.mock.calls[0][0].select).not.toHaveProperty('secret');
     } finally {
       await app.close();
     }

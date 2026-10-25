@@ -95,6 +95,7 @@ async function buildApp(
   const auditFindMany = vi.fn(async (): Promise<TestAuditRecord[]> => []);
   const auditCount = vi.fn(async (): Promise<number> => 0);
   app.decorate('prisma', {
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     auditLog: { create: auditCreate, findMany: auditFindMany, count: auditCount },
     user: { findUnique: userFind },
     commerceProduct,
@@ -423,7 +424,7 @@ describe('visual search routes', () => {
       isDeleted: false,
     });
     await app.ready();
-    const token = app.jwt.sign({ userId: 'moderator-1', role: 'USER' });
+    const token = app.jwt.sign({ userId: 'moderator-1', role: 'USER', sessionId: 'test-session' });
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/visual-search/audit',
@@ -468,7 +469,7 @@ describe('visual search routes', () => {
     }]);
     auditCount.mockResolvedValue(1);
     await app.ready();
-    const token = app.jwt.sign({ userId: 'admin-1', role: 'USER' });
+    const token = app.jwt.sign({ userId: 'admin-1', role: 'USER', sessionId: 'test-session' });
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/visual-search/audit?page=1&limit=25',

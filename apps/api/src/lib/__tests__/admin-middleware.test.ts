@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { AdminRole } from '@prisma/client';
 import { adminMiddleware, requireAdminRole } from '../adminMiddleware';
 
+const ACTIVE_SESSION_ID = 'active-session';
+
+
 const ADMIN_ROLES = [
   AdminRole.SUPER_ADMIN,
   AdminRole.ADMIN,
@@ -31,6 +34,7 @@ async function makeRoleMatrixApp(resolveUser: (userId: string) => Promise<{
     secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
   });
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async ({ where }: { where: { id: string; userId: string; revokedAt: null; expiresAt: { gt: Date } } }) => where.id === ACTIVE_SESSION_ID ? { id: ACTIVE_SESSION_ID } : null) },
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => resolveUser(where.id)) },
   } as never);
   for (const policy of ADMIN_ROUTE_POLICIES) {
@@ -58,7 +62,7 @@ describe('admin authorization', () => {
     try {
       for (const adminRole of ADMIN_ROLES) {
         const user = users.get(adminRole)!;
-        const token = app.jwt.sign({ userId: user.id, role: user.role });
+        const token = app.jwt.sign({ userId: user.id, role: user.role, sessionId: ACTIVE_SESSION_ID });
         for (const policy of ADMIN_ROUTE_POLICIES) {
           const response = await app.inject({
             method: 'GET',
@@ -89,7 +93,7 @@ describe('admin authorization', () => {
         headers: { authorization: 'Bearer invalid-token' },
       })).statusCode).toBe(401);
 
-      const staleAdminToken = app.jwt.sign({ userId: 'ordinary-user', role: 'ADMIN' });
+      const staleAdminToken = app.jwt.sign({ userId: 'ordinary-user', role: 'ADMIN', sessionId: ACTIVE_SESSION_ID });
       const denied = await app.inject({
         method: 'GET',
         url: '/admin/staff',
@@ -113,10 +117,10 @@ describe('admin authorization', () => {
     await app.register(fastifyJwt, {
       secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
     });
-    app.decorate('prisma', { user: { findUnique } } as never);
+    app.decorate('prisma', { authSession: { findFirst: vi.fn(async () => ({ id: ACTIVE_SESSION_ID })) }, user: { findUnique } } as never);
     app.get('/admin', { preHandler: adminMiddleware }, async () => ({ ok: true }));
     await app.ready();
-    const token = app.jwt.sign({ userId: 'deleted-admin', role: 'ADMIN' });
+    const token = app.jwt.sign({ userId: 'deleted-admin', role: 'ADMIN', sessionId: ACTIVE_SESSION_ID });
 
     const response = await app.inject({
       method: 'GET',
@@ -143,12 +147,12 @@ describe('admin authorization', () => {
     await app.register(fastifyJwt, {
       secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
     });
-    app.decorate('prisma', { user: { findUnique } } as never);
+    app.decorate('prisma', { authSession: { findFirst: vi.fn(async () => ({ id: ACTIVE_SESSION_ID })) }, user: { findUnique } } as never);
     app.post('/admin/fitting-room/review', {
       preHandler: [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)],
     }, async () => ({ changed: true }));
     await app.ready();
-    const token = app.jwt.sign({ userId: 'support-user', role: 'USER' });
+    const token = app.jwt.sign({ userId: 'support-user', role: 'USER', sessionId: ACTIVE_SESSION_ID });
 
     const response = await app.inject({
       method: 'POST',
@@ -173,12 +177,12 @@ describe('admin authorization', () => {
     await app.register(fastifyJwt, {
       secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
     });
-    app.decorate('prisma', { user: { findUnique } } as never);
+    app.decorate('prisma', { authSession: { findFirst: vi.fn(async () => ({ id: ACTIVE_SESSION_ID })) }, user: { findUnique } } as never);
     app.post('/admin/fitting-room/review', {
       preHandler: [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)],
     }, async () => ({ changed: true }));
     await app.ready();
-    const token = app.jwt.sign({ userId: 'moderator-user', role: 'USER' });
+    const token = app.jwt.sign({ userId: 'moderator-user', role: 'USER', sessionId: ACTIVE_SESSION_ID });
 
     const response = await app.inject({
       method: 'POST',

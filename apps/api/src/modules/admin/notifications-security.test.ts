@@ -37,6 +37,7 @@ function makeApp(adminRole = 'SUPPORT') {
 
   const app = Fastify();
   app.decorate('prisma', {
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     user: { findUnique: findUser },
     adminNotification: {
       findMany: findNotifications,
@@ -59,7 +60,7 @@ describe('admin notification API access control', () => {
   it('limits notification listings to shared and current-admin notifications', async () => {
     const { app, findNotifications, countNotifications } = makeApp();
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPPORT' });
+    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPPORT', sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'GET',
@@ -96,7 +97,7 @@ describe('admin notification API access control', () => {
   it('does not let an admin mark another admin’s private notification as read', async () => {
     const { app, findUser, findNotification, updateNotification } = makeApp();
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPPORT' });
+    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPPORT', sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'PATCH',
@@ -114,7 +115,7 @@ describe('admin notification API access control', () => {
   it('preserves the explicit super-admin override for another admin’s notification', async () => {
     const { app, updateNotification } = makeApp('SUPER_ADMIN');
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ userId: 'admin-recipient', role: 'ADMIN', adminRole: 'SUPER_ADMIN', sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'PATCH',

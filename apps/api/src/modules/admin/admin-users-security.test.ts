@@ -32,6 +32,7 @@ function makeApp(
   }));
   const app = Fastify();
   app.decorate('prisma', {
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     user: { findUnique, findMany, count },
     $transaction: async (operations: Promise<unknown>[]) => Promise.all(operations),
   } as never);
@@ -54,7 +55,7 @@ describe('admin user API security', () => {
   ] as const)('applies the live admin-user permission boundary for %s', async (adminRole, expectedStatus) => {
     const { app, findMany } = makeApp(adminRole, async () => [], 0);
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN', adminRole });
+    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN', adminRole, sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'GET',
@@ -83,7 +84,7 @@ describe('admin user API security', () => {
   it('denies a normal account and never runs the user-list query', async () => {
     const { app, findMany } = makeApp(null);
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-user', role: 'USER' });
+    const token = app.jwt.sign({ userId: 'admin-user', role: 'USER', sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'GET',
@@ -99,7 +100,7 @@ describe('admin user API security', () => {
   it('returns a generic 500 rather than exposing database details', async () => {
     const { app } = makeApp('SUPER_ADMIN');
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN' });
+    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN', sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'GET',
@@ -132,7 +133,7 @@ describe('admin user API security', () => {
     };
     const { app, findMany } = makeApp('SUPER_ADMIN', async () => [safeUser], 42);
     await registerRoutes(app);
-    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN' });
+    const token = app.jwt.sign({ userId: 'admin-user', role: 'ADMIN', sessionId: 'test-session' });
 
     const response = await app.inject({
       method: 'GET',
