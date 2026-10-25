@@ -21,9 +21,7 @@ function selectedWebhook(select: Record<string, boolean>) {
 
 async function makeApp() {
   const findMany = vi.fn(async ({ select }: { select: Record<string, boolean> }) => [selectedWebhook(select)]);
-  const create = vi.fn(async ({ data, select }: { data: Record<string, unknown>; select: Record<string, boolean> }) => ({
-    ...selectedWebhook(select), secret: data.secret,
-  }));
+  const create = vi.fn(async ({ select }: { select: Record<string, boolean> }) => selectedWebhook(select));
   const app = Fastify();
   app.decorate('prisma', {
     authSession: { findFirst: async () => ({ id: 'test-session' }) },

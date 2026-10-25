@@ -7,6 +7,7 @@ import {
   dispatchWebhookEvent,
   retryPendingWebhookDeliveries,
 } from '../webhookDelivery';
+import { createPinnedLookup } from '../safeOutboundUrl';
 
 describe('Webhook Delivery System & Retry Logic', () => {
   const originalFetch = global.fetch;
@@ -119,6 +120,39 @@ describe('Webhook Delivery System & Retry Logic', () => {
     );
     expect(result.success).toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('uses only the validated DNS answers after validation, even if DNS changes later', () => {
+    const lookup = createPinnedLookup(['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946']);
+    const callback = vi.fn();
+
+    lookup('hooks.example.com', { all: true }, callback);
+
+    expect(callback).toHaveBeenCalledWith(null, [
+      { address: '93.184.216.34', family: 4 },
+      { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+    ]);
+  });
+
+  it('aborts a delivery when the receiver leaves its response body open', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+        cancel: () => new Promise<void>(() => undefined),
+      }), { status: 200 }));
+      const pending = sendWebhookRequest(
+        'https://hooks.example.com/events',
+        { event: 'TEST' },
+        undefined,
+        fetcher as typeof fetch,
+        publicResolver,
+      );
+
+      await vi.advanceTimersByTimeAsync(10000);
+      await expect(pending).resolves.toEqual({ success: false, error: 'Delivery timeout after 10000ms' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('создает WebhookDelivery и сохраняет статус SUCCESS при успешной доставке', async () => {
