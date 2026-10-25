@@ -516,7 +516,10 @@ export const adminModule: FastifyPluginAsync = async (server) => {
 
   // ─── [ФИЧА 27] WEBHOOKS ─────────────────────────────────────────────────────
   server.get('/webhooks', { preHandler: settingsHandler }, async (request) => {
-    return request.server.prisma.systemWebhook.findMany({ orderBy: { createdAt: 'desc' } });
+    return request.server.prisma.systemWebhook.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, name: true, url: true, events: true, isActive: true, createdAt: true, updatedAt: true },
+    });
   });
 
   server.post<{ Body: { name: string; url: string; events: string[]; secret?: string } }>(
@@ -526,6 +529,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const { name, url, events, secret } = request.body;
       const created = await request.server.prisma.systemWebhook.create({
         data: { name, url, events: events || ['ALL'], secret },
+        select: { id: true, name: true, url: true, events: true, isActive: true, createdAt: true, updatedAt: true },
       });
       return reply.status(201).send(created);
     },
