@@ -15,9 +15,10 @@ describe('customer journey analytics', () => {
       { deviceId: 'device-2', _min: { createdAt: new Date('2026-10-02T09:00:00.000Z') } },
       { deviceId: 'device-3', _min: { createdAt: new Date('2026-10-08T09:00:00.000Z') } },
     ];
+    const groupBy = vi.fn(async () => firstVisits);
     const app = Fastify();
     app.decorate('prisma', {
-      visitLog: { groupBy: vi.fn(async () => firstVisits) },
+      visitLog: { groupBy },
       commerceAnalyticsEvent: { findMany: vi.fn(async () => [
         { deviceId: 'device-1', orderId: 'order-1' },
         { deviceId: 'device-2', orderId: 'order-2' },
@@ -53,6 +54,11 @@ describe('customer journey analytics', () => {
     });
     expect(response.json().daily[1]).toMatchObject({ day: '1', purchases: 1, units: 2, revenueUzs: 200 });
     expect(response.json().daily[3]).toMatchObject({ day: '3', purchases: 1, units: 1, revenueUzs: 100 });
+    expect(groupBy).toHaveBeenCalledWith(expect.objectContaining({
+      by: ['deviceId'],
+      where: { createdAt: { lte: expect.any(Date) } },
+    }));
+    expect(JSON.stringify(groupBy.mock.calls)).not.toContain('ip');
     await app.close();
   });
 });

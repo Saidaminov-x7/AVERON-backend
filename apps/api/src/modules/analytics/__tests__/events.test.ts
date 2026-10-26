@@ -27,7 +27,11 @@ describe('commerce analytics event contract', () => {
       const app = Fastify({ trustProxy: true });
       const create = vi.fn(async () => ({}));
       const findOrder = vi.fn(async () => options?.order ?? null);
-      const upsertVisit = vi.fn(async () => ({}));
+      const upsertVisit = vi.fn(async (_args: {
+        where: Record<string, unknown>;
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      }) => ({}));
       app.decorate('prisma', {
         commerceOrder: { findUnique: findOrder, findMany: vi.fn(async () => []) },
         commerceAnalyticsEvent: { create, findMany: vi.fn(async () => []) },
@@ -105,7 +109,7 @@ describe('commerce analytics event contract', () => {
       await app.close();
     });
 
-    it('deduplicates repeat visits by the persistent browser ID instead of changing IP addresses', async () => {
+    it('deduplicates repeat visits by the persistent browser ID without storing IP or User-Agent', async () => {
       const { app, upsertVisit } = await buildApp();
       const payload = {
         deviceId: '00000000-0000-4000-8000-000000000099',
@@ -129,6 +133,13 @@ describe('commerce analytics event contract', () => {
       expect(upsertVisit).toHaveBeenNthCalledWith(2, expect.objectContaining({
         where: { deviceId_dayKey: { deviceId: payload.deviceId, dayKey: expect.any(String) } },
       }));
+      for (const [args] of upsertVisit.mock.calls) {
+        expect(args.create).toMatchObject({ deviceId: payload.deviceId, path: payload.path });
+        expect(args.create).not.toHaveProperty('ip');
+        expect(args.create).not.toHaveProperty('userAgent');
+        expect(args.update).not.toHaveProperty('ip');
+        expect(args.update).not.toHaveProperty('userAgent');
+      }
       await app.close();
     });
   });
