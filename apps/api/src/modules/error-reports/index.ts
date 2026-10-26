@@ -25,7 +25,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
         return reply.status(400).send({ message: 'Invalid payload', errors: parsed.error.format() });
       }
 
-      const { message: rawMessage, stack: rawStack, url, userAgent, severity } = parsed.data;
+      const { message: rawMessage, stack: rawStack, url, severity } = parsed.data;
       const message = sanitizeErrorText(rawMessage);
       const stack = rawStack ? sanitizeErrorText(rawStack) : rawStack;
 
@@ -35,9 +35,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
             message,
             stack: stack || undefined,
             url: sanitizeErrorReportUrl(url),
-            userAgent: userAgent || (typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : undefined),
             severity,
-            ip: request.ip,
           },
         });
 
