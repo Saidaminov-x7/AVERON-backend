@@ -34,8 +34,6 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         autoModerationEnabled: true,
         logoUrl: true,
         navLinks: true,
-        yandexMetrikaId: true,
-        yandexMetrikaEnabled: true,
         mobilePinchZoomEnabled: true,
       },
     });
@@ -53,8 +51,6 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
         autoModerationEnabled: false,
         logoUrl: null,
         navLinks: null,
-        yandexMetrikaId: '112059980',
-        yandexMetrikaEnabled: true,
         mobilePinchZoomEnabled: true,
       };
     }
@@ -71,7 +67,11 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
       contactEmail: legacyEmail ? '' : settings.contactEmail,
       contactPhone: legacyPhone ? '' : settings.contactPhone,
       navLinks: Array.isArray(settings.navLinks)
-        ? settings.navLinks.filter((link: any) => !['/add-listing', '/chat'].includes(String(link?.href || link?.url || '')))
+        ? settings.navLinks.filter((link: unknown) => {
+            if (!link || typeof link !== 'object' || Array.isArray(link)) return true;
+            const value = link as Record<string, unknown>;
+            return !['/add-listing', '/chat'].includes(String(value.href ?? value.url ?? ''));
+          })
         : settings.navLinks,
     };
 

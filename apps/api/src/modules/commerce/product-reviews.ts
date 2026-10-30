@@ -5,6 +5,10 @@ import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 const uuid = z.string().uuid();
 const reviewAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)];
 const cleanText = (maximum: number, minimum = 0) => z.string().trim().min(minimum).max(maximum)

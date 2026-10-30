@@ -125,6 +125,7 @@ function asNumber(value: { toString(): string } | number) {
 }
 
 export const analyticsModule: FastifyPluginAsync = async (server) => {
+  const analyticsAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   server.post('/events', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {

@@ -17,6 +17,7 @@ import { PrismaClient } from '@prisma/client';
 import { Redis } from 'ioredis';
 import argon2 from 'argon2';
 import { ZodError } from 'zod';
+import { createHash } from 'node:crypto';
 
 import { mkdirSync } from 'fs';
 import { config } from './config';
@@ -48,6 +49,7 @@ import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
+import { createIdleConnectionManager } from './lib/idle-connection-manager';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -182,6 +184,12 @@ server.register(fastifyRateLimit, {
   }),
 });
 
+// Confirmed anonymous route scans receive a short Redis-backed restriction.
+// Redis errors fail open, and the restriction never targets account IDs.
+if (config.TRUST_PROXY_ADDRESSES.length > 0) {
+  registerTemporarySourceRestrictionGuard(server, redis);
+}
+
 server.register(fastifyJwt, {
   secret: config.JWT_SECRET,
   cookie: {
@@ -302,6 +310,7 @@ server.get('/', async (_request, reply) => reply.send({
 // B2: Health с реальной проверкой DB + Redis
 server.get('/health', {
   schema: { tags: ['Health'] },
+  config: { rateLimit: false },
 }, async (_req, reply) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -480,6 +489,66 @@ server.addHook('onResponse', async (request, reply) => {
       resourceId,
     });
   }
+
+  // Escalate only repeated denials tied to an authenticated principal. Never
+  // block on a single failure or trust client-supplied account/IP identifiers.
+  void monitorAuthenticatedAuthorizationDenial({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    userId: request.user?.userId,
+    route: request.routeOptions.url ?? 'unmatched',
+    statusCode: reply.statusCode,
+  });
+
+  void monitorUnmatchedRouteScan({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    sourceIp: request.ip,
+    routeMatched: Boolean(request.routeOptions.url),
+    routeFingerprint: createHash('sha256')
+      .update(request.url.split('?', 1)[0].slice(0, 512))
+      .digest('hex'),
+    method: request.method,
+    authenticated: Boolean(request.user?.userId),
+    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
+    statusCode: reply.statusCode,
+  });
+
+  void monitorResourceNotFoundProbes({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    sourceIp: request.ip,
+    routeTemplate: request.routeOptions.url,
+    resourceFingerprint: createHash('sha256')
+      .update(JSON.stringify(request.params ?? {}).slice(0, 512))
+      .digest('hex'),
+    method: request.method,
+    authenticated: Boolean(request.user?.userId),
+    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
+    statusCode: reply.statusCode,
+  });
+
+  void monitorSuccessfulResourceEnumeration({
+    redis,
+    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
+    warn: (fields, message) => server.log.warn(fields, message),
+    error: (fields, message) => server.log.error(fields, message),
+  }, {
+    method: request.method,
+    statusCode: reply.statusCode,
+    userId: request.user?.userId,
+    routeTemplate: request.routeOptions.url,
+    params: request.params as Record<string, unknown>,
+  });
 });
 
 // ─── Глобальный обработчик ошибок ────────────────────────────────────────────
@@ -500,8 +569,7 @@ server.setErrorHandler((error, request, reply) => {
   request.log.error({
     requestId: request.id,
     diagnosticStage,
-    errorType,
-    errorCode,
+    ...safeErrorLogFields(error),
     method: request.method,
     route: request.routeOptions.url,
   }, 'Request error');
@@ -549,14 +617,8 @@ server.setErrorHandler((error, request, reply) => {
 
 registerNotFoundHandler(server, (request) => isSourceTemporarilyRestricted(redis, request.ip, '/unmatched', server.log));
 
-import { startTelegramBot, stopTelegramBot } from './lib/telegram';
-import { runScheduledBackup } from './lib/jobs/scheduled-backup';
-import { retryPendingWebhookDeliveries } from './lib/webhookDelivery';
 
 // ─── Запуск и Graceful Shutdown ───────────────────────────────────────────────
-
-let scheduledBackupInterval: NodeJS.Timeout | null = null;
-let webhookRetryInterval: NodeJS.Timeout | null = null;
 
 const start = async () => {
   try {
@@ -577,7 +639,7 @@ const start = async () => {
           verified: true,
         },
       });
-      server.log.info({ email: adminEmail }, 'Super admin account synchronized from environment');
+      server.log.info('Super admin account synchronized from environment');
     } else {
       server.log.warn('ADMIN_EMAIL and ADMIN_PASSWORD are not set; admin bootstrap skipped');
     }
@@ -625,8 +687,9 @@ const start = async () => {
         'watermarkDetectorEnabled',
         'openTelemetryEnabled',
       ];
+      const settingsFlags = siteSettings as unknown as Record<string, unknown> | null;
       const enabledUnimplemented = unimplementedFlags.filter(
-        (flag) => (siteSettings as any)?.[flag] === true,
+        (flag) => settingsFlags?.[flag] === true,
       );
       if (enabledUnimplemented.length > 0) {
         server.log.warn(
@@ -635,6 +698,7 @@ const start = async () => {
         );
       }
     } catch {}
+    idleConnections.scheduleClose();
   } catch (err) {
     server.log.error(err, 'Failed to start server');
     process.exit(1);
@@ -644,16 +708,8 @@ const start = async () => {
 const shutdown = async (signal: string) => {
   server.log.info(`Received ${signal}, graceful shutdown...`);
   try {
-    if (scheduledBackupInterval) {
-      clearInterval(scheduledBackupInterval);
-    }
-    if (webhookRetryInterval) {
-      clearInterval(webhookRetryInterval);
-    }
-    stopTelegramBot();
     await server.close();
-    await prisma.$disconnect();
-    redis.disconnect();
+    await idleConnections.close();
     server.log.info('Server closed gracefully');
     process.exit(0);
   } catch (err) {

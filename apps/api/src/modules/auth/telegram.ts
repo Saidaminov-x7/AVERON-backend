@@ -11,7 +11,6 @@ import { saveAuthSession } from './sessions';
 import { verifyTelegramInitData } from './telegram-init-data';
 
 const miniAppAuthSchema = z.object({ initData: z.string().min(1).max(4096) }).strict();
-const linkSchema = miniAppAuthSchema;
 
 function identityFromRequest(body: unknown) {
   const { initData } = miniAppAuthSchema.parse(body);

@@ -4,6 +4,29 @@ import { isIP } from 'node:net';
 
 export const productCountrySchema = z.nativeEnum(ProductCountry);
 
+export const productSizeChartSchema = z.array(z.object({
+  size: z.string().trim().min(1).max(32),
+  shouldersCm: z.number().finite().min(10).max(100).optional(),
+  chestCm: z.number().finite().min(20).max(200).optional(),
+  lengthCm: z.number().finite().min(20).max(250).optional(),
+  sleeveCm: z.number().finite().min(10).max(150).optional(),
+  waistCm: z.number().finite().min(20).max(200).optional(),
+  hipsCm: z.number().finite().min(20).max(220).optional(),
+  inseamCm: z.number().finite().min(10).max(160).optional(),
+  recommendedHeightMinCm: z.number().int().min(80).max(250).optional(),
+  recommendedHeightMaxCm: z.number().int().min(80).max(250).optional(),
+  recommendedWeightMinKg: z.number().int().min(20).max(300).optional(),
+  recommendedWeightMaxKg: z.number().int().min(20).max(300).optional(),
+})).max(40).superRefine((rows, context) => {
+  const sizes = new Set<string>();
+  rows.forEach((row, index) => {
+    if (sizes.has(row.size.toLocaleLowerCase())) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'size'], message: 'Size labels must be unique' });
+    sizes.add(row.size.toLocaleLowerCase());
+    if (row.recommendedHeightMinCm !== undefined && row.recommendedHeightMaxCm !== undefined && row.recommendedHeightMinCm > row.recommendedHeightMaxCm) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'recommendedHeightMaxCm'], message: 'Maximum recommended height must not be below minimum' });
+    if (row.recommendedWeightMinKg !== undefined && row.recommendedWeightMaxKg !== undefined && row.recommendedWeightMinKg > row.recommendedWeightMaxKg) context.addIssue({ code: z.ZodIssueCode.custom, path: [index, 'recommendedWeightMaxKg'], message: 'Maximum recommended weight must not be below minimum' });
+  });
+});
+
 const safeSourceUrlSchema = z.string().url().max(2048).refine((value) => {
   const url = new URL(value);
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
@@ -41,6 +64,7 @@ const productListQueryBaseSchema = z.object({
   color: optionalQueryValue(z.string().trim().min(1).max(48)),
   minPrice: optionalQueryValue(productPriceQuerySchema),
   maxPrice: optionalQueryValue(productPriceQuerySchema),
+  saleOnly: optionalQueryValue(z.enum(['true', 'false'])),
   sort: z.enum(['newest', 'price_asc', 'price_desc', 'popular']).optional(),
   page: z.string().regex(/^[1-9]\d{0,5}$/).optional(),
   limit: z.string().regex(/^[1-9]\d{0,2}$/).optional(),
@@ -216,6 +240,7 @@ export const approveImportSchema = z.object({
   }).partial().optional(),
   country: productCountrySchema,
   sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
+  sizeChart: productSizeChartSchema.optional(),
   salePriceUzs: z.coerce.number().finite().positive(),
   exchangeRate: z.coerce.number().finite().positive().optional(),
   mediaIds: z.array(z.string().uuid()).max(15).default([]),
@@ -265,10 +290,51 @@ const createProductImagesSchema = z.array(z.object({
     }
   });
 
+const manualProductColorSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
+}).superRefine((color, context) => {
+  if (/^(?:цвет|color)\s*\d+$/iu.test(color.name)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['name'], message: 'Use a descriptive color name, not a generated placeholder' });
+  }
+});
+
+const manualVariantStockSchema = z.object({
+  color: z.string().max(160).nullable(),
+  size: z.string().max(40).nullable(),
+  stock: z.number().int().min(0).max(2_147_483_647),
+});
+
+const validateManualVariantStocks = (
+  value: { variantStocks?: Array<{ color: string | null; size: string | null; stock: number }> },
+  context: z.RefinementCtx,
+) => {
+  const keys = (value.variantStocks ?? []).map(({ color, size }) => `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`);
+  if (new Set(keys).size !== keys.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['variantStocks'], message: 'Variant stock entries must be unique' });
+  }
+};
+
+const validateManualSizeShape = (
+  value: { size?: string | null; sizes?: string[] },
+  context: z.RefinementCtx,
+) => {
+  const singleSize = value.size?.trim();
+  const hasSeparateSizes = value.sizes?.some((size) => size.trim().length > 0) ?? false;
+  if (singleSize && !hasSeparateSizes && singleSize.split(/[\n,;]+/).filter((part) => part.trim()).length > 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['size'],
+      message: 'Use the sizes array for multiple sizes; size must contain one option',
+    });
+  }
+};
+
 export const createManualProductSchema = z.object({
   title: z.string().min(2).max(500),
   country: productCountrySchema,
   sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
+  sizeChart: productSizeChartSchema.optional(),
   titleUz: z.string().min(2).max(500),
   titleEn: z.string().min(2).max(500),
   description: z.string().max(5000).optional(),
@@ -283,19 +349,20 @@ export const createManualProductSchema = z.object({
   salePriceUzs: z.coerce.number().finite().positive(),
   compareAtPriceUzs: z.coerce.number().finite().positive().nullable().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).default(0),
+  variantStocks: z.array(manualVariantStockSchema).max(900).optional(),
   preorderEnabled: z.boolean().default(false),
   preorderLimit: z.number().int().min(0).max(10_000).default(0),
   preorderEstimatedAt: z.string().datetime({ offset: true }).nullable().optional()
     .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().optional(),
   color: z.string().max(80).optional(),
-  colors: z.array(z.object({
-    name: z.string().trim().min(1).max(80),
-    hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
-  })).max(30).optional(),
+  colors: z.array(manualProductColorSchema).max(30).optional(),
   size: z.string().max(80).optional(),
+  sizes: z.array(z.string().trim().min(1).max(40)).max(30).optional(),
   publish: z.boolean().default(true),
 }).superRefine((value, context) => {
+  validateManualVariantStocks(value, context);
+  validateManualSizeShape(value, context);
   if (value.preorderEnabled && value.preorderLimit < 1) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -308,6 +375,7 @@ export const createManualProductSchema = z.object({
 export const updateManualProductSchema = z.object({
   country: productCountrySchema.optional(),
   sizeChartType: z.enum(['CLOTHING', 'SHOES', 'KIDS_CLOTHING']).nullable().optional(),
+  sizeChart: productSizeChartSchema.optional(),
   title: z.string().min(2).max(500).optional(),
   titleUz: z.string().max(500).optional(),
   titleEn: z.string().max(500).optional(),
@@ -321,20 +389,22 @@ export const updateManualProductSchema = z.object({
   salePriceUzs: z.coerce.number().finite().positive().optional(),
   compareAtPriceUzs: z.coerce.number().finite().positive().nullable().optional(),
   stock: z.number().int().min(0).max(2_147_483_647).optional(),
+  variantStocks: z.array(manualVariantStockSchema).max(900).optional(),
   preorderEnabled: z.boolean().optional(),
   preorderLimit: z.number().int().min(0).max(10_000).optional(),
   preorderEstimatedAt: z.string().datetime({ offset: true }).nullable().optional()
     .transform((value) => value ? new Date(value) : value),
   categoryId: z.string().uuid().nullable().optional(),
   color: z.string().max(80).optional(),
-  colors: z.array(z.object({
-    name: z.string().trim().min(1).max(80),
-    hex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/),
-  })).max(30).optional(),
+  colors: z.array(manualProductColorSchema).max(30).optional(),
   size: z.string().max(80).optional(),
+  sizes: z.array(z.string().trim().min(1).max(40)).max(30).optional(),
   publish: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one product field must be provided',
+}).superRefine((value, context) => {
+  validateManualVariantStocks(value, context);
+  validateManualSizeShape(value, context);
 });
 
 const localizedCategoryNameSchema = z.object({

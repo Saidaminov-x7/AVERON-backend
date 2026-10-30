@@ -11,7 +11,6 @@ import { safeErrorLogFields } from '../../lib/safe-error-log';
 import {
   adminUsersFilterSchema,
   blockUserSchema,
-  changeRoleSchema,
   createPageSchema,
   updatePageSchema,
   updateSiteSettingsSchema,
@@ -54,8 +53,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       }, { includePersonalData });
       return result;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -65,8 +63,8 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   server.get('/users/export', { preHandler: userActionHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const filter = adminUsersFilterSchema.parse(request.query);
     const service = getService(request);
-    const users = await service.exportUsers(filter);
     try {
+      const users = await service.exportUsers(filter);
       const headers = ['ID', 'Имя', 'Email', 'Телефон', 'Роль', 'Статус', 'Дата регистрации'];
       const rows = users.map((u) => [u.id, u.name, u.email, u.phone, u.role, u.isBlocked ? 'Заблокирован' : 'Активен', u.createdAt.toISOString()]);
       const escapeCsv = (value: unknown) => {
@@ -78,8 +76,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       reply.header('Content-Disposition', 'attachment; filename="users.csv"');
       return reply.send('\uFEFF' + csv);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin export failed');
     }
   });
 
@@ -91,8 +88,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.getUserById(request.params.id);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -109,8 +105,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       }
       return user;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -126,8 +121,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       }
       return user;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -158,8 +152,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const page = Math.max(1, parseInt(request.query.page || '1', 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit || '50', 10)));
       const action = request.query.action;
-      const where: any = { userId: request.params.id };
-      if (action) where.action = action;
+      const where = { userId: request.params.id, ...(action ? { action } : {}) };
 
       const [items, total] = await request.server.prisma.$transaction([
         request.server.prisma.userActivityLog.findMany({
@@ -236,8 +229,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.getPageById(request.params.id);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -251,8 +243,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const page = await service.createPage(dto, request.user.userId);
       return reply.status(201).send(page);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -265,8 +256,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     try {
       return await service.updatePage(request.params.id, dto, request.user.userId);
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -279,8 +269,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       const page = await service.togglePageMaintenance(request.params.id, request.user.userId);
       return page;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -293,8 +282,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       await service.deletePage(request.params.id, request.user.userId);
       return reply.status(204).send();
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -366,8 +354,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       await request.server.redis.del('site:settings:public').catch(() => {});
       return result;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -381,8 +368,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       await request.server.redis.del('site:settings:public').catch(() => {});
       return result;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
   });
 
@@ -476,13 +462,12 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       reply.header('Content-Disposition', `attachment; filename="${filename}"`);
       return reply.send('\uFEFF' + csvData); // BOM для корректного отображения кириллицы
     } catch (err) {
-      const error = err as Error;
-      return reply.status(500).send({ message: `Failed to generate export: ${error.message}` });
+      return sendSafeErrorReply(request, reply, err, 'Admin export failed');
     }
   });
 
   // ─── [ФИЧА 18] PROMO CODES ──────────────────────────────────────────────────
-  server.get('/promo-codes', { preHandler: settingsHandler }, async (request, reply) => {
+  server.get('/promo-codes', { preHandler: settingsHandler }, async (request) => {
     return request.server.prisma.promoCode.findMany({
       orderBy: { createdAt: 'desc' },
     });
@@ -505,13 +490,13 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     },
   );
 
-  server.delete<{ Params: { id: string } }>('/promo-codes/:id', { preHandler: settingsHandler }, async (request, reply) => {
+  server.delete<{ Params: { id: string } }>('/promo-codes/:id', { preHandler: settingsHandler }, async (request) => {
     await request.server.prisma.promoCode.delete({ where: { id: request.params.id } });
     return { success: true };
   });
 
   // ─── [ФИЧА 26] SYSTEM HEALTH MONITORING ─────────────────────────────────────
-  server.get('/system/health', { preHandler: settingsHandler }, async (request, reply) => {
+  server.get('/system/health', { preHandler: settingsHandler }, async (request) => {
     let dbStatus = 'UP';
     let dbLatencyMs = 0;
     const startDb = Date.now();
@@ -555,8 +540,11 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   });
 
   // ─── [ФИЧА 27] WEBHOOKS ─────────────────────────────────────────────────────
-  server.get('/webhooks', { preHandler: settingsHandler }, async (request, reply) => {
-    return request.server.prisma.systemWebhook.findMany({ orderBy: { createdAt: 'desc' } });
+  server.get('/webhooks', { preHandler: settingsHandler }, async (request) => {
+    return request.server.prisma.systemWebhook.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, name: true, url: true, events: true, isActive: true, createdAt: true, updatedAt: true },
+    });
   });
 
   server.post<{ Body: { name: string; url: string; events: string[]; secret?: string } }>(
@@ -564,14 +552,15 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     { preHandler: settingsHandler },
     async (request, reply) => {
       const { name, url, events, secret } = request.body;
-      const created = await request.server.prisma.systemWebhook.create({
+      await request.server.prisma.systemWebhook.create({
         data: { name, url, events: events || ['ALL'], secret },
+        select: { id: true, name: true, url: true, events: true, isActive: true, createdAt: true, updatedAt: true },
       });
-      return reply.status(201).send(created);
+      return reply.status(201).send({ success: true });
     },
   );
 
-  server.delete<{ Params: { id: string } }>('/webhooks/:id', { preHandler: settingsHandler }, async (request, reply) => {
+  server.delete<{ Params: { id: string } }>('/webhooks/:id', { preHandler: settingsHandler }, async (request, _reply) => {
     await request.server.prisma.systemWebhook.delete({ where: { id: request.params.id } });
     return { success: true };
   });
@@ -588,7 +577,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       timestamp: new Date().toISOString(),
       data: {
         message: 'Тестовое уведомление из панели управления Ijarauz',
-        adminUserId: (request as any).user?.userId,
+        adminUserId: request.user.userId,
       },
     };
 
@@ -622,7 +611,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   });
 
   // ─── [ФИЧА: ГЛОБАЛЬНЫЙ ПОИСК] ───────────────────────────────────────────────
-  server.get('/search/quick', { preHandler: supportHandler }, async (request, reply) => {
+  server.get('/search/quick', { preHandler: supportHandler }, async (request, _reply) => {
     const { q, type } = request.query as { q?: string; type?: 'products' | 'users' };
     if (!q || q.trim().length < 2) return [];
     const query = q.trim();

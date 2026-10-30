@@ -19,11 +19,23 @@ vi.mock('../service', () => ({
 
 import { loginHandler } from '../login';
 import { requestPhonePasswordLogin } from '../phone-password';
+import { loginFailureKey } from '../login-throttle';
 
 describe('email login failure throttling', () => {
   beforeEach(() => {
     findByEmail.mockReset().mockResolvedValue(null);
     verifyPassword.mockReset().mockResolvedValue(false);
+  });
+
+  it('does not let failed attempts from one source lock the same account from another source', () => {
+    const firstSource = loginFailureKey('email', ' User@Example.Test ', '198.51.100.10');
+    const sameSource = loginFailureKey('email', 'user@example.test', '198.51.100.10');
+    const differentSource = loginFailureKey('email', 'user@example.test', '198.51.100.11');
+
+    expect(firstSource).toBe(sameSource);
+    expect(differentSource).not.toBe(firstSource);
+    expect(firstSource).not.toContain('user@example.test');
+    expect(firstSource).not.toContain('198.51.100.10');
   });
 
   it('temporarily rejects further login attempts after repeated failures', async () => {

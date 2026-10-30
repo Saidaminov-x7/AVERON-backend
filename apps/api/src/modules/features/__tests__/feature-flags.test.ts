@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import fastifyJwt from '@fastify/jwt';
 import { describe, expect, it } from 'vitest';
 import { createFeatureFlags } from '../feature-flags';
 import { featureFlags } from '../feature-flags';
@@ -25,6 +26,8 @@ describe('feature flags', () => {
       VISUAL_SEARCH: false,
       SIMILAR_PRODUCTS: false,
       IMAGE_EMBEDDINGS: false,
+      FITTING_ROOM: false,
+      LOCAL_3D_GENERATION: false,
     });
 
     expect(flags.capabilities()).toEqual({
@@ -45,6 +48,8 @@ describe('feature flags', () => {
       visualSearch: false,
       similarProducts: false,
       imageEmbeddings: false,
+      fittingRoom: false,
+      local3dGeneration: false,
     });
     expect(flags.isEnabled('AI_PRODUCT_FILL')).toBe(false);
   });
@@ -60,8 +65,10 @@ describe('feature flags', () => {
       'aiSearch',
       'autoCurrency',
       'completeTheLook',
+      'fittingRoom',
       'imageEmbeddings',
       'ipost',
+      'local3dGeneration',
       'n8n',
       'parser1688',
       'parserPinduoduo',
@@ -84,6 +91,41 @@ describe('feature flags', () => {
     expect(response.json().parserPinduoduo).toBe(false);
     expect(response.json().ipost).toBe(false);
     expect(response.json().autoCurrency).toBe(false);
+    await app.close();
+  });
+
+  it('reports iPost as blocked until a real provider is configured', async () => {
+    const app = Fastify();
+    app.decorate('prisma', {
+      authSession: { findFirst: async () => ({ id: 'test-session' }) },
+      user: { findUnique: async () => ({
+        role: 'ADMIN',
+        adminRole: 'SUPER_ADMIN',
+        isBlocked: false,
+        isDeleted: false,
+      }) },
+      siteSettings: { findUnique: async () => null },
+    } as never);
+    await app.register(fastifyJwt, {
+      secret: 'local-test-jwt-secret-used-only-by-feature-diagnostics',
+    });
+    await app.register(capabilitiesModule, { prefix: '/api/v1' });
+    await app.ready();
+    const token = app.jwt.sign({ userId: 'local-admin', role: 'ADMIN', sessionId: 'test-session' });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/integration-diagnostics',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toContainEqual(expect.objectContaining({
+      name: 'iPost',
+      featureEnabled: false,
+      configured: false,
+      implementationStatus: 'BLOCKED_BY_PROVIDER',
+      verificationStatus: 'NOT_CONFIGURED',
+    }));
     await app.close();
   });
 });

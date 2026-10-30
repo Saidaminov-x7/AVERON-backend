@@ -5,7 +5,6 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { generateTokens } from '../../lib/jwt';
 import { refreshCookieOptions } from '../../lib/cookies';
-import { config } from '../../config';
 import crypto from 'crypto';
 import { saveAuthSession } from './sessions';
 
@@ -45,7 +44,7 @@ async function verifyGoogleIdToken(idToken: string): Promise<GoogleTokenInfo> {
       headers: { Authorization: `Bearer ${idToken}` },
     });
     if (userinfoRes.ok) {
-      const data = (await userinfoRes.json()) as any;
+      const data = (await userinfoRes.json()) as GoogleTokenInfo;
       if (data.sub && data.email) {
         return {
           sub: data.sub,

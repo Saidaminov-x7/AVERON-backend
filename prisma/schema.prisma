@@ -474,8 +474,6 @@ model SiteSettings {
   oneIdAuthEnabled           Boolean @default(false) // 37. Верификация через OneID
   yandexRealtyXmlEnabled     Boolean @default(true) // 41. Генератор Yandex Realty XML фида
   openTelemetryEnabled       Boolean @default(true) // 47. Трассировка OpenTelemetry
-  yandexMetrikaId            String  @default("112059980") // ID счетчика Яндекс.Метрики
-  yandexMetrikaEnabled       Boolean @default(true) // Включить/выключить Яндекс.Метрику
   maintenanceBypassPassword  String? // Пароль для обхода режима техобслуживания
   maintenancePasswordEnabled Boolean @default(false) // Требовать пароль при техобслуживании
   mobilePinchZoomEnabled     Boolean @default(true) // Масштабирование двумя пальцами на смартфонах
@@ -793,6 +791,36 @@ enum ProductPublicationStatus {
   ARCHIVED
 }
 
+enum FittingGarmentLayer {
+  BASE_TOP
+  MID_LAYER
+  OUTERWEAR
+  BOTTOM
+  FOOTWEAR
+  ACCESSORY
+}
+
+enum Product3DAssetStatus {
+  NEEDS_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum Product3DAssetSource {
+  MANUAL
+  LOCAL_GENERATION
+}
+
+enum Product3DGenerationStatus {
+  QUEUED
+  RUNNING
+  POSTPROCESSING
+  NEEDS_REVIEW
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 enum TelegramPublicationStatus {
   NOT_PUBLISHED
   PUBLISHING
@@ -911,6 +939,7 @@ model CommerceProduct {
   publicId          String                   @unique
   legacyPublicId    String?                  @unique
   sizeChartType      String?
+  sizeChart         Json?
   translations      Json
   description       Json?
   attributes        Json?
@@ -918,6 +947,8 @@ model CommerceProduct {
   source            ProductSource
   sourceProductId   String
   sourceUrl         String?
+  manualCreationKey String?                   @unique
+  manualCreationHash String?
   originalPriceCny  Decimal?                 @db.Decimal(14, 2)
   exchangeRate      Decimal?                 @db.Decimal(14, 4)
   salePriceUzs      Decimal                  @db.Decimal(16, 2)
@@ -942,6 +973,8 @@ model CommerceProduct {
   favoriteLinks     ProductFavorite[]
   alerts            ProductPriceAlert[]
   outfitItems       OutfitItem[]
+  fittingRoomAssets Product3DAsset[]
+  fittingRoomJobs   Product3DGenerationJob[]
   importedFrom      ImportedProduct?         @relation(fields: [importedFromId], references: [id], onDelete: SetNull)
   importedFromId    String?                  @unique
   createdAt         DateTime                 @default(now())
@@ -1047,6 +1080,7 @@ model ProductImageEmbedding {
   productImageId    String
   productImage      CommerceProductImage         @relation(fields: [productImageId], references: [id], onDelete: Cascade)
   embeddingBytes    Bytes?
+  embeddingVector   Unsupported("vector(1024)")?
   provider          String
   model             String
   dimensions        Int
@@ -1078,8 +1112,76 @@ model CommerceProductVariant {
   cartItems       CommerceCartItem[]
   orderItems      CommerceOrderItem[]
   outfitItems     OutfitItem[]
+  fittingRoomAssets Product3DAsset[]
 
   @@index([productId, active])
+}
+
+model Product3DAsset {
+  id                 String                @id @default(uuid())
+  productId          String
+  product            CommerceProduct       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId          String?
+  variant            CommerceProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  fileKey            String                @unique
+  fileHash           String
+  fileSize           Int
+  status             Product3DAssetStatus  @default(NEEDS_REVIEW)
+  source             Product3DAssetSource  @default(MANUAL)
+  garmentLayer       FittingGarmentLayer
+  mannequinVersion   String                @default("averon-neutral-v1")
+  modelVersion       String                @default("1")
+  sourceImageIds     String[]              @default([])
+  validationSummary String?
+  validationDetails Json?
+  positionX          Float                 @default(0)
+  positionY          Float                 @default(0)
+  positionZ          Float                 @default(0)
+  scale              Float                 @default(1)
+  reviewedById       String?
+  approvedAt         DateTime?
+  rejectionReason    String?
+  revision           Int                   @default(0)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@index([productId, status])
+  @@index([variantId, status])
+  @@index([garmentLayer, status])
+  @@index([fileHash])
+}
+
+model Product3DGenerationJob {
+  id               String                    @id @default(uuid())
+  productId        String
+  product          CommerceProduct           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId        String?
+  initiatedById    String
+  idempotencyKey   String                    @default(uuid())
+  requestHash      String?
+  sourceImageIds   String[]                  @default([])
+  garmentLayer     FittingGarmentLayer        @default(BASE_TOP)
+  status           Product3DGenerationStatus @default(QUEUED)
+  stage            String                    @default("QUEUED")
+  attemptCount     Int                       @default(0)
+  maxAttempts      Int                       @default(3)
+  nextAttemptAt    DateTime                  @default(now())
+  workerId         String?
+  leaseToken       String?
+  leaseExpiresAt   DateTime?
+  cancelRequestedAt DateTime?
+  errorCode        String?
+  errorMessage     String?
+  resultAssetId    String?                   @unique
+  createdAt        DateTime                  @default(now())
+  startedAt        DateTime?
+  completedAt      DateTime?
+  updatedAt        DateTime                  @updatedAt
+
+  @@unique([initiatedById, idempotencyKey])
+  @@index([status, nextAttemptAt, createdAt])
+  @@index([productId, status])
+  @@index([status, leaseExpiresAt])
 }
 
 model ImportedProduct {

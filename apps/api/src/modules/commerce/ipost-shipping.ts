@@ -66,6 +66,7 @@ export function createIpostShippingModule(options: {
   isFeatureEnabled?: () => boolean;
 }): FastifyPluginAsync {
   const isFeatureEnabled = options.isFeatureEnabled ?? (() => featureFlags.isEnabled('IPOST'));
+  const shippingAdmin = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
   return async (app) => {
     app.post<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/ipost-shipment', {

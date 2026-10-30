@@ -315,6 +315,10 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 class OrderTransitionFailure extends Error {
   constructor(readonly code: string) {
     super(code);
@@ -370,6 +374,7 @@ async function cancelPendingDelivery(
 }
 
 export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
+  const orderOperationsRole = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   app.get('/orders/me', { preHandler: authMiddleware }, async (request, reply) => {
     try {
       const orders = await app.prisma.commerceOrder.findMany({
@@ -408,6 +413,8 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
           select: {
             id: true,
             status: true,
+            totalRevenue: true,
+            currency: true,
             inventoryCommitted: true,
             delivery: { select: { id: true, status: true } },
             items: {
@@ -587,6 +594,8 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
           select: {
             id: true,
             status: true,
+            totalRevenue: true,
+            currency: true,
             inventoryCommitted: true,
             delivery: { select: { id: true, status: true } },
             items: {
@@ -603,6 +612,21 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
         if (!current) return { error: 'ORDER_NOT_FOUND' as const };
         if (!allowedTransitions[current.status as AveronOrderStatus]?.includes(parsed.data.status as AveronOrderStatus)) {
           return { error: 'INVALID_ORDER_STATUS_TRANSITION' as const };
+        }
+        if (parsed.data.status === 'PAID') {
+          const payment = await tx.commercePayment.findFirst({
+            where: {
+              orderId: current.id,
+              status: 'PAID',
+              amount: current.totalRevenue,
+              currency: current.currency,
+              provider: { not: '' },
+              providerRef: { not: '' },
+              paidAt: { not: null },
+            },
+            select: { id: true },
+          });
+          if (!payment) return { error: 'PAYMENT_NOT_CONFIRMED' as const };
         }
         if (parsed.data.status === 'CANCELLED' && current.inventoryCommitted) {
           await restoreOrderInventory(tx, current.items);
@@ -631,6 +655,9 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       });
       if ('error' in result) {
         if (result.error === 'ORDER_NOT_FOUND') return reply.status(404).send({ code: result.error, message: 'Order not found' });
+        if (result.error === 'PAYMENT_NOT_CONFIRMED') {
+          return reply.status(409).send({ code: result.error, message: 'Payment has not been confirmed' });
+        }
         return reply.status(409).send({ code: result.error, message: 'Invalid order status transition' });
       }
       if (!result.order) return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load updated order' });

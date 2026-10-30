@@ -48,6 +48,7 @@ function remainingActivations(max: number | null, used: number): number | null {
 }
 
 export const commercePromosModule: FastifyPluginAsync = async (app) => {
+  const promoAdmin = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   app.post('/promo-codes/validate', {
     preHandler: authMiddleware,
     config: { rateLimit: { max: 20, timeWindow: '1 minute' } },

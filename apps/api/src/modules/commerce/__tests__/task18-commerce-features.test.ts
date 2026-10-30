@@ -14,14 +14,14 @@ const JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
 function makeApp(prisma: Record<string, unknown>, modules: Array<unknown>) {
   const app = Fastify();
   app.register(fastifyJwt, { secret: JWT_SECRET });
-  app.decorate('prisma', prisma as never);
+  app.decorate('prisma', { authSession: { findFirst: async () => ({ id: 'test-session' }) }, ...prisma } as never);
   for (const module of modules) app.register(module as never, { prefix: '/api/v1' });
   return app;
 }
 
 async function tokenFor(app: ReturnType<typeof Fastify>, userId = USER_ID, role = 'USER') {
   await app.ready();
-  return app.jwt.sign({ userId, role });
+  return app.jwt.sign({ userId, role, sessionId: 'test-session' });
 }
 
 describe('Task 18 outfit boundary', () => {
@@ -137,6 +137,8 @@ describe('Task 18 wishlist sharing boundary', () => {
       email: 'private@example.test',
       phone: '+998000000000',
       address: 'private',
+      passwordHash: 'private-password-hash',
+      refreshToken: 'private-refresh-token',
     };
     const findFirst = vi.fn(async () => owner);
     const app = makeApp({ user: { findFirst } }, [wishlistModule]);
@@ -156,6 +158,10 @@ describe('Task 18 wishlist sharing boundary', () => {
       }],
     });
     expect(response.body).not.toContain('private@example.test');
+    expect(response.body).not.toContain('+998000000000');
+    expect(response.body).not.toContain('private');
+    expect(response.body).not.toContain('private-password-hash');
+    expect(response.body).not.toContain('private-refresh-token');
     expect(response.body).not.toContain(OTHER_USER_ID);
     expect(response.headers['cache-control']).toBe('private, no-store');
     await app.close();

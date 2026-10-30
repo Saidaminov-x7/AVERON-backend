@@ -8,6 +8,7 @@ import { safeErrorLogFields } from '../../lib/safe-error-log';
 const errorSupportHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.SUPPORT)];
 
 export const errorReportsModule: FastifyPluginAsync = async (server) => {
+  const errorReportAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   /**
    * POST /error-reports — публичный эндпоинт для отправки клиентских ошибок с фронтенда
    */
@@ -68,7 +69,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
     const filter = errorReportFilterSchema.parse(request.query);
     const { page, limit, severity, resolved } = filter;
 
-    const where: any = {};
+    const where: Prisma.ClientErrorReportWhereInput = {};
     if (severity) where.severity = severity;
     if (resolved !== undefined) where.resolved = resolved;
 

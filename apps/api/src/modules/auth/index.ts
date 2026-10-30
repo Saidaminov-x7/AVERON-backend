@@ -27,7 +27,11 @@ function authRateLimitKey(scope: string, request: import('fastify').FastifyReque
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.addHook('onRequest', async (request, reply) => {
-    if (config.NODE_ENV === 'production' && request.protocol !== 'https') {
+    if (config.NODE_ENV === 'production' && !isSecureRequest(
+      request.protocol,
+      request.headers['x-forwarded-proto'],
+      config.RAILWAY_ENVIRONMENT_ID,
+    )) {
       return reply.status(426).send({ message: 'HTTPS is required' });
     }
   });
@@ -112,10 +116,11 @@ export const authModule: FastifyPluginAsync = async (server) => {
   // Обновление токенов по refreshToken (лимит 30 запросов в минуту)
   server.post('/refresh', {
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    preHandler: [requireTrustedCookieOrigin],
   }, refreshHandler);
 
   // Выход
-  server.post('/logout', logoutHandler);
+  server.post('/logout', { preHandler: [requireTrustedCookieOrigin] }, logoutHandler);
 
   // Текущий пользователь (требует auth)
   server.get('/me', { preHandler: [authMiddleware] }, meHandler);

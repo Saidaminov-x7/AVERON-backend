@@ -4,6 +4,7 @@
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { adminMiddleware } from '../../lib/adminMiddleware';
+import { sendSafeErrorReply } from '../../lib/safe-error-response';
 import { AdminService } from './service';
 import { passwordValidation } from '../auth/schemas';
 import { uzbekPhoneSchema } from '../auth/phone';
@@ -33,8 +34,7 @@ export const profileModule: FastifyPluginAsync = async (server) => {
       const updated = await service.updateUser(request.user.userId, dto, request.user.userId, request.ip);
       return updated;
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin profile operation failed');
     }
   });
 
@@ -53,8 +53,7 @@ export const profileModule: FastifyPluginAsync = async (server) => {
       );
       return reply.send({ ok: true });
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Admin profile operation failed');
     }
   });
 };

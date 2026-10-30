@@ -2,6 +2,7 @@
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../../lib/authMiddleware';
+import { sendSafeErrorReply, toSafeErrorResponse } from '../../lib/safe-error-response';
 import { AIChatService } from './service';
 import { PublicAIService } from './public-service';
 import { sendMessageSchema, createSessionSchema, SendMessageDto, CreateSessionDto } from './schemas';
@@ -173,3 +174,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
   });
 
 };
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}

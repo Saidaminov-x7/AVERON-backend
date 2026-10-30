@@ -4,6 +4,7 @@ import fastifyJwt from '@fastify/jwt';
 import argon2 from 'argon2';
 import crypto from 'crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { config } from '../../../config';
 
 vi.hoisted(() => {
   process.env.DATABASE_URL = 'postgresql://127.0.0.1:5432/test';

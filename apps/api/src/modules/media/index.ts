@@ -2,6 +2,7 @@
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
 import { fileTypeFromBuffer } from 'file-type';
+import { AdminRole, Role } from '@prisma/client';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
@@ -13,6 +14,20 @@ import { safeErrorLogFields } from '../../lib/safe-error-log';
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES = 25 * 1024 * 1024;
 const mediaListAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
+
+async function getCurrentMediaAccess(request: FastifyRequest) {
+  const actor = await request.server.prisma.user.findUnique({
+    where: { id: request.user.userId },
+    select: { role: true, adminRole: true, isBlocked: true, isDeleted: true },
+  });
+  const active = Boolean(actor && !actor.isBlocked && !actor.isDeleted);
+  const canManageMedia = Boolean(active && actor && actor.role === Role.ADMIN && (
+    actor.adminRole === AdminRole.SUPER_ADMIN
+    || actor.adminRole === AdminRole.ADMIN
+    || actor.adminRole === null
+  ));
+  return { active, canManageMedia };
+}
 
 async function validateFileType(buffer: Buffer) {
   const detected = await fileTypeFromBuffer(buffer);
@@ -37,10 +52,14 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const query = uploadQuerySchema.parse(request.query);
-    const isAdmin = request.user.role === 'ADMIN';
-    if (query.purpose === 'productPhoto' && !isAdmin) {
-      return reply.status(403).send({ message: 'Only administrators can upload product photos' });
+    const access = await getCurrentMediaAccess(request);
+    if (!access.active) {
+      return reply.status(403).send({ message: 'Access denied' });
     }
+    if (query.purpose === 'productPhoto' && !access.canManageMedia) {
+      return reply.status(403).send({ message: 'Insufficient permissions' });
+    }
+    const service = getService(request);
     const settings = query.purpose === 'productPhoto'
       ? await request.server.prisma.siteSettings.findUnique({
           where: { id: 'singleton' },
@@ -65,7 +84,6 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
     // Проверяем сигнатуру (magic bytes) файла
     await validateFileType(buffer);
 
-    const service = getService(request);
     try {
       const media = await service.upload(
         { filename: data.filename, mimetype: data.mimetype, data: buffer },
@@ -80,7 +98,7 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
         request.log.error(safeErrorLogFields(error), '[MediaUpload] Failed to upload media');
         return reply.status(500).send({ message: 'Не удалось загрузить файл, попробуйте позже' });
       }
-      return reply.status(statusCode).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, error, '[MediaUpload] Failed to upload media');
     }
   });
 
@@ -90,14 +108,16 @@ export const mediaModule: FastifyPluginAsync = async (server) => {
   server.delete<{ Params: { id: string } }>('/:id', {
     preHandler: [authMiddleware],
   }, async (request, reply) => {
+    const access = await getCurrentMediaAccess(request);
+    if (!access.active) {
+      return reply.status(403).send({ message: 'Access denied' });
+    }
     const service = getService(request);
-    const isAdmin = request.user.role === 'ADMIN';
     try {
-      await service.delete(request.params.id, request.user.userId, isAdmin);
+      await service.delete(request.params.id, request.user.userId, access.canManageMedia);
       return reply.status(204).send();
     } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      return reply.status(error.statusCode ?? 500).send({ message: error.message });
+      return sendSafeErrorReply(request, reply, err, 'Media delete failed');
     }
   });
 

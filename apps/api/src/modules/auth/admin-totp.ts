@@ -27,7 +27,6 @@ import {
 } from "./schemas";
 
 const SETUP_TTL_SECONDS = 600;
-const LOGIN_CHALLENGE_TTL_SECONDS = 300;
 const MAX_CHALLENGE_ATTEMPTS = 5;
 
 type AdminTotpUser = {

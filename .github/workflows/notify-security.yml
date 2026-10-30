@@ -32,7 +32,7 @@ jobs:
         run: |
           gh api repos/Saidaminov-x7/AVERON-security-tests/dispatches \
             -f event_type=averon-application-changed \
-            -f client_payload[repository]=AVERON-backend \
+            -f client_payload[repository]="$SOURCE_REPOSITORY" \
             -f client_payload[sha]="$SOURCE_SHA"
       - name: Mark dispatch failure
         if: failure()

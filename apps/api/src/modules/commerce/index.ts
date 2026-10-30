@@ -14,11 +14,13 @@ import { telegramPublicationModule } from './telegram-publication';
 import { productReviewsModule } from './product-reviews';
 import { catalogAssistantModule } from './catalog-assistant';
 import { publicProductDto } from './public-product-dto';
+import { recommendProductSize } from './size-recommendation';
 import { createRecommendationsModule } from './recommendations';
 import { outfitsModule } from './outfits';
 import { wishlistModule } from './wishlist';
 import { commercePromosModule } from './commerce-promos';
 import { ipostShippingModule } from './ipost-shipping';
+import { fittingRoomModule } from './fitting-room';
 
 const catalogAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 const catalogReadHandler = [requireAdminRole(
@@ -30,10 +32,55 @@ const catalogReadHandler = [requireAdminRole(
 const importReviewHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)];
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
+const catalogReadRoles = [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR, AdminRole.SUPPORT];
+const catalogManageRoles = [AdminRole.SUPER_ADMIN, AdminRole.ADMIN];
+
+export function buildManualVariantOptions(input: {
+  color?: string;
+  colors?: Array<{ name: string; hex: string }>;
+  size?: string;
+  sizes?: string[];
+  variantStocks?: Array<{ color: string | null; size: string | null; stock: number }>;
+}) {
+  const uniqueValues = <T>(entries: Array<readonly [string, T]>) => {
+    const values = new Map<string, T>();
+    for (const [key, value] of entries) if (!values.has(key)) values.set(key, value);
+    return [...values.values()];
+  };
+  const colors = input.colors?.length
+    ? uniqueValues(input.colors.map((color) => {
+        const value = `${color.name.trim()}::${color.hex.toUpperCase()}`;
+        return [value.toLocaleLowerCase(), value] as const;
+      }))
+    : input.color?.trim() ? [input.color.trim()] : [null];
+  const rawSizes = input.sizes?.length ? input.sizes : input.size?.trim() ? [input.size] : [null];
+  const standardSizes = new Map(['XXXS', 'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XXXXL']
+    .map((size) => [size.toLocaleLowerCase(), size]));
+  const sizes = uniqueValues(rawSizes.map((size) => {
+    const trimmed = size?.trim() || null;
+    const value = trimmed ? standardSizes.get(trimmed.toLocaleLowerCase()) ?? trimmed : null;
+    return [value?.toLocaleLowerCase() ?? '', value] as const;
+  }));
+  if (colors.length === 1 && colors[0] === null && sizes.length === 1 && sizes[0] === null) return [];
+  const variantStocks = new Map((input.variantStocks ?? []).map(({ color, size, stock }) => [
+    `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`,
+    stock,
+  ]));
+  const options = colors.flatMap((color) => sizes.map((size) => ({ color, size })));
+  const availableKeys = new Set(options.map(({ color, size }) => `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`));
+  if ([...variantStocks.keys()].some((key) => !availableKeys.has(key))) {
+    throw new Error('Variant stock entry does not match a configured color and size');
+  }
+  return options.map((option) => ({
+    ...option,
+    stock: variantStocks.get(`${option.color?.trim().toLocaleLowerCase() ?? ''}\u0000${option.size?.trim().toLocaleLowerCase() ?? ''}`),
+  }));
+}
 
 export function buildProductWhere(
   query: ProductListQuery,
   status?: ProductPublicationStatus,
+  compareAtPriceRef?: Prisma.FieldRef<'CommerceProduct', 'Decimal'>,
 ): Prisma.CommerceProductWhereInput {
   const where: Prisma.CommerceProductWhereInput = {};
   if (status) where.status = status;
@@ -49,11 +96,16 @@ export function buildProductWhere(
       },
     };
   }
-  if (query.minPrice !== undefined || query.maxPrice !== undefined) {
+  if (query.minPrice !== undefined || query.maxPrice !== undefined || query.saleOnly === 'true') {
     where.salePriceUzs = {
       ...(query.minPrice ? { gte: query.minPrice } : {}),
       ...(query.maxPrice ? { lte: query.maxPrice } : {}),
+      ...(query.saleOnly === 'true' ? { gt: 0 } : {}),
+      ...(query.saleOnly === 'true' && compareAtPriceRef ? { lt: compareAtPriceRef } : {}),
     };
+  }
+  if (query.saleOnly === 'true') {
+    where.compareAtPriceUzs = { not: null };
   }
   if (query.q?.trim()) {
     const tokens = query.q.trim().split(/\s+/).filter(Boolean).slice(0, 6);
@@ -195,11 +247,16 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
   app.register(wishlistModule);
   app.register(commercePromosModule);
   app.register(ipostShippingModule);
+  app.register(fittingRoomModule);
   app.get('/products', async (request) => {
     const query = productListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where = buildProductWhere(query, ProductPublicationStatus.PUBLISHED);
+    const where = buildProductWhere(
+      query,
+      ProductPublicationStatus.PUBLISHED,
+      app.prisma.commerceProduct.fields.compareAtPriceUzs,
+    );
     if (query.sort === 'popular') {
       const eligibleWhere = buildPopularProductWhere(where);
       const [candidates, total] = await Promise.all([
@@ -242,7 +299,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         .slice((page - 1) * limit, page * limit)
       const pageProducts = await app.prisma.commerceProduct.findMany({
         where: { id: { in: orderedIds } },
-        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true },
+        include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } },
       });
       const productsById = new Map(pageProducts.map((product) => [product.id, product]));
       return {
@@ -254,7 +311,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       };
     }
     const [items, total] = await Promise.all([
-      app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
+      app.prisma.commerceProduct.findMany({ where, include: { images: { orderBy: { sortOrder: 'asc' }, take: 3 }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } }, orderBy: productOrderBy(query.sort), skip: (page - 1) * limit, take: limit }),
       app.prisma.commerceProduct.count({ where }),
     ]);
     return { items: items.map(publicProductDto), pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
@@ -377,7 +434,13 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/custom-orders', async (request, reply) => {
     const input = customOrderSchema.parse(request.body);
-    const item = await app.prisma.customOrderRequest.create({ data: { ...input, contact: input.contact as any, selectedVariant: input.selectedVariant as any } });
+    const item = await app.prisma.customOrderRequest.create({
+      data: {
+        ...input,
+        contact: input.contact as Prisma.InputJsonValue,
+        selectedVariant: input.selectedVariant as Prisma.InputJsonValue | undefined,
+      },
+    });
     return reply.status(201).send(item);
   });
 
@@ -398,7 +461,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     const query = adminProductListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
-    const where = buildProductWhere(query, query.status);
+    const where = buildProductWhere(
+      query,
+      query.status,
+      app.prisma.commerceProduct.fields.compareAtPriceUzs,
+    );
     if (query.source) where.source = query.source;
     const [items, total] = await Promise.all([
       app.prisma.commerceProduct.findMany({
@@ -464,6 +531,25 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.post('/admin/products', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
+    const rawIdempotencyKey = request.headers['idempotency-key'];
+    if (typeof rawIdempotencyKey !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(rawIdempotencyKey)) {
+      return reply.status(400).send({ code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'A valid Idempotency-Key header is required' });
+    }
+    const manualCreationKey = createHash('sha256')
+      .update(`${request.user.userId}:${rawIdempotencyKey}`)
+      .digest('hex');
+    const manualCreationHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+    const findIdempotentProduct = () => app.prisma.commerceProduct.findUnique({
+      where: { manualCreationKey },
+      include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true },
+    });
+    const replay = await findIdempotentProduct();
+    if (replay) {
+      if (replay.manualCreationHash !== manualCreationHash) {
+        return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with a different product payload' });
+      }
+      return reply.header('idempotent-replay', 'true').status(200).send(replay);
+    }
     const mediaIds = input.images.map((image) => image.mediaId).filter((id): id is string => Boolean(id));
     const settings = await withDiagnosticStage('manual_product_settings_lookup', () =>
       app.prisma.siteSettings.findUnique({
@@ -496,6 +582,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       ...(input.descriptionUz?.trim() ? { uz: input.descriptionUz.trim() } : {}),
       ...(input.descriptionEn?.trim() ? { en: input.descriptionEn.trim() } : {}),
     };
+    const variantOptions = buildManualVariantOptions(input);
     const sourceProductId = randomUUID();
     let product;
     try {
@@ -506,6 +593,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           publicId,
           country: input.country,
           sizeChartType: input.sizeChartType ?? null,
+          sizeChart: input.sizeChart as Prisma.InputJsonValue | undefined,
           translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
           description: Object.keys(descriptions).length ? descriptions : undefined,
           attributes: mergeProductAttributes({ audience: 'everyone' }, {
@@ -515,6 +603,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           source: 'MANUAL',
           sourceProductId,
           sourceUrl: input.sourceUrl ?? null,
+          manualCreationKey,
+          manualCreationHash,
           originalPriceCny: input.sourcePriceCny ?? null,
           exchangeRate: input.exchangeRate ?? null,
           salePriceUzs: input.salePriceUzs,
@@ -536,9 +626,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
               return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title }, ...(image.coverCrop ? { coverCrop: image.coverCrop } : {}) };
             }),
           },
-          variants: input.colors?.length
-            ? { create: input.colors.map((color, index) => ({ sku: `MANUAL-${sourceProductId}-${index + 1}`, color: `${color.name}::${color.hex.toUpperCase()}`, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock })) }
-            : input.color || input.size ? { create: [{ sku: `MANUAL-${sourceProductId}`, color: input.color, size: input.size, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: input.stock }] } : undefined,
+          variants: variantOptions.length
+            ? { create: variantOptions.map((option, index) => ({ sku: `MANUAL-${sourceProductId}-${index + 1}`, ...option, sourcePriceCny: null, salePriceUzs: input.salePriceUzs, stock: option.stock ?? input.stock })) }
+            : undefined,
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
@@ -548,9 +638,24 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }));
     } catch (error) {
       if (error instanceof ProductPublicIdCollisionError) {
+        const concurrentReplay = await findIdempotentProduct();
+        if (concurrentReplay?.manualCreationHash === manualCreationHash) {
+          return reply.header('idempotent-replay', 'true').status(200).send(concurrentReplay);
+        }
+        if (concurrentReplay) {
+          return reply.status(409).send({ code: 'IDEMPOTENCY_CONFLICT', message: 'Idempotency key was already used with a different product payload' });
+        }
         return reply.status(409).send({ code: error.message, message: 'Не удалось создать уникальный публичный ID товара' });
       }
       throw error;
+    }
+    if (input.publish) {
+      dispatchDomainEvent(app, {
+        type: 'product.published',
+        productId: product.id,
+        actorId: request.user.userId,
+        occurredAt: new Date().toISOString(),
+      });
     }
     return reply.status(201).send(product);
   });
@@ -577,6 +682,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       },
     });
     if (!product) return reply.status(404).send({ message: 'Товар не найден' });
+    const wasPublished = product.status === ProductPublicationStatus.PUBLISHED;
 
     let removedMediaIds: string[] = [];
     const updated = await app.prisma.$transaction(async (tx) => {
@@ -634,11 +740,18 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const descriptionsProvided = input.description !== undefined
         || input.descriptionUz !== undefined
         || input.descriptionEn !== undefined;
+      const productAttributesProvided = input.composition !== undefined
+        || input.compositionUz !== undefined
+        || input.compositionEn !== undefined
+        || input.careInstructions !== undefined
+        || input.careInstructionsUz !== undefined
+        || input.careInstructionsEn !== undefined;
       const updatedProduct = await tx.commerceProduct.update({
         where: { id },
         data: {
           ...(input.country !== undefined ? { country: input.country } : {}),
           ...(input.sizeChartType !== undefined ? { sizeChartType: input.sizeChartType } : {}),
+          ...(input.sizeChart !== undefined ? { sizeChart: input.sizeChart as Prisma.InputJsonValue } : {}),
           ...(input.title !== undefined || input.titleUz !== undefined || input.titleEn !== undefined
             ? {
                 translations: mergeLocalizedTitles(product.translations, {
@@ -669,7 +782,9 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           ...(input.preorderEnabled !== undefined ? { preorderEnabled: input.preorderEnabled } : {}),
           ...(input.preorderLimit !== undefined ? { preorderLimit: input.preorderLimit } : {}),
           ...(input.preorderEstimatedAt !== undefined ? { preorderEstimatedAt: input.preorderEstimatedAt } : {}),
-          ...(input.stock !== undefined && !hasActiveVariants && input.color === undefined && input.size === undefined
+          ...(input.stock !== undefined && !hasActiveVariants
+            && input.color === undefined && input.colors === undefined
+            && input.size === undefined && input.sizes === undefined
             ? { stock: input.stock }
             : {}),
           ...(input.categoryId !== undefined ? { categoryId: input.categoryId } : {}),
@@ -718,19 +833,46 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       }
 
       if (product.source === 'MANUAL' && (
-        input.color !== undefined || input.colors !== undefined || input.size !== undefined || input.salePriceUzs !== undefined || input.stock !== undefined
+        input.color !== undefined || input.colors !== undefined
+        || input.size !== undefined || input.sizes !== undefined
+        || input.salePriceUzs !== undefined || input.stock !== undefined || input.variantStocks !== undefined
       )) {
-        if (input.colors !== undefined) {
+        if (input.variantStocks !== undefined && input.colors === undefined && input.sizes === undefined) {
+          const activeVariants = product.variants.filter((variant: { active: boolean }) => variant.active) as Array<{
+            id: string;
+            color?: string | null;
+            size?: string | null;
+            active: boolean;
+          }>;
+          const activeKeys = new Set(activeVariants.map((variant) =>
+            `${variant.color?.trim().toLocaleLowerCase() ?? ''}\u0000${variant.size?.trim().toLocaleLowerCase() ?? ''}`));
+          const requestedKeys = input.variantStocks.map(({ color, size }) =>
+            `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`);
+          if (requestedKeys.length !== activeVariants.length || requestedKeys.some((key) => !activeKeys.has(key))) {
+            throw Object.assign(new Error('Variant stock entries must cover every active product variant'), { statusCode: 400 });
+          }
+          for (const { color, size, stock } of input.variantStocks) {
+            const variant = activeVariants.find((candidate) =>
+              `${candidate.color?.trim().toLocaleLowerCase() ?? ''}\u0000${candidate.size?.trim().toLocaleLowerCase() ?? ''}`
+                === `${color?.trim().toLocaleLowerCase() ?? ''}\u0000${size?.trim().toLocaleLowerCase() ?? ''}`);
+            if (variant) await tx.commerceProductVariant.update({ where: { id: variant.id }, data: { stock } });
+          }
+        } else if (input.colors !== undefined || input.sizes !== undefined) {
           await tx.commerceProductVariant.updateMany({ where: { productId: id }, data: { active: false } });
-          for (const [index, colorOption] of input.colors.entries()) {
+          const variantOptions = buildManualVariantOptions(input);
+          const existingStockByKey = new Map(product.variants.map((variant: { color?: string | null; size?: string | null; stock: number }) => [
+            `${variant.color?.trim().toLocaleLowerCase() ?? ''}\u0000${variant.size?.trim().toLocaleLowerCase() ?? ''}`,
+            variant.stock,
+          ]));
+          for (const [index, option] of variantOptions.entries()) {
+            const variantKey = `${option.color?.trim().toLocaleLowerCase() ?? ''}\u0000${option.size?.trim().toLocaleLowerCase() ?? ''}`;
             await tx.commerceProductVariant.create({ data: {
               productId: id,
               sku: `MANUAL-${randomUUID()}-${index + 1}`,
-              color: `${colorOption.name}::${colorOption.hex.toUpperCase()}`,
-              size: input.size?.trim() || null,
+              ...option,
               sourcePriceCny: null,
               salePriceUzs: input.salePriceUzs ?? Number(updatedProduct.salePriceUzs),
-              stock: input.stock ?? 0,
+              stock: option.stock ?? existingStockByKey.get(variantKey) ?? input.stock ?? 0,
             } });
           }
         } else {
@@ -788,6 +930,14 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           request.log.error({ ...safeErrorLogFields(error), mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
         });
       }
+    }
+    if (input.publish && !wasPublished) {
+      dispatchDomainEvent(app, {
+        type: 'product.published',
+        productId: updated.id,
+        actorId: request.user.userId,
+        occurredAt: new Date().toISOString(),
+      });
     }
     return updated;
   });
@@ -949,6 +1099,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           publicId,
           country: input.country,
           sizeChartType: input.sizeChartType ?? null,
+          sizeChart: input.sizeChart as Prisma.InputJsonValue | undefined,
           translations: (input.translations ?? imported.aiPayload ?? { ru: { title } }) as Prisma.InputJsonValue,
           description: input.translations
             ? Object.fromEntries(Object.entries(input.translations).flatMap(([locale, content]) =>

@@ -28,7 +28,7 @@ function flags(enabled: boolean) {
 
 async function buildApp(prisma: object, enabled = true) {
   const app = Fastify();
-  app.decorate('prisma', prisma as never);
+  app.decorate('prisma', { authSession: { findFirst: async () => ({ id: 'test-session' }) }, ...prisma } as never);
   await app.register(fastifyJwt, {
     secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
   });
@@ -66,7 +66,7 @@ describe('recommendation routes', () => {
       },
     };
     const app = await buildApp(prisma);
-    const token = app.jwt.sign({ userId: 'authenticated-user', role: 'USER' });
+    const token = app.jwt.sign({ userId: 'authenticated-user', role: 'USER', sessionId: 'test-session' });
     const tamperedResponse = await app.inject({
       method: 'POST',
       url: '/api/v1/recommendations/recently-viewed',

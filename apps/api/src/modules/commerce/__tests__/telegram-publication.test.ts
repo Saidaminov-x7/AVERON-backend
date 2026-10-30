@@ -37,6 +37,7 @@ vi.mock('../../features/feature-flags', () => ({
   featureFlags: { isEnabled: () => mocks.featureEnabled },
 }));
 vi.mock('../telegram-publisher', () => ({
+  isTelegramProductPublisherConfigured: () => true,
   TelegramPublishError: class TelegramPublishError extends Error {
     constructor(readonly code: string) { super(code); }
   },
@@ -101,7 +102,13 @@ function createApp({
       findUnique: vi.fn(async () => publication),
       upsert: vi.fn(async () => publication),
       updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        if (updateCount === 1) Object.assign(publication, data);
+        if (updateCount === 1) {
+          const { attemptCount, ...rest } = data;
+          Object.assign(publication, rest);
+          if (attemptCount && typeof attemptCount === 'object' && 'increment' in attemptCount) {
+            publication.attemptCount += Number((attemptCount as { increment: number }).increment);
+          }
+        }
         return { count: updateCount };
       }),
       findUniqueOrThrow: vi.fn(async () => publication),
@@ -267,6 +274,34 @@ describe('manual Telegram product publication routes', () => {
     expect(response.body).not.toContain('bot secret token');
     expect(response.json()).toMatchObject({ code: 'TELEGRAM_PUBLISH_FAILED', status: 'FAILED' });
     expect(publication).toMatchObject({ status: 'FAILED', errorCode: 'TELEGRAM_PUBLISH_FAILED' });
+    await app.close();
+  });
+
+  it('retries a confirmed 429 failure on the same publication record without recreating the product', async () => {
+    mocks.featureEnabled = true;
+    mocks.sendTelegramCard
+      .mockRejectedValueOnce(new TelegramPublishError('TELEGRAM_RATE_LIMITED'))
+      .mockResolvedValueOnce('telegram-message-after-retry');
+    const { app, publication, prisma } = createApp();
+    await ready(app);
+    const request = {
+      method: 'POST' as const,
+      url: `/api/v1/admin/products/${PRODUCT_ID}/telegram-publish`,
+      headers: { 'x-test-role': 'admin' },
+      payload: {},
+    };
+
+    const firstResponse = await app.inject(request);
+    const retryResponse = await app.inject(request);
+
+    expect(firstResponse.statusCode).toBe(502);
+    expect(firstResponse.json()).toMatchObject({ code: 'TELEGRAM_RATE_LIMITED', status: 'FAILED' });
+    expect(retryResponse.statusCode).toBe(200);
+    expect(retryResponse.json()).toMatchObject({ status: 'PUBLISHED', telegramMessageId: 'telegram-message-after-retry', attemptCount: 2 });
+    expect(publication).toMatchObject({ id: PUBLICATION_ID, status: 'PUBLISHED', telegramMessageId: 'telegram-message-after-retry', attemptCount: 2 });
+    expect(prisma.commerceTelegramPublication.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.commerceTelegramPublication.updateMany).toHaveBeenCalledTimes(2);
+    expect(mocks.sendTelegramCard).toHaveBeenCalledTimes(2);
     await app.close();
   });
 

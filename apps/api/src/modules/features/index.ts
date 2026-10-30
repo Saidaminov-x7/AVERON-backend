@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { AdminRole } from '@prisma/client';
 import { config } from '../../config';
 import { featureFlags } from './feature-flags';
-import { visualSimilarityService } from '../visual-search/runtime';
+import { isVisualSearchAvailable } from '../visual-search/runtime';
 import { catalogAiService } from '../commerce/catalog-ai-service';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 
@@ -13,19 +13,16 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     const capabilities = featureFlags.capabilities();
     return {
       ...capabilities,
+      local3dGeneration: false,
       parser1688: capabilities.parser1688 && Boolean(config.PARSER_IMPORT_TOKEN),
-      visualSearch: capabilities.visualSearch && visualSimilarityService.isAvailable(),
-      similarProducts: capabilities.similarProducts && visualSimilarityService.isAvailable(),
-      imageEmbeddings: capabilities.imageEmbeddings && visualSimilarityService.isAvailable(),
+      visualSearch: capabilities.visualSearch && isVisualSearchAvailable(),
+      similarProducts: capabilities.similarProducts && isVisualSearchAvailable(),
+      imageEmbeddings: capabilities.imageEmbeddings && isVisualSearchAvailable(),
       aiProductFill: capabilities.aiProductFill && Boolean(config.AI_PRODUCT_API_URL && config.AI_PRODUCT_API_KEY),
       smsVerification: capabilities.smsVerification && Boolean(config.SMS_API_URL && config.SMS_API_TOKEN),
-      telegramProductPublish: capabilities.telegramProductPublish && Boolean(
-        (config.TELEGRAM_BOT_TOKEN || config.TELEGRAM_MINI_APP_BOT_TOKEN) && config.TELEGRAM_CHANNEL_ID,
-      ),
+      telegramProductPublish: capabilities.telegramProductPublish && isTelegramProductPublisherConfigured(),
       telegramProductPublishFeatureEnabled: featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'),
-      telegramProductPublishConfigured: Boolean(
-        (config.TELEGRAM_BOT_TOKEN?.trim() || config.TELEGRAM_MINI_APP_BOT_TOKEN?.trim()) && config.TELEGRAM_CHANNEL_ID?.trim(),
-      ),
+      telegramProductPublishConfigured: isTelegramProductPublisherConfigured(),
       parserPinduoduo: false,
       ipost: false,
       n8n: capabilities.n8n,
@@ -51,7 +48,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       personalized: featureFlags.isEnabled('PERSONALIZED_RECOMMENDATIONS'),
       recentlyViewed: featureFlags.isEnabled('RECENTLY_VIEWED'),
     },
-    embeddingAvailable: visualSimilarityService.isAvailable(),
+    embeddingAvailable: isVisualSearchAvailable(),
     sharedCacheEnabled: false,
     personalizedResultsShared: false,
   }));
@@ -83,9 +80,9 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
       capability('1688', featureFlags.isEnabled('PARSER_1688'), Boolean(config.PARSER_IMPORT_TOKEN), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
       capability('Pinduoduo', false, false, 'BLOCKED_BY_PROVIDER', 'NOT_LIVE_VERIFIED'),
       capability('AI Product Fill', featureFlags.isEnabled('AI_PRODUCT_FILL'), Boolean(config.AI_PRODUCT_API_URL && config.AI_PRODUCT_API_KEY), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
-      capability('iPost', featureFlags.isEnabled('IPOST'), false, 'TESTED_WITH_MOCK', 'NOT_LIVE_VERIFIED'),
+      capability('iPost', false, false, 'BLOCKED_BY_PROVIDER', 'NOT_CONFIGURED'),
       capability('n8n', featureFlags.isEnabled('N8N'), Boolean(config.N8N_WEBHOOK_URL && config.N8N_WEBHOOK_SECRET), 'IMPLEMENTED', 'TESTED_WITH_MOCK'),
-      capability('Telegram', featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'), Boolean(config.TELEGRAM_MINI_APP_BOT_TOKEN && config.TELEGRAM_CHANNEL_ID), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
+      capability('Telegram', featureFlags.isEnabled('TELEGRAM_PRODUCT_PUBLISH'), isTelegramProductPublisherConfigured(), 'IMPLEMENTED', 'NOT_LIVE_VERIFIED'),
       capability('Currency', false, false, 'NOT_CONFIGURED', 'NOT_LIVE_VERIFIED'),
       capability('SMS', featureFlags.isEnabled('SMS_VERIFICATION'), Boolean(config.SMS_API_URL && config.SMS_API_TOKEN), 'IMPLEMENTED', 'TESTED_WITH_MOCK'),
       capability('Redis', true, Boolean(config.REDIS_URL), 'IMPLEMENTED', redisHealthy ? 'LIVE_VERIFIED' : 'NOT_LIVE_VERIFIED', !redisHealthy),

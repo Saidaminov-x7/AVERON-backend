@@ -1,15 +1,18 @@
 // apps/api/src/lib/webhookDelivery.ts
 // Сервис безопасной доставки вебхуков с HMAC-подписью и экспоненциальными повторными попытками (Retry backoff)
 
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
+import type { FastifyBaseLogger } from 'fastify';
 import crypto from 'crypto';
-import { isSafePublicHttpUrl, type OutboundAddressResolver } from './safeOutboundUrl';
+import { Agent } from 'undici';
+import { isIP } from 'node:net';
+import { createPinnedLookup, resolveSafePublicHttpUrl, type OutboundAddressResolver } from './safeOutboundUrl';
 
-export interface WebhookPayload {
+export type WebhookPayload = Prisma.InputJsonObject & {
   event: string;
   timestamp: string;
-  data: Record<string, any>;
-}
+  data: Prisma.InputJsonObject;
+};
 
 // Задержки повторных попыток в миллисекундах: 1 мин, 5 мин, 15 мин, 30 мин, 60 мин
 const RETRY_DELAYS_MS = [
@@ -32,20 +35,29 @@ export function calculateWebhookSignature(payload: string, secret: string): stri
  */
 export async function sendWebhookRequest(
   url: string,
-  payload: Record<string, any>,
+  payload: Record<string, unknown>,
   secret?: string | null,
   fetcher: typeof fetch = fetch,
   resolveAddresses?: OutboundAddressResolver,
 ): Promise<{ success: boolean; statusCode?: number; error?: string }> {
-  if (!await isSafePublicHttpUrl(url, resolveAddresses)) {
+  const safeTarget = await resolveSafePublicHttpUrl(url, resolveAddresses);
+  if (!safeTarget) {
     return { success: false, error: 'Webhook destination is not allowed' };
   }
+  const targetHostname = safeTarget.url.hostname.replace(/^\[|\]$/g, '');
+  const connect: { servername?: string; lookup: ReturnType<typeof createPinnedLookup> } = {
+    lookup: createPinnedLookup(safeTarget.addresses),
+  };
+  if (!isIP(targetHostname)) connect.servername = targetHostname;
+  const dispatcher = new Agent({
+    connect,
+  });
   const jsonString = JSON.stringify(payload);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'User-Agent': 'Ijarauz-Webhook-Delivery/1.0',
-    'X-Ijarauz-Event': payload.event || 'GENERAL',
-    'X-Ijarauz-Timestamp': payload.timestamp || new Date().toISOString(),
+    'X-Ijarauz-Event': typeof payload.event === 'string' ? payload.event : 'GENERAL',
+    'X-Ijarauz-Timestamp': typeof payload.timestamp === 'string' ? payload.timestamp : new Date().toISOString(),
   };
 
   if (secret) {
@@ -57,15 +69,23 @@ export async function sendWebhookRequest(
   const timeout = setTimeout(() => controller.abort(), 10000); // 10 секунд таймаут
 
   try {
+    const timeoutSignal = new Promise<'timeout'>((resolve) => {
+      controller.signal.addEventListener('abort', () => resolve('timeout'), { once: true });
+    });
     const response = await fetcher(url, {
       method: 'POST',
       headers,
       body: jsonString,
       signal: controller.signal,
       redirect: 'error',
-    });
+      dispatcher,
+    } as RequestInit & { dispatcher: Agent });
 
-    clearTimeout(timeout);
+    if (response.body) {
+      const bodyCancelled = response.body.cancel().then(() => true, () => true);
+      const completed = await Promise.race([bodyCancelled, timeoutSignal.then(() => false)]);
+      if (!completed) throw new DOMException('Webhook response body timed out', 'AbortError');
+    }
 
     if (response.ok) {
       return { success: true, statusCode: response.status };
@@ -76,14 +96,25 @@ export async function sendWebhookRequest(
       statusCode: response.status,
       error: `HTTP status ${response.status}`,
     };
-  } catch (err: any) {
-    clearTimeout(timeout);
+  } catch (err: unknown) {
     return {
       success: false,
       error: err instanceof Error && err.name === 'AbortError'
         ? 'Delivery timeout after 10000ms'
         : 'Network error',
     };
+  } finally {
+    if (controller.signal.aborted) {
+      await dispatcher.destroy();
+    } else {
+      const closed = dispatcher.close().then(() => true, () => false);
+      const aborted = new Promise<'timeout'>((resolve) => {
+        controller.signal.addEventListener('abort', () => resolve('timeout'), { once: true });
+      });
+      const completed = await Promise.race([closed, aborted.then(() => false)]);
+      if (!completed) await dispatcher.destroy();
+    }
+    clearTimeout(timeout);
   }
 }
 
@@ -93,8 +124,8 @@ export async function sendWebhookRequest(
 export async function dispatchWebhookEvent(
   prisma: PrismaClient,
   event: string,
-  data: Record<string, any>,
-  logger?: any,
+  data: Prisma.InputJsonObject,
+  logger?: FastifyBaseLogger,
   resolveOutboundAddresses?: OutboundAddressResolver,
 ): Promise<number> {
   try {
@@ -123,7 +154,7 @@ export async function dispatchWebhookEvent(
         data: {
           webhookId: webhook.id,
           event,
-          payload: payload as any,
+          payload,
           attempts: 1,
           maxAttempts: 5,
           status: 'PENDING',
@@ -172,7 +203,7 @@ export async function dispatchWebhookEvent(
  */
 export async function retryPendingWebhookDeliveries(
   prisma: PrismaClient,
-  logger?: any,
+  logger?: FastifyBaseLogger,
   resolveOutboundAddresses?: OutboundAddressResolver,
 ): Promise<{ retried: number; succeeded: number; failed: number }> {
   const now = new Date();
@@ -202,9 +233,18 @@ export async function retryPendingWebhookDeliveries(
 
       results.retried++;
       const currentAttempt = delivery.attempts + 1;
+      const payload = delivery.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        await prisma.webhookDelivery.update({
+          where: { id: delivery.id },
+          data: { status: 'CANCELLED', lastError: 'Stored webhook payload is invalid' },
+        });
+        continue;
+      }
+
       const res = await sendWebhookRequest(
         delivery.webhook.url,
-        delivery.payload as any,
+        payload,
         delivery.webhook.secret,
         fetch,
         resolveOutboundAddresses,

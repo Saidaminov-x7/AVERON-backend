@@ -1,6 +1,7 @@
 // apps/api/src/modules/saved-searches/index.ts
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import { AdminRole, Role } from '@prisma/client';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { createUserRateLimit } from '../../lib/userRateLimit';
 import { SavedSearchesService } from './service';
@@ -40,7 +41,16 @@ export const savedSearchesModule: FastifyPluginAsync = async (server) => {
    */
   server.delete<{ Params: { id: string } }>('/:id', { preHandler: [authMiddleware] }, async (request, reply: FastifyReply) => {
     const service = getService(request);
-    const isAdmin = request.user.role === 'ADMIN';
+    const actor = await request.server.prisma.user.findUnique({
+      where: { id: request.user.userId },
+      select: { role: true, adminRole: true, isBlocked: true, isDeleted: true },
+    });
+    if (!actor || actor.isBlocked || actor.isDeleted) {
+      return reply.status(403).send({ message: 'Access denied' });
+    }
+    const isAdmin = actor.adminRole === AdminRole.SUPER_ADMIN
+      || actor.adminRole === AdminRole.ADMIN
+      || (actor.role === Role.ADMIN && actor.adminRole === null);
     try {
       await service.delete(request.params.id, request.user.userId, isAdmin);
       return reply.status(204).send();

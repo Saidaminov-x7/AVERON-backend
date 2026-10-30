@@ -12,6 +12,10 @@ import { clearLoginFailures, isLoginTemporarilyLocked, loginFailureKey, recordLo
 import { dummyPasswordHash } from './dummy-password';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
 
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
+}
+
 export const loginHandler = async (
   request: FastifyRequest<{ Body: LoginDto }>,
   reply: FastifyReply,
@@ -88,7 +92,7 @@ export const loginHandler = async (
             300,
           );
         } catch (rErr) {
-          request.log.error({ rErr }, 'Redis set failed for 2FA token');
+          request.log.error({ errorName: safeErrorName(rErr) }, 'Redis set failed for 2FA token');
         }
       }
 
@@ -102,7 +106,7 @@ export const loginHandler = async (
           request.ip,
         );
       } catch (tgErr) {
-        request.log.error({ tgErr }, 'sendTelegram2FACode failed');
+        request.log.error({ errorName: safeErrorName(tgErr) }, 'sendTelegram2FACode failed');
       }
 
       return reply.send({

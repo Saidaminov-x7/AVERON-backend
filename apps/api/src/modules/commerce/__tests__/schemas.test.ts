@@ -66,6 +66,60 @@ describe('commerce product country validation', () => {
     expect(updateManualProductSchema.safeParse({ stock: 1.5 }).success).toBe(false);
   });
 
+  it('validates unique bounded stock entries for configured product variants', () => {
+    const variant = { color: 'Red::#FF0000', size: 'M', stock: 3 };
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN', variantStocks: [variant] }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ variantStocks: [variant] }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ variantStocks: [variant, variant] }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({ variantStocks: [{ ...variant, stock: -1 }] }).success).toBe(false);
+  });
+
+  it('requires multiple sizes to be represented as separate options, not one aggregate variant size', () => {
+    const aggregateSize = 'XS, S, M, XL';
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      size: aggregateSize,
+    }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({ size: aggregateSize }).success).toBe(false);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      size: aggregateSize,
+      sizes: ['XS', 'S', 'M', 'XL'],
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({
+      size: aggregateSize,
+      sizes: ['XS', 'S', 'M', 'XL'],
+    }).success).toBe(true);
+  });
+
+  it('accepts localized composition and care text but rejects overlong values and generated color names', () => {
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      composition: 'Хлопок 100%',
+      compositionUz: '100% paxta',
+      compositionEn: '100% cotton',
+      careInstructions: 'Машинная стирка',
+      careInstructionsUz: 'Mashinada yuvish',
+      careInstructionsEn: 'Machine wash',
+      colors: [{ name: 'Тёмно-синий', hex: '#000080' }],
+    }).success).toBe(true);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      composition: 'x'.repeat(2001),
+    }).success).toBe(false);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      colors: [{ name: 'Цвет 1', hex: '#000080' }],
+    }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({ colors: [{ name: 'Color 2', hex: '#000080' }] }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({ compositionEn: '' }).success).toBe(true);
+  });
+
   it('allows a manual product without sourceUrl and requires localized titles plus at least one photo', () => {
     const result = createManualProductSchema.safeParse({ ...manualProduct, country: 'CN' });
     expect(result.success).toBe(true);
@@ -194,6 +248,7 @@ describe('commerce product country validation', () => {
       color: 'black',
       minPrice: '100000',
       maxPrice: '500000',
+      saleOnly: 'true',
       sort: 'price_asc',
       page: '2',
       limit: '12',
@@ -206,6 +261,7 @@ describe('commerce product country validation', () => {
       color: 'black',
       minPrice: '100000',
       maxPrice: '500000',
+      saleOnly: 'true',
       sort: 'price_asc',
     });
     expect(buildProductWhere(query, 'PUBLISHED')).toMatchObject({
@@ -216,7 +272,8 @@ describe('commerce product country validation', () => {
       variants: {
         some: { active: true, size: 'M', color: { equals: 'black', mode: 'insensitive' } },
       },
-      salePriceUzs: { gte: '100000', lte: '500000' },
+      salePriceUzs: { gte: '100000', lte: '500000', gt: 0 },
+      compareAtPriceUzs: { not: null },
     });
   });
 
@@ -227,6 +284,7 @@ describe('commerce product country validation', () => {
     { minPrice: '-1' },
     { minPrice: '1e6' },
     { minPrice: '200', maxPrice: '100' },
+    { saleOnly: '1' },
     { page: '0' },
   ])('rejects invalid catalog query values %#', (query) => {
     expect(productListQuerySchema.safeParse(query).success).toBe(false);

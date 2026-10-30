@@ -18,6 +18,8 @@ export const featureFlagNames = [
   'VISUAL_SEARCH',
   'SIMILAR_PRODUCTS',
   'IMAGE_EMBEDDINGS',
+  'FITTING_ROOM',
+  'LOCAL_3D_GENERATION',
 ] as const;
 
 export type FeatureFlag = typeof featureFlagNames[number];
@@ -48,6 +50,8 @@ export function createFeatureFlags(values: FeatureFlagValues) {
         visualSearch: values.VISUAL_SEARCH,
         similarProducts: values.SIMILAR_PRODUCTS,
         imageEmbeddings: values.IMAGE_EMBEDDINGS,
+        fittingRoom: values.FITTING_ROOM,
+        local3dGeneration: values.LOCAL_3D_GENERATION,
       };
     },
   };
@@ -71,4 +75,6 @@ export const featureFlags = createFeatureFlags({
   VISUAL_SEARCH: config.FEATURE_VISUAL_SEARCH,
   SIMILAR_PRODUCTS: config.FEATURE_SIMILAR_PRODUCTS,
   IMAGE_EMBEDDINGS: config.FEATURE_IMAGE_EMBEDDINGS,
+  FITTING_ROOM: config.FITTING_ROOM_ENABLED,
+  LOCAL_3D_GENERATION: config.LOCAL_3D_GENERATION_ENABLED,
 });
