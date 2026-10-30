@@ -23,6 +23,24 @@ describe('trustProxyOption', () => {
     await app.close();
   });
 
+  it.each([
+    '198.51.100.11, 10.0.0.1',
+    '2001:db8::11, 10.0.0.1',
+  ])('ignores spoofed and multi-hop X-Forwarded-For when trust is empty: %s', async (forwardedFor) => {
+    const app = fastify({ trustProxy: trustProxyOption([]) });
+    app.get('/ip', async (request) => ({ ip: request.ip }));
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/ip',
+      headers: { 'x-forwarded-for': forwardedFor },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().ip, '127.0.0.1');
+    await app.close();
+  });
+
   it('trusts only the explicitly configured proxy addresses', () => {
     assert.deepEqual(trustProxyOption(['10.0.0.1', '192.0.2.0/24']), ['10.0.0.1', '192.0.2.0/24']);
     assert.equal(trustProxyOption([]), false);
