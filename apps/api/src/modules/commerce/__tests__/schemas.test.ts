@@ -98,18 +98,14 @@ describe('commerce product country validation', () => {
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
       country: 'CN',
-      composition: 'Хлопок 100%',
-      compositionUz: '100% paxta',
-      compositionEn: '100% cotton',
-      careInstructions: 'Машинная стирка',
-      careInstructionsUz: 'Mashinada yuvish',
-      careInstructionsEn: 'Machine wash',
+      composition: { ru: 'Хлопок 100%', uz: '100% paxta', en: '100% cotton' },
+      careInstructions: { ru: 'Машинная стирка', uz: 'Mashinada yuvish', en: 'Machine wash' },
       colors: [{ name: 'Тёмно-синий', hex: '#000080' }],
     }).success).toBe(true);
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
       country: 'CN',
-      composition: 'x'.repeat(2001),
+      composition: { ru: 'x'.repeat(4001) },
     }).success).toBe(false);
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
@@ -117,7 +113,7 @@ describe('commerce product country validation', () => {
       colors: [{ name: 'Цвет 1', hex: '#000080' }],
     }).success).toBe(false);
     expect(updateManualProductSchema.safeParse({ colors: [{ name: 'Color 2', hex: '#000080' }] }).success).toBe(false);
-    expect(updateManualProductSchema.safeParse({ compositionEn: '' }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ composition: { en: '' } }).success).toBe(true);
   });
 
   it('allows a manual product without sourceUrl and requires localized titles plus at least one photo', () => {
@@ -165,6 +161,25 @@ describe('commerce product country validation', () => {
       mediaId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
     }));
     expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN', images }).success).toBe(false);
+  });
+
+  it('validates persisted cover focal point and zoom while remaining compatible with legacy image payloads', () => {
+    const validCrop = { x: 14, y: 82, zoom: 2.2 };
+    expect(createManualProductSchema.safeParse({ ...manualProduct, country: 'CN' }).success).toBe(true);
+    expect(createManualProductSchema.safeParse({
+      ...manualProduct,
+      country: 'CN',
+      images: [{ ...manualProduct.images[0], coverCrop: validCrop }],
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({
+      images: [{ id: '00000000-0000-4000-8000-000000000005', coverCrop: validCrop }],
+    }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({
+      images: [{ id: '00000000-0000-4000-8000-000000000005', coverCrop: { ...validCrop, x: 101 } }],
+    }).success).toBe(false);
+    expect(updateManualProductSchema.safeParse({
+      images: [{ id: '00000000-0000-4000-8000-000000000005', coverCrop: { ...validCrop, zoom: 0.5 } }],
+    }).success).toBe(false);
   });
 
   it('requires a supported country when approving an imported product', () => {

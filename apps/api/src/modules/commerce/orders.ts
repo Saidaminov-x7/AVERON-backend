@@ -1,8 +1,13 @@
-import { AdminRole, type AveronOrderStatus, type CommerceDeliveryStatus, type Prisma } from '@prisma/client';
+import type { AveronOrderStatus, CommerceDeliveryStatus, Prisma } from '@prisma/client';
+import { AdminRole } from '@prisma/client';
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
+
+const orderReadHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
+const orderWriteHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
 const statusSchema = z.object({
   status: z.enum([
@@ -380,7 +385,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       });
       return orders.map((order) => customerOrderDto(order));
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to list customer orders');
+      request.log.error(safeErrorLogFields(error), 'Unable to list customer orders');
       return reply.status(500).send({ code: 'ORDER_LIST_FAILED', message: 'Unable to load orders' });
     }
   });
@@ -393,7 +398,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (!order) return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       return customerOrderDto(order);
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to load customer order');
+      request.log.error(safeErrorLogFields(error), 'Unable to load customer order');
       return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load order' });
     }
   });
@@ -452,12 +457,12 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (error instanceof OrderTransitionFailure) {
         return reply.status(409).send({ code: error.code, message: 'Order could not be safely cancelled' });
       }
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to cancel customer order');
+      request.log.error(safeErrorLogFields(error), 'Unable to cancel customer order');
       return reply.status(500).send({ code: 'ORDER_CANCEL_FAILED', message: 'Unable to cancel order' });
     }
   });
 
-  app.get('/admin/orders', { preHandler: orderOperationsRole }, async (request, reply) => {
+  app.get('/admin/orders', { preHandler: orderReadHandler }, async (request, reply) => {
     try {
       const orders = await app.prisma.commerceOrder.findMany({
         select: adminOrderSelect,
@@ -466,13 +471,13 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       });
       return orders.map(adminOrderDto);
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to list admin orders');
+      request.log.error(safeErrorLogFields(error), 'Unable to list admin orders');
       return reply.status(500).send({ code: 'ORDER_LIST_FAILED', message: 'Unable to load orders' });
     }
   });
 
   app.patch<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/shipping', {
-    preHandler: orderOperationsRole,
+    preHandler: orderWriteHandler,
   }, async (request, reply) => {
     const parsed = deliveryUpdateSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_SHIPPING_DETAILS', message: 'Invalid shipping details' });
@@ -556,13 +561,13 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (errorCode(error) === 'P2002') {
         return reply.status(409).send({ code: 'TRACKING_NUMBER_CONFLICT', message: 'Tracking number is already assigned' });
       }
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to update internal delivery');
+      request.log.error(safeErrorLogFields(error), 'Unable to update internal delivery');
       return reply.status(500).send({ code: 'SHIPPING_UPDATE_FAILED', message: 'Unable to update shipping details' });
     }
   });
 
   app.get<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber', {
-    preHandler: orderOperationsRole,
+    preHandler: orderReadHandler,
   }, async (request, reply) => {
     try {
       const order = await app.prisma.commerceOrder.findUnique({
@@ -572,13 +577,13 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
       if (!order) return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
       return adminOrderDto(order);
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to load admin order');
+      request.log.error(safeErrorLogFields(error), 'Unable to load admin order');
       return reply.status(500).send({ code: 'ORDER_LOAD_FAILED', message: 'Unable to load order' });
     }
   });
 
   app.patch<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/status', {
-    preHandler: orderOperationsRole,
+    preHandler: orderWriteHandler,
   }, async (request, reply) => {
     const parsed = statusSchema.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_ORDER_STATUS', message: 'Invalid order status' });
@@ -662,7 +667,7 @@ export const commerceOrdersModule: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ code: error.code, message: 'Order status transition could not be completed' });
       }
       if (errorCode(error) === 'P2025') return reply.status(404).send({ code: 'ORDER_NOT_FOUND', message: 'Order not found' });
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to update order status');
+      request.log.error(safeErrorLogFields(error), 'Unable to update order status');
       return reply.status(500).send({ code: 'ORDER_STATUS_UPDATE_FAILED', message: 'Unable to update order status' });
     }
   });

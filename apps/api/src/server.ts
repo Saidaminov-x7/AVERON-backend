@@ -42,13 +42,16 @@ import { registerNotFoundHandler } from './lib/notFoundHandler';
 import { monitorAuthenticatedAuthorizationDenial } from './lib/security-denial-monitor';
 import { monitorResourceNotFoundProbes, monitorUnmatchedRouteScan } from './lib/unmatched-route-monitor';
 import { monitorSuccessfulResourceEnumeration } from './lib/successful-resource-enumeration-monitor';
-import { serializeSafeRequest } from './lib/safe-request-logger';
+import { isCoreApiReady } from './lib/health-readiness';
+import { getRuntimeCommitSha } from './lib/runtime-commit';
 import { safeErrorLogFields } from './lib/safe-error-log';
-import { registerTemporarySourceRestrictionGuard } from './lib/temporary-source-restriction';
 import { safeHttpErrorMessage } from './lib/safe-error-response';
+import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
+import { startTelegramBot } from './lib/telegram';
+import { runScheduledBackup } from './lib/jobs/scheduled-backup';
+import { retryPendingWebhookDeliveries } from './lib/webhookDelivery';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
-import { createIdleConnectionManager } from './lib/idle-connection-manager';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -80,9 +83,19 @@ mkdirSync(config.STORAGE_PATH, { recursive: true });
 const server = fastify({
   logger: {
     level: config.LOG_LEVEL,
-    // Fastify's default request serializer records req.url, which may include
-    // credentials, phone numbers, or other user data in query parameters.
-    serializers: { req: (request) => serializeSafeRequest(request) },
+    serializers: {
+      req(request) {
+        const fastifyRequest = request as typeof request & {
+          id?: string;
+          routeOptions?: { url?: string };
+        };
+        return {
+          requestId: fastifyRequest.id,
+          method: fastifyRequest.method,
+          route: fastifyRequest.routeOptions?.url ?? 'unmatched',
+        };
+      },
+    },
     ...(config.NODE_ENV === 'development'
       ? { transport: { target: 'pino-pretty', options: { colorize: true } } }
       : {}),
@@ -94,40 +107,6 @@ const server = fastify({
       keywords: ['kind', 'modifier'],
     },
   },
-});
-
-const idleConnections = createIdleConnectionManager({
-  idleMs: 60_000,
-  connect: async () => {
-    await prisma.$connect();
-    if (redis.status === 'end') await redis.connect();
-    else if (redis.status !== 'ready') await redis.ping();
-  },
-  disconnect: async () => {
-    const results = await Promise.allSettled([
-      redis.status === 'ready' ? redis.quit() : Promise.resolve(),
-      prisma.$disconnect(),
-    ]);
-    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (failed) throw failed.reason;
-  },
-  onError: (error) => server.log.warn({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[Idle] Could not close idle database/cache connections'),
-});
-const leasedRequests = new WeakSet<object>();
-
-// Re-open shared clients before the Redis-backed rate limiter and route handlers run.
-server.addHook('onRequest', async (request, reply) => {
-  try {
-    await idleConnections.acquire();
-    leasedRequests.add(request);
-  } catch (error) {
-    server.log.error({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[Idle] Could not reconnect API dependencies');
-    return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Service is temporarily unavailable' });
-  }
-});
-server.addHook('onResponse', (request, _reply, done) => {
-  if (leasedRequests.delete(request)) idleConnections.release();
-  done();
 });
 
 if (config.NODE_ENV === 'production' && config.TRUST_PROXY_ADDRESSES.length === 0) {
@@ -144,7 +123,7 @@ const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
     });
     return settings?.adaptiveRateLimitEnabled === true;
   },
-  (error) => server.log.warn({ errorName: error instanceof Error ? error.name : 'UnknownError' }, '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
+  (error) => server.log.warn(safeErrorLogFields(error), '[Rate Limit] Failed to load adaptive settings; using the configured global limit'),
 );
 
 redis.on('error', (err) => {
@@ -210,7 +189,11 @@ server.register(fastifyRateLimit, {
 // Confirmed anonymous route scans receive a short Redis-backed restriction.
 // Redis errors fail open, and the restriction never targets account IDs.
 if (config.TRUST_PROXY_ADDRESSES.length > 0) {
-  registerTemporarySourceRestrictionGuard(server, redis);
+  server.addHook('onRequest', async (request, reply) => {
+    if (await isSourceTemporarilyRestricted(redis, request.ip, '/unmatched', server.log)) {
+      return reply.status(429).send({ message: 'Too many requests. Try again later.' });
+    }
+  });
 }
 
 server.register(fastifyJwt, {
@@ -279,6 +262,23 @@ server.decorate('redis', redis);
 registerN8nEventPublisher(redis, server.log);
 registerTelegramProductPublisher(server);
 
+const temporarilyRestrictedResourceRoutes = new Set([
+  '/api/v1/orders/me/:orderNumber',
+  '/api/v1/admin/orders/:orderNumber',
+  '/admin/users/:id/ai-sessions',
+]);
+server.addHook('onRequest', async (request, reply) => {
+  const routeScope = request.routeOptions.url;
+  if (!routeScope || !temporarilyRestrictedResourceRoutes.has(routeScope)) return;
+  if (await isSourceTemporarilyRestricted(redis, request.ip, routeScope, server.log)) {
+    return reply.status(429).send({
+      statusCode: 429,
+      error: 'Too Many Requests',
+      message: 'Too many requests. Try again later.',
+    });
+  }
+});
+
 // ─── Единый обработчик ошибок ────────────────────────────────────────────────
 registerErrorHandler(server);
 
@@ -330,10 +330,9 @@ server.get('/health', {
 
 server.get('/health/live', {
   schema: { tags: ['Health'] },
-  config: { rateLimit: false },
 }, async () => ({
   status: 'live',
-  commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+  commit: getRuntimeCommitSha(process.env.RAILWAY_GIT_COMMIT_SHA),
   timestamp: new Date().toISOString(),
 }));
 
@@ -423,7 +422,9 @@ server.get('/health/ready', {
     checks.aiService = false;
   }
 
-  const allHealthy = Object.values(checks).every(Boolean);
+  // AI and Cloudinary are optional integrations: report their state, but only
+  // database and Redis availability determine whether the core API is ready.
+  const allHealthy = isCoreApiReady(checks.database, checks.redis);
   return reply.status(allHealthy ? 200 : 503).send({
     status: allHealthy ? 'ready' : 'degraded',
     checks,
@@ -433,88 +434,69 @@ server.get('/health/ready', {
 
 // B1: Запись в AuditLog при 401/403 (security events)
 server.addHook('onResponse', async (request, reply) => {
-  const routineAuthProbe = request.url.startsWith('/auth/refresh') || request.url.startsWith('/auth/me') || request.url.startsWith('/admin/theme');
+  const routeTemplate = request.routeOptions.url;
+  const routineAuthProbe = routeTemplate === '/auth/refresh' || routeTemplate === '/auth/me' || routeTemplate?.startsWith('/admin/theme');
+  const userId = request.user?.userId as string | undefined;
+  const params = request.params && typeof request.params === 'object' ? request.params as Record<string, unknown> : {};
+  const resourceId = [params.orderNumber, params.id].find((value): value is string => typeof value === 'string');
+
   if ((reply.statusCode === 401 || reply.statusCode === 403) && !routineAuthProbe) {
-    // Persist the matched route template, never the raw URL: query strings and
-    // concrete path segments may contain credentials or personal identifiers.
-    const safeRoute = request.routeOptions.url ?? 'unmatched';
-    prisma.auditLog.create({
+    await prisma.auditLog.create({
       data: {
-        userId: request.user?.userId ?? null,
+        userId: userId ?? null,
         action: 'SECURITY_DENIED',
-        resource: safeRoute,
+        resource: 'api_route',
         meta: {
-          route: safeRoute,
+          ...(routeTemplate ? { routeTemplate } : {}),
           method: request.method,
           statusCode: reply.statusCode,
-          ip: request.ip,
         },
-        ip: request.ip,
-        userAgent: request.headers['user-agent'] ?? null,
         timestamp: new Date(),
       },
-    }).catch((err) => server.log.error(safeErrorLogFields(err), 'Failed to write security audit log'));
+    }).catch(() => server.log.warn({ event: 'security_audit_write_failed' }, 'Security audit write failed'));
   }
 
-  // Escalate only repeated denials tied to an authenticated principal. Never
-  // block on a single failure or trust client-supplied account/IP identifiers.
-  void monitorAuthenticatedAuthorizationDenial({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    userId: request.user?.userId,
-    route: request.routeOptions.url ?? 'unmatched',
-    statusCode: reply.statusCode,
-  });
+  if (reply.statusCode === 403 && userId) {
+    await monitorAuthenticatedAuthorizationDenial({ redis, prisma, logger: server.log, statusCode: reply.statusCode, userId, routeTemplate });
+  }
 
-  void monitorUnmatchedRouteScan({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    sourceIp: request.ip,
-    routeMatched: Boolean(request.routeOptions.url),
-    routeFingerprint: createHash('sha256')
-      .update(request.url.split('?', 1)[0].slice(0, 512))
-      .digest('hex'),
-    method: request.method,
-    authenticated: Boolean(request.user?.userId),
-    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
-    statusCode: reply.statusCode,
-  });
+  if (reply.statusCode === 404) {
+    const routeMatched = Boolean(routeTemplate);
+    await monitorUnmatchedRouteScan({
+      redis,
+      prisma,
+      logger: server.log,
+      statusCode: reply.statusCode,
+      routeMatched,
+      sourceIp: request.ip,
+      requestPath: request.url.split('?', 1)[0],
+    });
+    await monitorResourceNotFoundProbes({
+      redis,
+      prisma,
+      logger: server.log,
+      statusCode: reply.statusCode,
+      routeMatched,
+      sourceIp: request.ip,
+      routeTemplate,
+      resourceId,
+    });
+  }
 
-  void monitorResourceNotFoundProbes({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    sourceIp: request.ip,
-    routeTemplate: request.routeOptions.url,
-    resourceFingerprint: createHash('sha256')
-      .update(JSON.stringify(request.params ?? {}).slice(0, 512))
-      .digest('hex'),
-    method: request.method,
-    authenticated: Boolean(request.user?.userId),
-    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
-    statusCode: reply.statusCode,
-  });
+  if (reply.statusCode === 200 && request.method === 'GET') {
+    await monitorSuccessfulResourceEnumeration({
+      redis,
+      prisma,
+      logger: server.log,
+      method: request.method,
+      statusCode: reply.statusCode,
+      userId,
+      routeTemplate,
+      resourceId,
+    });
+  }
 
-  void monitorSuccessfulResourceEnumeration({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    method: request.method,
-    statusCode: reply.statusCode,
-    userId: request.user?.userId,
-    routeTemplate: request.routeOptions.url,
-    params: request.params as Record<string, unknown>,
-  });
+
 });
 
 // ─── Глобальный обработчик ошибок ────────────────────────────────────────────
@@ -525,6 +507,7 @@ server.setErrorHandler((error, request, reply) => {
     ? error as Record<string, unknown>
     : {};
   const errorType = error instanceof Error ? error.name : 'UnknownError';
+  const errorCode = typeof errorProperties.code === 'string' ? errorProperties.code : undefined;
   const diagnosticStage = typeof errorProperties.diagnosticStage === 'string'
     ? errorProperties.diagnosticStage
     : 'request_handler';
@@ -537,9 +520,6 @@ server.setErrorHandler((error, request, reply) => {
     ...safeErrorLogFields(error),
     method: request.method,
     route: request.routeOptions.url,
-    userIdHash: request.user?.userId
-      ? createHash('sha256').update(request.user.userId).digest('hex').slice(0, 16)
-      : undefined,
   }, 'Request error');
 
   if (error instanceof ZodError) {
@@ -569,7 +549,7 @@ server.setErrorHandler((error, request, reply) => {
     return reply.status(429).send({
       statusCode: 429,
       error: 'Too Many Requests',
-      message: 'Too many requests. Please try again later.',
+      message: 'Too many requests. Try again later.',
     });
   }
 
@@ -577,17 +557,19 @@ server.setErrorHandler((error, request, reply) => {
   return reply.status(statusCode).send({
     statusCode,
     error: statusCode === 500 ? 'Internal Server Error' : errorType,
-    // В проде не отдаём детали 500-ых ошибок наружу
     message: safeHttpErrorMessage(statusCode),
   });
 });
 
 // ─── Not Found handler ────────────────────────────────────────────────────────
 
-registerNotFoundHandler(server);
+registerNotFoundHandler(server, (request) => isSourceTemporarilyRestricted(redis, request.ip, '/unmatched', server.log));
 
 
 // ─── Запуск и Graceful Shutdown ───────────────────────────────────────────────
+
+let scheduledBackupInterval: ReturnType<typeof setInterval> | undefined;
+let webhookRetryInterval: ReturnType<typeof setInterval> | undefined;
 
 const start = async () => {
   try {
@@ -617,6 +599,27 @@ const start = async () => {
     server.log.info(`✅ Server listening on port ${config.PORT} (${config.NODE_ENV})`);
 
     // Запускаем Telegram-бота для 2FA
+    startTelegramBot(redis, server.log);
+
+    // Первичная очистка истёкших промо-акций сразу при старте
+    // Первичная запись снапшота целостности базы данных
+    runScheduledBackup(prisma, server.log).catch((err) => {
+      server.log.error(safeErrorLogFields(err), '[Backup] Error during startup runScheduledBackup check');
+    });
+
+    // Периодическая проверка целостности и снапшот данных (каждые 24 часа)
+    scheduledBackupInterval = setInterval(() => {
+      runScheduledBackup(prisma, server.log).catch((err) => {
+        server.log.error(safeErrorLogFields(err), '[Backup] Error in runScheduledBackup interval');
+      });
+    }, 24 * 60 * 60 * 1000);
+
+    // Периодический воркер повторной доставки вебхуков (каждые 60 секунд)
+    webhookRetryInterval = setInterval(() => {
+      retryPendingWebhookDeliveries(prisma, server.log).catch((err) => {
+        server.log.error(safeErrorLogFields(err), '[Webhook] Error in retryPendingWebhookDeliveries');
+      });
+    }, 60 * 1000);
 
     // Предупреждение о включённых флагах Категории 2 (без полной бэкенд-интеграции)
     try {
@@ -646,7 +649,6 @@ const start = async () => {
         );
       }
     } catch {}
-    idleConnections.scheduleClose();
   } catch (err) {
     server.log.error(err, 'Failed to start server');
     process.exit(1);
@@ -657,7 +659,10 @@ const shutdown = async (signal: string) => {
   server.log.info(`Received ${signal}, graceful shutdown...`);
   try {
     await server.close();
-    await idleConnections.close();
+    if (scheduledBackupInterval) clearInterval(scheduledBackupInterval);
+    if (webhookRetryInterval) clearInterval(webhookRetryInterval);
+    await prisma.$disconnect();
+    redis.disconnect();
     server.log.info('Server closed gracefully');
     process.exit(0);
   } catch (err) {

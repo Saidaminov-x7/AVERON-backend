@@ -2,11 +2,12 @@
 // Главный файл модуля — регистрирует все admin-маршруты
 
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
-import { AdminRole } from '@prisma/client';
+import { AdminRole, Role } from '@prisma/client';
 import { fileTypeFromBuffer } from 'file-type';
-import { adminMiddleware, requireAdminRole } from '../../lib/adminMiddleware';
+import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { AdminService } from './service';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 import { sendSafeErrorReply } from '../../lib/safe-error-response';
 import {
   adminUsersFilterSchema,
@@ -18,9 +19,15 @@ import {
 
 export const adminModule: FastifyPluginAsync = async (server) => {
   // Все маршруты требуют роли ADMIN
-  const preHandler = [adminMiddleware];
   // Роли для каждого типа действий
   const userActionHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
+  const userDirectoryHandler = [requireAdminRole(
+    AdminRole.SUPER_ADMIN,
+    AdminRole.ADMIN,
+    AdminRole.MODERATOR,
+    AdminRole.SUPPORT,
+  )];
+  const userModerationHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)];
   const cmsHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
   const settingsHandler = [requireAdminRole(AdminRole.SUPER_ADMIN)];
   const analyticsHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
@@ -32,11 +39,22 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   /**
    * GET /admin/users — список пользователей с фильтрами
    */
-  server.get('/users', { preHandler: userActionHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
+  server.get('/users', { preHandler: userDirectoryHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const filter = adminUsersFilterSchema.parse(request.query);
+    const includePersonalData = request.user.adminRole === AdminRole.SUPER_ADMIN || request.user.adminRole === AdminRole.ADMIN;
+    if (!includePersonalData && !filter.search) {
+      return reply.status(403).send({ message: 'Access denied. A search term is required.' });
+    }
+    if (!includePersonalData && (filter.isStaff === true || filter.role === 'ADMIN')) {
+      return reply.status(403).send({ message: 'Access denied' });
+    }
     const service = getService(request);
     try {
-      const result = await service.getUsers(filter);
+      const result = await service.getUsers(includePersonalData ? filter : {
+        ...filter,
+        isStaff: false,
+        sortBy: filter.sortBy === 'email' ? 'createdAt' : filter.sortBy,
+      }, { includePersonalData });
       return result;
     } catch (err) {
       return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
@@ -69,7 +87,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   /**
    * GET /admin/users/:id — детальная карточка пользователя
    */
-  server.get<{ Params: { id: string } }>('/users/:id', { preHandler }, async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/users/:id', { preHandler: userActionHandler }, async (request, reply) => {
     const service = getService(request);
     try {
       return await service.getUserById(request.params.id);
@@ -81,11 +99,15 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   /**
    * PATCH /admin/users/:id/block — заблокировать пользователя
    */
-  server.patch<{ Params: { id: string } }>('/users/:id/block', { preHandler: userActionHandler }, async (request, reply) => {
+  server.patch<{ Params: { id: string } }>('/users/:id/block', { preHandler: userModerationHandler }, async (request, reply) => {
     const dto = blockUserSchema.parse(request.body);
     const service = getService(request);
     try {
-      return await service.blockUser(request.params.id, dto.reason, request.user.userId, request.ip);
+      const user = await service.blockUser(request.params.id, dto.reason, request.user.userId, request.ip);
+      if (request.user.adminRole === AdminRole.MODERATOR) {
+        return { id: user.id, name: user.name, isBlocked: user.isBlocked, blockedAt: user.blockedAt };
+      }
+      return user;
     } catch (err) {
       return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
@@ -94,10 +116,14 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   /**
    * PATCH /admin/users/:id/unblock — разблокировать пользователя
    */
-  server.patch<{ Params: { id: string } }>('/users/:id/unblock', { preHandler: userActionHandler }, async (request, reply) => {
+  server.patch<{ Params: { id: string } }>('/users/:id/unblock', { preHandler: userModerationHandler }, async (request, reply) => {
     const service = getService(request);
     try {
-      return await service.unblockUser(request.params.id, request.user.userId, request.ip);
+      const user = await service.unblockUser(request.params.id, request.user.userId, request.ip);
+      if (request.user.adminRole === AdminRole.MODERATOR) {
+        return { id: user.id, name: user.name, isBlocked: user.isBlocked };
+      }
+      return user;
     } catch (err) {
       return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
     }
@@ -125,8 +151,8 @@ export const adminModule: FastifyPluginAsync = async (server) => {
    */
   server.get<{ Params: { id: string }; Querystring: { page?: string; limit?: string; action?: string } }>(
     '/users/:id/activity',
-    { preHandler: supportHandler },
-    async (request, _reply) => {
+    { preHandler: userActionHandler },
+    async (request, reply) => {
       const page = Math.max(1, parseInt(request.query.page || '1', 10));
       const limit = Math.min(100, Math.max(1, parseInt(request.query.limit || '50', 10)));
       const action = request.query.action;
@@ -154,7 +180,7 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     },
   );
 
-  server.get<{ Params: { id: string } }>('/users/:id/sessions', { preHandler: supportHandler }, async (request, reply) => {
+  server.get<{ Params: { id: string } }>('/users/:id/sessions', { preHandler: userActionHandler }, async (request, reply) => {
     const items = await request.server.prisma.authSession.findMany({
       where: { userId: request.params.id, revokedAt: null, expiresAt: { gt: new Date() } },
       orderBy: { lastSeenAt: 'desc' },
@@ -288,13 +314,16 @@ export const adminModule: FastifyPluginAsync = async (server) => {
       try {
         await request.server.redis.del('site:settings:public');
       } catch (redisErr) {
-        request.log.warn({ errorName: redisErr instanceof Error ? redisErr.name : 'UnknownError' }, 'Failed to clear redis cache for site:settings:public');
+        request.log.warn(safeErrorLogFields(redisErr), 'Failed to clear redis cache for site:settings:public');
       }
 
       return settings;
     } catch (err) {
-      request.log.error({ errorName: err instanceof Error ? err.name : 'UnknownError' }, 'Error updating site settings');
-      return sendSafeErrorReply(request, reply, err, 'Admin operation failed');
+      request.log.error(safeErrorLogFields(err), 'Error updating site settings');
+      const error = err as Error & { statusCode?: number };
+      return reply.status(error.statusCode ?? 500).send({
+        message: error.message || 'Ошибка сохранения настроек сайта',
+      });
     }
   });
 
@@ -608,24 +637,33 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     }
 
     if (type === 'users') {
-      return request.server.prisma.user.findMany({
+      const includePersonalData = request.user.adminRole === AdminRole.SUPER_ADMIN || request.user.adminRole === AdminRole.ADMIN;
+      const matches = [
+        { name: { contains: query, mode: 'insensitive' as const } },
+        { id: { contains: query, mode: 'insensitive' as const } },
+        ...(includePersonalData ? [
+          { email: { contains: query, mode: 'insensitive' as const } },
+          { phone: { contains: query, mode: 'insensitive' as const } },
+        ] : []),
+      ];
+      const users = await request.server.prisma.user.findMany({
         where: {
-          OR: [
-            { id: { contains: query, mode: 'insensitive' } },
-            { name: { contains: query, mode: 'insensitive' } },
-            { email: { contains: query, mode: 'insensitive' } },
-            { phone: { contains: query, mode: 'insensitive' } },
+          AND: [
+            { OR: matches },
+            ...(!includePersonalData ? [{ adminRole: null, role: { in: [Role.USER, Role.LANDLORD] } }] : []),
           ],
         },
         take: 6,
         select: {
           id: true,
           name: true,
-          email: true,
-          phone: true,
           role: true,
+          ...(includePersonalData ? { email: true, phone: true } : {}),
         },
       });
+      return includePersonalData
+        ? users
+        : users.map((user) => ({ id: user.id, name: user.name, role: user.role }));
     }
 
     return [];

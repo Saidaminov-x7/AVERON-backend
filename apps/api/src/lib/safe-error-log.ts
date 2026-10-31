@@ -1,15 +1,9 @@
-/** Structured error context that deliberately excludes message and stack data. */
-export function safeErrorLogFields(error: unknown): {
-  errorType: string;
-  errorCode?: string;
-} {
-  const errorType = error instanceof Error ? error.name : "UnknownError";
-  const candidate = error as { code?: unknown } | null;
-  const rawCode =
-    candidate && typeof candidate === "object" ? candidate.code : undefined;
-  const errorCode =
-    typeof rawCode === "string" && /^[A-Z0-9_]{1,64}$/.test(rawCode)
-      ? rawCode
-      : undefined;
-  return { errorType, ...(errorCode ? { errorCode } : {}) };
+/** Returns operational error metadata without serializing messages, stacks, or query parameters. */
+export function safeErrorLogFields(error: unknown): { errorType: string; errorCode?: string } {
+  if (!(error instanceof Error)) return { errorType: 'UnknownError' };
+  const code = (error as Error & { code?: unknown }).code;
+  return {
+    errorType: /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name) ? error.name : 'Error',
+    ...(typeof code === 'string' && /^[A-Z0-9_]{1,40}$/.test(code) ? { errorCode: code } : {}),
+  };
 }

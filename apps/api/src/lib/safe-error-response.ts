@@ -1,43 +1,35 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
-type ErrorWithStatus = {
-  statusCode?: unknown;
-};
-
-/** Stable public messages for uncaught HTTP errors; never reflect exception text. */
-export function safeHttpErrorMessage(statusCode: number): string {
-  if (statusCode >= 500) return 'An unexpected error occurred';
-  switch (statusCode) {
-    case 400: return 'Invalid request';
-    case 401: return 'Authentication required';
-    case 403: return 'Access denied';
-    case 404: return 'Resource not found';
-    case 409: return 'Request conflicts with the current resource state';
-    case 422: return 'Request could not be processed';
-    case 429: return 'Too many requests. Try again later.';
-    default: return 'Request could not be completed';
-  }
+export interface SafeErrorResponse {
+  statusCode: 400 | 401 | 403 | 404 | 409 | 413 | 429 | 503;
+  message: string;
 }
 
-export function toSafeErrorResponse(
-  error: unknown,
-  internalMessage = 'An internal error occurred',
-): { statusCode: number; message: string } {
-  const candidate = error as ErrorWithStatus | null;
-  const requestedStatus = candidate && typeof candidate === 'object'
-    ? candidate.statusCode
+export function safeHttpErrorMessage(statusCode: number): string {
+  if (statusCode in SAFE_MESSAGES) return SAFE_MESSAGES[statusCode as SafeErrorResponse['statusCode']];
+  return statusCode >= 500
+    ? 'An unexpected error occurred.'
+    : 'The request could not be processed.';
+}
+
+const SAFE_MESSAGES: Record<SafeErrorResponse['statusCode'], string> = {
+  400: 'Invalid request.',
+  401: 'Authentication is required.',
+  403: 'Access denied.',
+  404: 'Resource not found.',
+  409: 'The request conflicts with the current resource state.',
+  413: 'The request is too large.',
+  429: 'Too many requests. Try again later.',
+  503: 'The service is temporarily unavailable. Please try again later.',
+};
+
+export function toSafeErrorResponse(error: unknown, fallbackStatus: 400 | 401 | 403 | 404 | 409 | 413 | 429 | 503 = 503): SafeErrorResponse {
+  const candidate = error && typeof error === 'object' && 'statusCode' in error
+    ? (error as { statusCode?: unknown }).statusCode
     : undefined;
-  const statusCode = typeof requestedStatus === 'number'
-    && Number.isInteger(requestedStatus)
-    && requestedStatus >= 400
-    && requestedStatus < 600
-    ? requestedStatus
-    : 500;
-
-  if (statusCode >= 500) {
-    return { statusCode, message: internalMessage };
-  }
-
+  const statusCode = typeof candidate === 'number' && candidate in SAFE_MESSAGES
+    ? candidate as SafeErrorResponse['statusCode']
+    : fallbackStatus;
   return { statusCode, message: safeHttpErrorMessage(statusCode) };
 }
 
@@ -46,14 +38,19 @@ export function sendSafeErrorReply(
   reply: FastifyReply,
   error: unknown,
   logMessage: string,
-  internalMessage?: string,
+  internalMessage = 'An internal error occurred',
 ) {
-  const safe = toSafeErrorResponse(error, internalMessage);
-  if (safe.statusCode >= 500) {
+  const safe = toSafeErrorResponse(error);
+  const candidateStatus = error && typeof error === 'object' && 'statusCode' in error
+    ? (error as { statusCode?: unknown }).statusCode
+    : undefined;
+  const responseStatus = safe.statusCode === 503 && candidateStatus !== 503 ? 500 : safe.statusCode;
+  if (responseStatus >= 500) {
     request.log.error(
       { errorName: error instanceof Error ? error.name : 'UnknownError' },
       logMessage,
     );
+    return reply.status(responseStatus).send({ message: internalMessage });
   }
   return reply.status(safe.statusCode).send({ message: safe.message });
 }

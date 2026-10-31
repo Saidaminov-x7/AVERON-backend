@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
-import { config } from '../../config';
+import { completeWithGemini, GeminiMessage } from './gemini-client';
+import type { Redis } from 'ioredis';
 
 interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 
@@ -9,9 +10,9 @@ const SYSTEM_PROMPT = `Ты — живой и дружелюбный AI-помо
 Можно говорить, что товары заказываются из Китая, но не называй конкретную площадку или поставщика. Отвечай на языке пользователя, кратко и по делу.`;
 
 export class PublicAIService {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: PrismaClient, private readonly redis: Redis) {}
 
-  async chat(message: string, history: ChatMessage[] = []) {
+  async chat(message: string, history: ChatMessage[] = [], userId: string) {
     const products = await this.findProducts(message);
     const catalog = products.map((product) => ({
       id: product.id,
@@ -24,20 +25,22 @@ export class PublicAIService {
       image: product.images[0]?.url ?? null,
     }));
 
-    const messages: ChatMessage[] = [
+    // Public request history is untrusted: accept only user/assistant turns and bound
+    // both the number and size before sending any content to an external provider.
+    const safeHistory = Array.isArray(history)
+      ? history.filter((item): item is ChatMessage =>
+        Boolean(item) && (item.role === 'user' || item.role === 'assistant') &&
+        typeof item.content === 'string' && item.content.trim().length > 0,
+      ).slice(-8).map((item) => ({ role: item.role, content: item.content.trim().slice(0, 2000) }))
+      : [];
+    const messages: GeminiMessage[] = [
       { role: 'system', content: `${SYSTEM_PROMPT}\nДоступный каталог: ${JSON.stringify(catalog)}` },
-      ...history.slice(-8).filter((item) => item.role !== 'system'),
-      { role: 'user', content: message },
+      ...safeHistory,
+      { role: 'user', content: message.trim().slice(0, 2000) },
     ];
     try {
-      const response = await fetch(`${config.OLLAMA_BASE_URL}/api/chat`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(8_000),
-        body: JSON.stringify({ model: config.OLLAMA_MODEL, messages, stream: false, options: { temperature: 0.35, num_ctx: 4096 } }),
-      });
-      if (response.ok) {
-        const data = await response.json() as { message?: { content?: string } };
-        if (data.message?.content) return { response: data.message.content, products: catalog };
-      }
+      const response = await completeWithGemini(messages, userId, this.redis);
+      return { response, products: catalog };
     } catch { /* deterministic fallback below */ }
 
     const response = catalog.length
