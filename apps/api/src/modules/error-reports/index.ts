@@ -1,8 +1,11 @@
+import { AdminRole } from '@prisma/client';
 import { FastifyPluginAsync } from 'fastify';
-import { AdminRole, Prisma } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { createErrorReportSchema, errorReportFilterSchema } from './schemas';
 import { sanitizeErrorReportUrl, sanitizeErrorText } from './sanitize';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
+
+const errorSupportHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.SUPPORT)];
 
 export const errorReportsModule: FastifyPluginAsync = async (server) => {
   const errorReportAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
@@ -53,7 +56,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
 
         return reply.status(201).send({ id: report.id });
       } catch (err) {
-        request.log.warn({ errorName: err instanceof Error ? err.name : 'UnknownError' }, 'Failed to save client error report');
+        request.log.warn(safeErrorLogFields(err), 'Failed to save client error report');
         return reply.status(500).send({ message: 'Failed to record error report' });
       }
     },
@@ -62,7 +65,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
    * GET /error-reports — список ошибок для админ-панели (требует прав ADMIN)
    */
-  server.get('/', { preHandler: errorReportAccess }, async (request, _reply) => {
+  server.get('/', { preHandler: errorSupportHandler }, async (request, reply) => {
     const filter = errorReportFilterSchema.parse(request.query);
     const { page, limit, severity, resolved } = filter;
 
@@ -94,7 +97,7 @@ export const errorReportsModule: FastifyPluginAsync = async (server) => {
   /**
    * PATCH /error-reports/:id/resolve — пометить ошибку как решённую
    */
-  server.patch<{ Params: { id: string } }>('/:id/resolve', { preHandler: errorReportAccess }, async (request, reply) => {
+  server.patch<{ Params: { id: string } }>('/:id/resolve', { preHandler: errorSupportHandler }, async (request, reply) => {
     const { id } = request.params;
     try {
       const updated = await server.prisma.clientErrorReport.update({

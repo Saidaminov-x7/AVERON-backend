@@ -6,6 +6,8 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { AdminRole, Role } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import { adminMiddleware } from "../../lib/adminMiddleware";
+import { config } from "../../config";
+import { createAuthRateLimitKey } from "./rate-limit-key";
 import { generateTokens } from "../../lib/jwt";
 import { refreshCookieOptions } from "../../lib/cookies";
 import { saveAuthSession } from "./sessions";
@@ -350,8 +352,12 @@ export const adminTotpModule: FastifyPluginAsync = async (server) => {
         rateLimit: {
           max: 10,
           timeWindow: "15 minutes",
-          keyGenerator: (request) =>
-            `${request.ip}:${(request.body as { challengeToken?: string })?.challengeToken ?? "unknown"}`,
+          keyGenerator: (request) => createAuthRateLimitKey(
+            config.JWT_SECRET,
+            "admin-totp-login",
+            request.ip,
+            [(request.body as { challengeToken?: string })?.challengeToken],
+          ),
         },
       },
     },

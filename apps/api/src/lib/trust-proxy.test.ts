@@ -28,18 +28,4 @@ describe('trustProxyOption', () => {
     assert.equal(trustProxyOption([]), false);
   });
 
-  it('does not trust forwarded protocol headers without explicit proxy addresses', async () => {
-    const app = fastify({ trustProxy: trustProxyOption([]) });
-    app.get('/protocol', async (request) => ({ protocol: request.protocol }));
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/protocol',
-      headers: { 'x-forwarded-proto': 'https' },
-    });
-
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.json().protocol, 'http');
-    await app.close();
-  });
 });

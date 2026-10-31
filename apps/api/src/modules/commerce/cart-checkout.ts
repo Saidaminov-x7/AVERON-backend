@@ -5,6 +5,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { normalizePromoCode, promoFailureCode } from './commerce-promos';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 
 const quantitySchema = z.number().int().min(1).max(99);
 // Checkout reserves inventory and writes an order snapshot inside one transaction.
@@ -337,7 +338,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
     try {
       return await getCartDto(app.prisma, request.user.userId);
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to load cart');
+      request.log.error(safeErrorLogFields(error), 'Unable to load cart');
       return reply.status(500).send({ code: 'CART_LOAD_FAILED', message: 'Unable to load cart' });
     }
   });
@@ -390,7 +391,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       return reply.status(201).send(await getCartDto(app.prisma, request.user.userId));
     } catch (error) {
       if (errorCode(error) === 'P2004') return reply.status(409).send({ code: 'INVALID_QUANTITY', message: 'Cart quantity or stock limit exceeded' });
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to update cart');
+      request.log.error(safeErrorLogFields(error), 'Unable to update cart');
       return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to update cart' });
     }
   });
@@ -428,7 +429,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       }
       return await getCartDto(app.prisma, request.user.userId);
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to update cart item');
+      request.log.error(safeErrorLogFields(error), 'Unable to update cart item');
       return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to update cart item' });
     }
   });
@@ -447,7 +448,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       if (result.count === 0) return reply.status(404).send({ code: 'CART_ITEM_NOT_FOUND', message: 'Cart item not found' });
       return await getCartDto(app.prisma, request.user.userId);
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to remove cart item');
+      request.log.error(safeErrorLogFields(error), 'Unable to remove cart item');
       return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to remove cart item' });
     }
   });
@@ -463,7 +464,7 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
       });
       return { items: [], subtotalUzs: '0.00', currency: 'UZS' as const };
     } catch (error) {
-      request.log.error({ errorName: safeErrorName(error) }, 'Unable to clear cart');
+      request.log.error(safeErrorLogFields(error), 'Unable to clear cart');
       return reply.status(500).send({ code: 'CART_UPDATE_FAILED', message: 'Unable to clear cart' });
     }
   });
@@ -721,11 +722,11 @@ export const cartCheckoutModule: FastifyPluginAsync = async (app) => {
             if (order) return reply.status(200).send(safeOrder(order));
           }
         } catch (lookupError) {
-          request.log.error({ errorName: safeErrorName(lookupError) }, 'Unable to resolve concurrent checkout');
+          request.log.error(safeErrorLogFields(lookupError), 'Unable to resolve concurrent checkout');
         }
         return reply.status(409).send({ code: 'CHECKOUT_CONFLICT', message: 'Checkout conflict; retry with the same idempotency key' });
       }
-      request.log.error({ errorName: safeErrorName(error) }, 'Checkout failed');
+      request.log.error(safeErrorLogFields(error), 'Checkout failed');
       return reply.status(500).send({ code: 'CHECKOUT_FAILED', message: 'Unable to complete checkout' });
     }
   });

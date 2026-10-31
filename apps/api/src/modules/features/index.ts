@@ -1,11 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { AdminRole } from '@prisma/client';
 import { config } from '../../config';
 import { featureFlags } from './feature-flags';
 import { isVisualSearchAvailable } from '../visual-search/runtime';
 import { catalogAiService } from '../commerce/catalog-ai-service';
-import { AdminRole } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
-import { isTelegramProductPublisherConfigured } from '../commerce/telegram-publisher';
+
+const diagnosticsAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
 export const capabilitiesModule: FastifyPluginAsync = async (app) => {
   app.get('/capabilities', async () => {
@@ -29,8 +30,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     };
   });
 
-  const diagnosticsAccess = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
-  app.get('/admin/ai-status', { preHandler: diagnosticsAccess }, async () => ({
+  app.get('/admin/ai-status', { preHandler: diagnosticsAdminHandler }, async () => ({
     flags: {
       aiSearch: featureFlags.isEnabled('AI_SEARCH'),
       styleAssistant: featureFlags.isEnabled('STYLE_ASSISTANT'),
@@ -42,7 +42,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     timeoutMs: config.AI_TIMEOUT_MS,
   }));
 
-  app.get('/admin/recommendation-status', { preHandler: diagnosticsAccess }, async () => ({
+  app.get('/admin/recommendation-status', { preHandler: diagnosticsAdminHandler }, async () => ({
     flags: {
       recommendations: featureFlags.isEnabled('RECOMMENDATIONS'),
       personalized: featureFlags.isEnabled('PERSONALIZED_RECOMMENDATIONS'),
@@ -53,7 +53,7 @@ export const capabilitiesModule: FastifyPluginAsync = async (app) => {
     personalizedResultsShared: false,
   }));
 
-  app.get('/admin/integration-diagnostics', { preHandler: diagnosticsAccess }, async () => {
+  app.get('/admin/integration-diagnostics', { preHandler: diagnosticsAdminHandler }, async () => {
     let redisHealthy = false;
     try {
       redisHealthy = await app.redis.ping() === 'PONG';

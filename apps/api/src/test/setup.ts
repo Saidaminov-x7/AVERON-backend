@@ -2,8 +2,8 @@
 
 import { afterAll, vi } from 'vitest';
 
-// Set required config before test modules are imported. A beforeAll hook runs too
-// late for modules that validate environment variables during import.
+// Setup files run before test modules are imported, unlike beforeAll hooks.
+// Use isolated local-only endpoints so tests cannot inherit real service URLs.
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/averon_test';
 process.env.REDIS_URL = 'redis://127.0.0.1:6379/15';

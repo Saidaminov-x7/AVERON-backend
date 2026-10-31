@@ -1,28 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { safeErrorLogFields } from "./safe-error-log";
+import assert from 'node:assert/strict';
+import { describe, it } from 'vitest';
+import { safeErrorLogFields } from './safe-error-log';
 
-describe("safe error log fields", () => {
-  it("keeps only the error type and a constrained internal code", () => {
-    const error = Object.assign(new Error("password=do-not-log"), {
-      code: "ECONNRESET",
-    });
+describe('safeErrorLogFields', () => {
+  it('keeps an error type and safe code without serializing message or stack', () => {
+    const error = Object.assign(new Error('contains private query, token, and customer data'), { code: 'P2002' });
     const fields = safeErrorLogFields(error);
-
-    expect(fields).toEqual({ errorType: "Error", errorCode: "ECONNRESET" });
-    expect(JSON.stringify(fields)).not.toContain("password");
-    expect(JSON.stringify(fields)).not.toContain(error.message);
+    assert.deepEqual(fields, { errorType: 'Error', errorCode: 'P2002' });
+    assert.doesNotMatch(JSON.stringify(fields), /private query|token|customer/);
   });
 
-  it("omits arbitrary codes and safely handles non-error values", () => {
-    expect(
-      safeErrorLogFields(
-        Object.assign(new Error("secret"), {
-          code: "redis://user:secret@host",
-        }),
-      ),
-    ).toEqual({ errorType: "Error" });
-    expect(safeErrorLogFields("token=secret")).toEqual({
-      errorType: "UnknownError",
-    });
+  it('uses a fixed diagnostic for non-Error values and rejects unsafe codes', () => {
+    assert.deepEqual(safeErrorLogFields('secret value'), { errorType: 'UnknownError' });
+    const error = Object.assign(new Error('private'), { code: 'SECRET token' });
+    assert.deepEqual(safeErrorLogFields(error), { errorType: 'Error' });
   });
 });

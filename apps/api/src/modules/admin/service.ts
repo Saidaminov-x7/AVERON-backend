@@ -357,7 +357,8 @@ export class AdminService {
 
   // ─── Пользователи ────────────────────────────────────────────────────────────
 
-  async getUsers(filter: AdminUsersFilterDto) {
+  async getUsers(filter: AdminUsersFilterDto, options: { includePersonalData?: boolean } = {}) {
+    const includePersonalData = options.includePersonalData ?? true;
     const { page, limit, role, isBlocked, isStaff, search, dateFrom, dateTo, sortBy, sortOrder, order, lastActiveDays, createdAfterDays, createdBeforeDays } = filter;
     const effectiveOrder = order ?? sortOrder;
     const skip = (page - 1) * limit;
@@ -379,8 +380,10 @@ export class AdminService {
       and.push({
         OR: [
           { name: { contains: q, mode: 'insensitive' } },
-          { email: { contains: q, mode: 'insensitive' } },
-          { phone: { contains: q, mode: 'insensitive' } },
+          ...(includePersonalData ? [
+            { email: { contains: q, mode: 'insensitive' as const } },
+            { phone: { contains: q, mode: 'insensitive' as const } },
+          ] : []),
           { id: { contains: q, mode: 'insensitive' } },
         ],
       });
@@ -422,13 +425,8 @@ export class AdminService {
 
     const orderBy: Prisma.UserOrderByWithRelationInput = { [sortBy]: effectiveOrder };
 
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.user.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy,
-        select: {
+    const userSelect = includePersonalData
+      ? {
           id: true,
           name: true,
           email: true,
@@ -442,13 +440,40 @@ export class AdminService {
           createdAt: true,
           avatar: true,
           lastLoginAt: true,
-        },
+        }
+      : {
+          id: true,
+          name: true,
+          role: true,
+          verified: true,
+          isBlocked: true,
+          createdAt: true,
+          avatar: true,
+        };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.user.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy,
+        select: userSelect,
       }),
       this.prisma.user.count({ where }),
     ]);
 
+    const safeItems = includePersonalData ? items : items.map((user) => ({
+      id: user.id,
+      name: user.name,
+      role: user.role,
+      verified: user.verified,
+      isBlocked: user.isBlocked,
+      createdAt: user.createdAt,
+      avatar: user.avatar,
+    }));
+
     return {
-      items,
+      items: safeItems,
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
