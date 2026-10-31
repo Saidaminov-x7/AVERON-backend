@@ -1,9 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
 import { AdminRole, Prisma, ProductPublicationStatus } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { adminImportListQuerySchema, adminProductListQuerySchema, approveImportSchema, createCategorySchema, createImportSchema, createManualProductSchema, customOrderSchema, productListQuerySchema, rejectImportSchema, updateCategorySchema, updateManualProductSchema } from './schemas';
-import { assertHumanApproval, createProductWithUniquePublicId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
+import { assertHumanApproval, createProductWithUniquePublicId, formatPublicProductId, ProductPublicIdCollisionError, slugifyProduct } from './rules';
 import { featureFlags } from '../features/feature-flags';
 import { parserImportModule } from './parser-import';
 import { dispatchDomainEvent } from '../integrations/domain-events';
@@ -20,6 +21,15 @@ import { wishlistModule } from './wishlist';
 import { commercePromosModule } from './commerce-promos';
 import { ipostShippingModule } from './ipost-shipping';
 import { fittingRoomModule } from './fitting-room';
+
+const catalogAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
+const catalogReadHandler = [requireAdminRole(
+  AdminRole.SUPER_ADMIN,
+  AdminRole.ADMIN,
+  AdminRole.MODERATOR,
+  AdminRole.SUPPORT,
+)];
+const importReviewHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR)];
 
 type ProductListQuery = ReturnType<typeof productListQuerySchema.parse>;
 const catalogReadRoles = [AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MODERATOR, AdminRole.SUPPORT];
@@ -208,23 +218,19 @@ function mergeLocalizedDescriptions(
   return descriptions as Prisma.InputJsonObject;
 }
 
-type ProductCareAttribute = 'composition' | 'careInstructions';
-type LocalizedProductText = Partial<Record<'ru' | 'uz' | 'en', string>>;
-
-function mergeLocalizedProductAttributes(
-  existing: Prisma.JsonValue | null,
-  updates: Partial<Record<ProductCareAttribute, LocalizedProductText>>,
+function mergeProductAttributes(
+  existing: unknown,
+  updates: { composition?: Record<string, string>; careInstructions?: Record<string, string> },
 ): Prisma.InputJsonObject {
   const attributes = copyJsonObject(existing);
-  for (const [name, localizedUpdates] of Object.entries(updates) as Array<[ProductCareAttribute, LocalizedProductText]>) {
-    const localized = isJsonObject(attributes[name]) ? copyJsonObject(attributes[name] as Prisma.JsonValue) : {};
-    for (const [locale, text] of Object.entries(localizedUpdates)) {
-      if (text === undefined) continue;
-      if (text.trim()) localized[locale] = text.trim();
-      else delete localized[locale];
-    }
-    if (Object.keys(localized).length) attributes[name] = localized;
-    else delete attributes[name];
+  for (const key of ['composition', 'careInstructions'] as const) {
+    const value = updates[key];
+    if (value === undefined) continue;
+    const localized = Object.fromEntries(
+      Object.entries(value).flatMap(([locale, text]) => typeof text === 'string' && text.trim() ? [[locale, text.trim()]] : []),
+    );
+    if (Object.keys(localized).length) attributes[key] = localized;
+    else delete attributes[key];
   }
   return attributes as Prisma.InputJsonObject;
 }
@@ -313,16 +319,8 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
 
   app.get('/products/:identifier', async (request, reply) => {
     const { identifier } = request.params as { identifier: string };
-    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true, fittingRoomAssets: { where: { status: 'APPROVED' }, select: { id: true }, take: 1 } } });
-    if (!product) return reply.status(404).send({ message: 'Товар не найден' });
-    let bodyProfile: { heightCm: number | null; weightKg: number | null } | null = null;
-    try {
-      await request.jwtVerify();
-      bodyProfile = await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { heightCm: true, weightKg: true } });
-    } catch {
-      // Public product details remain available without authentication.
-    }
-    return { ...publicProductDto(product), sizeRecommendation: recommendProductSize(product.sizeChart, bodyProfile) };
+    const product = await app.prisma.commerceProduct.findFirst({ where: { OR: [{ publicId: identifier }, { legacyPublicId: identifier }, { slug: identifier }, { id: identifier }], status: 'PUBLISHED' }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: { where: { active: true } }, category: true } });
+    return product ? publicProductDto(product) : reply.status(404).send({ message: 'Товар не найден' });
   });
 
   app.get('/categories', async () => app.prisma.commerceCategory.findMany({ where: { active: true }, orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }] }));
@@ -354,13 +352,13 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get('/admin/categories', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async () =>
+  app.get('/admin/categories', { preHandler: catalogAdminHandler }, async () =>
     app.prisma.commerceCategory.findMany({
       include: { parent: { select: { id: true, slug: true, name: true } }, _count: { select: { products: true, imports: true } } },
       orderBy: [{ sortOrder: 'asc' }, { slug: 'asc' }],
     }));
 
-  app.post('/admin/categories', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/categories', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const input = createCategorySchema.parse(request.body);
     if (input.parentId) {
       const parent = await app.prisma.commerceCategory.findUnique({ where: { id: input.parentId }, select: { id: true, active: true } });
@@ -383,7 +381,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(409).send({ message: 'Could not generate a unique category slug' });
   });
 
-  app.put<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.put<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const input = updateCategorySchema.parse(request.body);
     const current = await app.prisma.commerceCategory.findUnique({ where: { id: request.params.id } });
     if (!current) return reply.status(404).send({ message: 'Category not found' });
@@ -428,7 +426,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.delete<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.delete<{ Params: { id: string } }>('/admin/categories/:id', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const current = await app.prisma.commerceCategory.findUnique({ where: { id: request.params.id } });
     if (!current) return reply.status(404).send({ message: 'Category not found' });
     return app.prisma.commerceCategory.update({ where: { id: current.id }, data: { active: false } });
@@ -446,7 +444,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(201).send(item);
   });
 
-  app.get('/admin/dashboard', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async () => {
+  app.get('/admin/dashboard', { preHandler: catalogAdminHandler }, async () => {
     const [published, pendingReview, rejected, orders, users, revenue, expenses] = await Promise.all([
       app.prisma.commerceProduct.count({ where: { status: 'PUBLISHED' } }),
       app.prisma.importedProduct.count({ where: { status: 'PENDING_REVIEW' } }),
@@ -459,7 +457,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { products: { published, pendingReview, rejected }, orders: { total: orders }, users: { total: users }, finance: { revenue: revenue._sum.totalRevenue ?? 0, netProfit: revenue._sum.netProfit ?? 0, expenses: expenses._sum.amount ?? 0 } };
   });
 
-  app.get('/admin/products', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async (request) => {
+  app.get('/admin/products', { preHandler: catalogReadHandler }, async (request) => {
     const query = adminProductListQuerySchema.parse(request.query);
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(48, Math.max(1, Number(query.limit) || 24));
@@ -488,7 +486,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
   });
 
-  app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: [requireAdminRole(...catalogReadRoles)] }, async (request, reply) => {
+  app.get<{ Params: { identifier: string } }>('/admin/products/:identifier', { preHandler: catalogReadHandler }, async (request, reply) => {
     const identifier = request.params.identifier;
     const product = await app.prisma.commerceProduct.findFirst({
       where: { OR: [{ id: identifier }, { publicId: identifier }, { slug: identifier }] },
@@ -503,7 +501,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return product ?? reply.status(404).send({ message: 'Product not found' });
   });
 
-  app.get('/admin/imports', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request) => {
+  app.get('/admin/imports', { preHandler: catalogReadHandler }, async (request) => {
     const query = adminImportListQuerySchema.parse(request.query);
     const where: Prisma.ImportedProductWhereInput = {
       ...(query.status ? { status: query.status } : {}),
@@ -531,7 +529,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return { items, pagination: { page: query.page, limit: query.limit, total, pages: Math.ceil(total / query.limit) } };
   });
 
-  app.post('/admin/products', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/products', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const input = createManualProductSchema.parse(request.body);
     const rawIdempotencyKey = request.headers['idempotency-key'];
     if (typeof rawIdempotencyKey !== 'string' || !/^[A-Za-z0-9._:-]{8,128}$/.test(rawIdempotencyKey)) {
@@ -598,13 +596,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           sizeChart: input.sizeChart as Prisma.InputJsonValue | undefined,
           translations: { ru: { title: input.title }, uz: { title: input.titleUz }, en: { title: input.titleEn } },
           description: Object.keys(descriptions).length ? descriptions : undefined,
-          attributes: {
-            audience: 'everyone',
-            ...mergeLocalizedProductAttributes(null, {
-              composition: { ru: input.composition, uz: input.compositionUz, en: input.compositionEn },
-              careInstructions: { ru: input.careInstructions, uz: input.careInstructionsUz, en: input.careInstructionsEn },
-            }),
-          },
+          attributes: mergeProductAttributes({ audience: 'everyone' }, {
+            composition: input.composition,
+            careInstructions: input.careInstructions,
+          }),
           source: 'MANUAL',
           sourceProductId,
           sourceUrl: input.sourceUrl ?? null,
@@ -628,7 +623,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
             create: input.images.map((image, sortOrder) => {
               const file = mediaById.get(image.mediaId!);
               if (!file) throw new Error('Product photo reference was not resolved');
-              return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title } };
+              return { mediaId: file.id, url: file.url, sortOrder, alt: { ru: input.title }, ...(image.coverCrop ? { coverCrop: image.coverCrop } : {}) };
             }),
           },
           variants: variantOptions.length
@@ -637,7 +632,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } }, variants: true } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_MANUALLY_CREATED', resource: 'CommerceProduct', resourceId: created.id, meta: { published: input.publish } } });
         return created;
-        })));
+        }), async () => {
+          const [sequence] = await app.prisma.$queryRaw<Array<{ id: bigint }>>`SELECT nextval('"CommerceProduct_public_id_seq"') AS id`;
+          return formatPublicProductId(sequence.id);
+        }));
     } catch (error) {
       if (error instanceof ProductPublicIdCollisionError) {
         const concurrentReplay = await findIdempotentProduct();
@@ -662,7 +660,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(201).send(product);
   });
 
-  app.put('/admin/products/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.put('/admin/products/:id', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = updateManualProductSchema.parse(request.body);
     const product = await app.prisma.commerceProduct.findUnique({
@@ -679,7 +677,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         translations: true,
         description: true,
         attributes: true,
-        images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true } },
+        images: { orderBy: { sortOrder: 'asc' }, select: { id: true, url: true, mediaId: true, sortOrder: true, coverCrop: true } },
         variants: { select: { id: true, sku: true, stock: true, active: true } },
       },
     });
@@ -696,7 +694,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       if (preorderLimit < product.preorderReserved) {
         throw Object.assign(new Error('Preorder limit cannot be lower than already reserved quantity'), { statusCode: 409 });
       }
-      let resolvedImages: Array<{ id?: string; mediaId: string | null; url: string }> | undefined;
+      let resolvedImages: Array<{ id?: string; mediaId: string | null; url: string; coverCrop?: Prisma.InputJsonValue | typeof Prisma.DbNull }> | undefined;
       if (input.images) {
         const settings = await tx.siteSettings.findUnique({
           where: { id: 'singleton' },
@@ -718,11 +716,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           if (image.id) {
             const existing = existingById.get(image.id);
             if (!existing) throw Object.assign(new Error('Product image does not belong to this product'), { statusCode: 400 });
-            return { id: existing.id, mediaId: existing.mediaId, url: existing.url };
+            return { id: existing.id, mediaId: existing.mediaId, url: existing.url, coverCrop: image.coverCrop === undefined ? (existing.coverCrop as Prisma.InputJsonValue | null) ?? undefined : image.coverCrop ?? Prisma.DbNull };
           }
           const file = mediaById.get(image.mediaId!);
           if (!file) throw Object.assign(new Error('Product photo reference was not resolved'), { statusCode: 400 });
-          return { mediaId: file.id, url: file.url };
+          return { mediaId: file.id, url: file.url, ...(image.coverCrop ? { coverCrop: image.coverCrop } : {}) };
         });
       }
       if (input.categoryId && input.categoryId !== product.categoryId) {
@@ -772,21 +770,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
                 }),
               }
             : {}),
-          ...(productAttributesProvided
-            ? {
-                attributes: mergeLocalizedProductAttributes(product.attributes, {
-                  composition: {
-                    ru: input.composition,
-                    uz: input.compositionUz,
-                    en: input.compositionEn,
-                  },
-                  careInstructions: {
-                    ru: input.careInstructions,
-                    uz: input.careInstructionsUz,
-                    en: input.careInstructionsEn,
-                  },
-                }),
-              }
+          ...(input.composition !== undefined || input.careInstructions !== undefined
+            ? { attributes: mergeProductAttributes(product.attributes, {
+                composition: input.composition,
+                careInstructions: input.careInstructions,
+              }) }
             : {}),
           ...(input.sourceUrl !== undefined ? { sourceUrl: input.sourceUrl } : {}),
           ...(input.salePriceUzs !== undefined ? { salePriceUzs: input.salePriceUzs } : {}),
@@ -834,11 +822,11 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
           if (image.id) {
             await tx.commerceProductImage.update({
               where: { id: image.id },
-              data: { sortOrder },
+              data: { sortOrder, ...(image.coverCrop !== undefined ? { coverCrop: image.coverCrop } : {}) },
             });
           } else {
             await tx.commerceProductImage.create({
-              data: { productId: id, mediaId: image.mediaId, url: image.url, sortOrder },
+              data: { productId: id, mediaId: image.mediaId, url: image.url, sortOrder, ...(image.coverCrop !== undefined ? { coverCrop: image.coverCrop } : {}) },
             });
           }
         }
@@ -939,7 +927,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const mediaService = new MediaService(app.prisma, undefined, request.log);
       for (const media of mediaToDelete) {
         await mediaService.delete(media.id, request.user.userId, true).catch((error) => {
-          request.log.error({ errorName: error instanceof Error ? error.name : 'UnknownError', mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
+          request.log.error({ ...safeErrorLogFields(error), mediaId: media.id, productId: id }, 'Failed to clean up removed product photo');
         });
       }
     }
@@ -954,7 +942,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return updated;
   });
 
-  app.post('/admin/products/:id/archive', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/products/:id/archive', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
@@ -966,7 +954,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return archived;
   });
 
-  app.post('/admin/products/:id/restore', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/products/:id/restore', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true, status: true } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
@@ -978,7 +966,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return restored;
   });
 
-  app.delete('/admin/products/:id', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.delete('/admin/products/:id', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const product = await app.prisma.commerceProduct.findUnique({ where: { id }, select: { id: true, images: { select: { mediaId: true } } } });
     if (!product) return reply.status(404).send({ message: 'Product not found' });
@@ -1005,7 +993,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return reply.status(204).send();
   });
 
-  app.post('/admin/imports', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/imports', { preHandler: catalogAdminHandler }, async (request, reply) => {
     const input = createImportSchema.parse(request.body);
     if (input.source === 'SOURCE_1688' && !featureFlags.isEnabled('PARSER_1688')) {
       return reply.status(403).send({ code: 'FEATURE_DISABLED', message: 'The 1688 parser is disabled.' });
@@ -1072,7 +1060,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post('/admin/imports/:id/approve', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/imports/:id/approve', { preHandler: importReviewHandler }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = approveImportSchema.parse(request.body);
     const imported = await app.prisma.importedProduct.findUnique({ where: { id } });
@@ -1129,7 +1117,10 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
         }, include: { images: { orderBy: { sortOrder: 'asc' } } } });
         await tx.auditLog.create({ data: { userId: request.user.userId, action: 'PRODUCT_IMPORT_APPROVED', resource: 'ImportedProduct', resourceId: id, meta: { productId: product.id, published: input.publish } } });
         return product;
-      }));
+      }), async () => {
+        const [sequence] = await app.prisma.$queryRaw<Array<{ id: bigint }>>`SELECT nextval('"CommerceProduct_public_id_seq"') AS id`;
+        return formatPublicProductId(sequence.id);
+      });
     } catch (error) {
       if (error instanceof Error && error.message === 'IMPORT_NOT_PENDING_REVIEW') {
         return reply.status(409).send({ code: error.message, message: 'This import is no longer awaiting review.' });
@@ -1158,7 +1149,7 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
     return result;
   });
 
-  app.post('/admin/imports/:id/reject', { preHandler: [requireAdminRole(...catalogManageRoles)] }, async (request, reply) => {
+  app.post('/admin/imports/:id/reject', { preHandler: importReviewHandler }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const input = rejectImportSchema.parse(request.body);
     const imported = await app.prisma.importedProduct.findUnique({ where: { id } });

@@ -1,8 +1,8 @@
 import Fastify from 'fastify';
-import cookie from '@fastify/cookie';
-import jwt from '@fastify/jwt';
+import fastifyCookie from '@fastify/cookie';
+import fastifyJwt from '@fastify/jwt';
 import argon2 from 'argon2';
-import { createHash } from 'node:crypto';
+import crypto from 'crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { config } from '../../../config';
 
@@ -15,95 +15,126 @@ vi.hoisted(() => {
   process.env.FEATURE_SMS_VERIFICATION = 'true';
 });
 
-import { requestPhonePasswordLogin, requestPhoneRegistration, verifyPhonePasswordLogin, verifyPhoneRegistration } from '../phone-password';
-import { smsProvider } from '../../integrations/sms-provider';
+import {
+  requestPhonePasswordLogin,
+  requestPhoneRegistration,
+  verifyPhonePasswordLogin,
+  verifyPhoneRegistration,
+} from '../phone-password';
+import { config } from '../../../config';
 
 describe('phone password OTP security', () => {
-  it('rejects a wrong SMS code then completes login with one controlled SMS and an auth session', async () => {
-    const originalEnvironment = config.NODE_ENV;
-    config.NODE_ENV = 'production';
-    let smsMessage = '';
-    const sendSms = vi.spyOn(smsProvider, 'send').mockImplementation(async (_phone, message) => {
-      smsMessage = message;
-      return true;
-    });
-    const user = {
-      id: 'fixture-user',
-      phone: '+998901234567',
-      name: 'Fixture customer',
-      passwordHash: await argon2.hash('local-only-test-password'),
-      role: 'USER',
-      adminRole: null,
-      avatar: null,
-      isBlocked: false,
-      isDeleted: false,
-    };
-    let otpAttempts = 0;
+  it('completes registration through the real OTP handlers and creates a session without exposing a reusable code', async () => {
+    const values = new Map<string, string>();
     const redis = {
-      get: vi.fn(async () => null),
-      set: vi.fn(async () => 'OK'),
-      del: vi.fn(async () => 1),
-      eval: vi.fn(async (_script: string, _keys: number, _key: string, codeHash: string) => {
-        otpAttempts += 1;
-        if (otpAttempts === 1) return [1];
-        expect(codeHash).toBe(createHash('sha256').update(smsMessage.match(/\b\d{6}\b/)?.[0] ?? '').digest('hex'));
-        return [3, JSON.stringify({ codeHash, attempts: 0, userId: user.id })];
+      set: vi.fn(async (key: string, value: string, ...options: Array<string | number>) => {
+        if (options.includes('NX') && values.has(key)) return null;
+        values.set(key, value);
+        return 'OK';
+      }),
+      get: vi.fn(async (key: string) => values.get(key) ?? null),
+      del: vi.fn(async (...keys: string[]) => keys.reduce((removed, key) => removed + Number(values.delete(key)), 0)),
+      eval: vi.fn(async (_script: string, _keyCount: number, key: string, expectedHash: string) => {
+        const encoded = values.get(key);
+        if (!encoded) return [0];
+        const pending = JSON.parse(encoded) as { codeHash: string; attempts: number };
+        if (pending.codeHash !== expectedHash) return [1];
+        values.delete(key);
+        return [3, encoded];
       }),
     };
-    const prisma = {
-      user: {
-        findUnique: vi.fn(async ({ where }: { where: { phone?: string; id?: string } }) =>
-          (where.phone === user.phone || where.id === user.id) ? user : null),
-        update: vi.fn(async () => user),
-      },
-      authSession: { upsert: vi.fn(async () => ({})) },
+    const newUser = {
+      id: 'registered-buyer',
+      phone: '+998901234567',
+      email: 'phone-998901234567@users.averon.local',
+      name: 'Buyer',
+      avatar: null,
+      role: 'CUSTOMER',
+      adminRole: null,
+      isBlocked: false,
+      isDeleted: false,
+      adminTotpEnabled: false,
+    };
+    let storedPasswordHash = '';
+    let isRegistered = false;
+    const user = {
+      findUnique: vi.fn(async () => isRegistered ? { ...newUser, passwordHash: storedPasswordHash } : null),
+      create: vi.fn(async ({ data }: { data: { phone: string; passwordHash: string; verified: boolean } }) => {
+        expect(data.phone).toBe('+998901234567');
+        expect(await argon2.verify(data.passwordHash, 'StrongPass123!')).toBe(true);
+        expect(data.verified).toBe(true);
+        storedPasswordHash = data.passwordHash;
+        isRegistered = true;
+        return newUser;
+      }),
+      update: vi.fn(async () => newUser),
     };
     const app = Fastify();
+    await app.register(fastifyCookie);
+    await app.register(fastifyJwt, { secret: config.JWT_SECRET });
     app.decorate('redis', redis as never);
-    app.decorate('prisma', prisma as never);
-    await app.register(cookie);
-    await app.register(jwt, { secret: config.JWT_SECRET });
+    app.decorate('prisma', {
+      user,
+      authSession: { upsert: vi.fn(async () => ({})) },
+    } as never);
+    app.post('/register/phone/request-code', requestPhoneRegistration);
+    app.post('/register/phone/verify-code', verifyPhoneRegistration);
     app.post('/login/phone/request-code', requestPhonePasswordLogin);
     app.post('/login/phone/verify-code', verifyPhonePasswordLogin);
     await app.ready();
 
     try {
+      const phone = '+998 90 123 45 67';
       const requested = await app.inject({
         method: 'POST',
-        url: '/login/phone/request-code',
-        payload: { phone: user.phone, password: 'local-only-test-password' },
+        url: '/register/phone/request-code',
+        payload: { name: 'Buyer', phone, password: 'StrongPass123!' },
       });
       expect(requested.statusCode).toBe(200);
-      expect(requested.json()).not.toHaveProperty('devCode');
-      expect(sendSms).toHaveBeenCalledOnce();
-      expect(sendSms.mock.calls[0][0]).toBe('998901234567');
-      const controlledCode = smsMessage.match(/\b(\d{6})\b/)?.[1];
-      expect(controlledCode).toBeDefined();
-      expect(requested.body).not.toContain(controlledCode);
-
-      const invalid = await app.inject({
-        method: 'POST',
-        url: '/login/phone/verify-code',
-        payload: { phone: user.phone, code: '000000' },
-      });
-      expect(invalid.statusCode).toBe(401);
+      const { devCode } = requested.json() as { devCode?: string };
+      expect(devCode).toMatch(/^\d{6}$/);
+      expect(JSON.stringify([...values.values()])).not.toContain(devCode);
 
       const verified = await app.inject({
         method: 'POST',
-        url: '/login/phone/verify-code',
-        payload: { phone: user.phone, code: controlledCode },
+        url: '/register/phone/verify-code',
+        payload: { phone, code: devCode },
       });
-      expect(verified.statusCode, verified.body).toBe(200);
-      expect(verified.json()).toMatchObject({
-        user: { id: user.id, phone: user.phone, role: 'USER' },
-      });
-      expect(verified.json().accessToken).toEqual(expect.any(String));
+      expect(verified.statusCode).toBe(200);
+      expect(verified.json()).toMatchObject({ user: { id: 'registered-buyer', phone: '+998901234567' } });
       expect(verified.headers['set-cookie']).toContain('refreshToken=');
-      expect(prisma.user.update).toHaveBeenCalledOnce();
-      expect(prisma.authSession.upsert).toHaveBeenCalledOnce();
+      expect(user.create).toHaveBeenCalledTimes(1);
+      expect(redis.eval).toHaveBeenCalledTimes(1);
+
+      values.delete('averon:v1:auth:phone-password:cooldown:+998901234567');
+      const loginRequested = await app.inject({
+        method: 'POST',
+        url: '/login/phone/request-code',
+        payload: { phone, password: 'StrongPass123!' },
+      });
+      expect(loginRequested.statusCode).toBe(200);
+      const { devCode: loginCode } = loginRequested.json() as { devCode?: string };
+      expect(loginCode).toMatch(/^\d{6}$/);
+      expect(JSON.stringify([...values.values()])).not.toContain(loginCode);
+
+      const loginVerified = await app.inject({
+        method: 'POST',
+        url: '/login/phone/verify-code',
+        payload: { phone, code: loginCode },
+      });
+      expect(loginVerified.statusCode).toBe(200);
+      expect(loginVerified.json()).toMatchObject({ user: { id: 'registered-buyer', phone: '+998901234567' } });
+      expect(loginVerified.headers['set-cookie']).toContain('refreshToken=');
+      expect(user.create).toHaveBeenCalledTimes(1);
+
+      const replay = await app.inject({
+        method: 'POST',
+        url: '/register/phone/verify-code',
+        payload: { phone, code: devCode },
+      });
+      expect(replay.statusCode).toBe(401);
+      expect(user.create).toHaveBeenCalledTimes(1);
     } finally {
-      config.NODE_ENV = originalEnvironment;
-      sendSms.mockRestore();
       await app.close();
     }
   });

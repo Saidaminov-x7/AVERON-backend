@@ -1,4 +1,4 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 
 export type ReviewState = 'FETCHED' | 'AI_PROCESSING' | 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
@@ -124,21 +124,22 @@ function isProductPublicIdCollision(error: unknown): boolean {
   return isUniqueConstraintCollision(error, 'publicId');
 }
 
-export function createPublicProductId(): string {
-  const token = BigInt(`0x${randomBytes(10).toString('hex')}`)
-    .toString(36)
-    .padStart(16, '0');
-  return `${token.slice(0, 4)}-${token.slice(4, 8)}-${token.slice(8, 12)}-${token.slice(12, 16)}`;
+export function formatPublicProductId(value: bigint | number | string): string {
+  const number = typeof value === 'bigint' ? value : BigInt(value);
+  if (number < 1n || number > 999_999_999_999_999n) {
+    throw new Error('PUBLIC_PRODUCT_ID_SEQUENCE_OUT_OF_RANGE');
+  }
+  return `AVR-${number.toString().padStart(15, '0')}`;
 }
 
 export async function createProductWithUniquePublicId<T>(
   title: string,
   create: (publicId: string, slug: string) => Promise<T>,
-  idGenerator: () => string = createPublicProductId,
+  idGenerator: () => string | Promise<string>,
 ): Promise<T> {
   for (let attempt = 0; attempt < MAX_PUBLIC_PRODUCT_ID_ATTEMPTS; attempt += 1) {
-    const publicId = idGenerator();
-    if (!/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/.test(publicId)) {
+    const publicId = await idGenerator();
+    if (!/^AVR-\d{15}$/.test(publicId)) {
       throw new Error('INVALID_PUBLIC_PRODUCT_ID');
     }
     try {

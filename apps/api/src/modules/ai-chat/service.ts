@@ -2,29 +2,8 @@
 
 import { PrismaClient, AISession, AIChatMessage } from '@prisma/client';
 import { config } from '../../config';
-
-interface OllamaMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-interface OllamaChatRequest {
-  model: string;
-  messages: OllamaMessage[];
-  stream: boolean;
-  options?: {
-    temperature?: number;
-    num_ctx?: number;
-  };
-}
-
-interface OllamaChatResponse {
-  message: {
-    role: string;
-    content: string;
-  };
-  done: boolean;
-}
+import { completeWithGemini, GeminiMessage, streamGemini } from './gemini-client';
+import type { Redis } from 'ioredis';
 
 const SYSTEM_PROMPT = `Ты — AI-помощник магазина AVERON. Помогай выбирать одежду, обувь и аксессуары из каталога AVERON, уточняй размер, цвет, стиль, бюджет и назначение вещи.
 
@@ -37,7 +16,7 @@ const SYSTEM_PROMPT = `Ты — AI-помощник магазина AVERON. П�
 - отвечай кратко, дружелюбно и на языке пользователя: русском, узбекском или английском.`;
 
 export class AIChatService {
-  constructor(private readonly prisma: PrismaClient) { }
+  constructor(private readonly prisma: PrismaClient, private readonly redis: Redis) { }
 
   /**
    * Создать новую сессию чата
@@ -80,13 +59,13 @@ export class AIChatService {
   }
 
   /**
-   * Отправить сообщение и получить ответ от Ollama (без стриминга)
+   * Отправить сообщение и получить ответ от Gemini (без стриминга)
    */
   async sendMessage(
     userId: string,
     userMessage: string,
     sessionId: string | undefined,
-    model: string,
+    _clientModel: string,
   ): Promise<{ session: AISession; message: AIChatMessage; response: string }> {
     let session: AISession;
     if (sessionId) {
@@ -106,24 +85,17 @@ export class AIChatService {
       take: 20,
     });
 
-    const messages: OllamaMessage[] = [
+    const messages: GeminiMessage[] = [
       { role: 'system', content: SYSTEM_PROMPT },
       ...history.map((msg) => ({
         role: (msg.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-        content: msg.content,
+        content: msg.content.slice(0, 2000),
       })),
-      { role: 'user', content: userMessage },
+      { role: 'user', content: userMessage.trim().slice(0, 2000) },
     ];
 
-    // Запрос к Ollama с таймаутом и обработкой сбоев
-    const aiResponse = await this.callOllama({
-      model,
-      messages,
-      stream: false,
-      options: { temperature: 0.7, num_ctx: 4096 },
-    });
-
-    const responseText = aiResponse.message.content;
+    const model = config.GEMINI_CHAT_MODEL;
+    const responseText = await completeWithGemini(messages, userId, this.redis);
 
     // Сохраняем сообщение пользователя
     const savedMessage = await this.prisma.aIChatMessage.create({
@@ -167,48 +139,14 @@ export class AIChatService {
   }
 
   /**
-   * Вызов Ollama API с circuit breaker и таймаутом 20 секунд
-   */
-  private async callOllama(body: OllamaChatRequest): Promise<OllamaChatResponse> {
-    const url = `${config.OLLAMA_BASE_URL}/api/chat`;
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(20_000), // 20 секунд таймаут для избежания зависания
-      });
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        throw Object.assign(
-          new Error(`Ollama API error (${response.status}): ${text || 'AI model error'}`),
-          { statusCode: 503 },
-        );
-      }
-
-      return (await response.json()) as OllamaChatResponse;
-    } catch (err) {
-      const error = err as Error & { statusCode?: number };
-      if (error.statusCode) throw error;
-
-      // Ошибка подключения (Ollama выключена или таймаут)
-      throw Object.assign(
-        new Error('AI-сервис временно недоступен. Пожалуйста, повторите попытку позже.'),
-        { statusCode: 503 },
-      );
-    }
-  }
-
-  /**
-   * Стриминг ответа от Ollama (SSE)
+   * Стриминг ответа от Gemini (OpenAI-compatible SSE)
    */
   async *streamMessage(
     userId: string,
     userMessage: string,
     sessionId: string | undefined,
-    model: string,
+    _clientModel: string,
+    signal?: AbortSignal,
   ): AsyncGenerator<string> {
     let session: AISession;
     if (sessionId) {
@@ -227,62 +165,25 @@ export class AIChatService {
       take: 20,
     });
 
-    const properMessages: OllamaMessage[] = [
+    const properMessages: GeminiMessage[] = [
       { role: 'system', content: SYSTEM_PROMPT },
       ...history.map((msg) => ({
         role: (msg.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-        content: msg.content,
+        content: msg.content.slice(0, 2000),
       })),
-      { role: 'user', content: userMessage },
+      { role: 'user', content: userMessage.trim().slice(0, 2000) },
     ];
+    const model = config.GEMINI_CHAT_MODEL;
 
     // Сохраняем сообщение пользователя
     await this.prisma.aIChatMessage.create({
       data: { sessionId: session.id, role: 'user', content: userMessage, model },
     });
 
-    const url = `${config.OLLAMA_BASE_URL}/api/chat`;
-    let response: Response;
-
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages: properMessages, stream: true }),
-        signal: AbortSignal.timeout(60_000),
-      });
-
-      if (!response.ok || !response.body) {
-        throw Object.assign(
-          new Error('AI-сервис временно недоступен. Пожалуйста, повторите попытку позже.'),
-          { statusCode: 503 },
-        );
-      }
-    } catch {
-      throw Object.assign(
-        new Error('AI-сервис временно недоступен. Пожалуйста, повторите попытку позже.'),
-        { statusCode: 503 },
-      );
-    }
-
     let fullResponse = '';
-    const decoder = new TextDecoder();
-
-    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-      const text = decoder.decode(chunk, { stream: true });
-      const lines = text.split('\n').filter(Boolean);
-
-      for (const line of lines) {
-        try {
-          const parsed = JSON.parse(line) as OllamaChatResponse;
-          if (parsed.message?.content) {
-            fullResponse += parsed.message.content;
-            yield parsed.message.content;
-          }
-        } catch {
-          // Игнорируем неполные куски JSON
-        }
-      }
+    for await (const chunk of streamGemini(properMessages, userId, this.redis, signal)) {
+      fullResponse += chunk;
+      yield chunk;
     }
 
     if (fullResponse.trim().length > 0) {

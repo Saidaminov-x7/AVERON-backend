@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../lib/adminMiddleware', () => ({
@@ -12,9 +13,6 @@ vi.mock('../../../lib/adminMiddleware', () => ({
       user: { userId: '00000000-0000-4000-8000-000000000001', role: 'ADMIN', adminRole: 'SUPER_ADMIN' },
     });
   },
-}));
-vi.mock('../../integrations/domain-events', () => ({
-  dispatchDomainEvent: vi.fn(),
 }));
 
 import { buildManualVariantOptions, commerceModule } from '../index';
@@ -53,6 +51,16 @@ function createTestApp({
   };
   const idempotentProducts = new Map<string, Record<string, unknown>>();
   const tx = {
+    commerceProductImage: {
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+      update: vi.fn(async () => ({})),
+      create: vi.fn(async () => ({})),
+    },
+    siteSettings: { findUnique: vi.fn(async () => ({ maxProductPhotos, maxProductPhotoSizeMb })) },
+    media: {
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.map((id) => ({ id, url: 'https://cdn.example/photo.jpg', size: mediaSize }))),
+    },
     commerceProduct: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const product = { ...createdProduct, ...data };
@@ -113,6 +121,7 @@ function createTestApp({
       findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
         where.id.in.map((id) => ({ id, url: 'https://cdn.example/photo.jpg', size: mediaSize }))),
     },
+    $queryRaw: vi.fn(async () => [{ id: 1n }]),
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
   };
   const app = Fastify();
@@ -300,7 +309,8 @@ describe('commerce admin routes', () => {
     const product = {
       id: 'product-id',
       slug: 'linen-shirt-583921',
-      publicId: 'a42h-nbsq-o1fp-awaz',
+      publicId: 'AVR-000000000000042',
+      legacyPublicId: 'a42h-nbsq-o1fp-awaz',
       status: 'PUBLISHED',
       stock: 1,
       preorderEnabled: false,
@@ -320,7 +330,7 @@ describe('commerce admin routes', () => {
     expect(response.json()).toMatchObject({ publicId: product.publicId, slug: product.slug });
     expect(prisma.commerceProduct.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
-        OR: [{ publicId: product.publicId }, { slug: product.publicId }, { id: product.publicId }],
+        OR: [{ publicId: product.publicId }, { legacyPublicId: product.publicId }, { slug: product.publicId }, { id: product.publicId }],
         status: 'PUBLISHED',
       },
     }));
@@ -349,32 +359,23 @@ describe('commerce admin routes', () => {
         titleEn: 'Test jacket',
         country: 'CN',
         sizeChartType: 'SHOES',
+        composition: { ru: '100% хлопок', en: '100% cotton' },
+        careInstructions: { ru: 'Машинная стирка', en: 'Machine wash' },
         salePriceUzs: 180000,
-        stock: 9,
-        colors: [{ name: 'Red', hex: '#ff0000' }],
-        sizes: ['S', 'M'],
-        variantStocks: [
-          { color: 'Red::#FF0000', size: 'S', stock: 2 },
-          { color: 'Red::#FF0000', size: 'M', stock: 7 },
-        ],
-        composition: 'Хлопок 100%',
-        compositionUz: '100% paxta',
-        careInstructions: 'Машинная стирка',
-        careInstructionsEn: 'Machine wash',
-        images: [{ mediaId }],
+        images: [{ mediaId, coverCrop: { x: 18, y: 73, zoom: 1.6 } }],
         publish: false,
       },
     });
 
-    expect(response.statusCode).toBe(201);
+    expect(response.statusCode, response.body).toBe(201);
     expect(prisma.$transaction).toHaveBeenCalledOnce();
     expect(tx.commerceProduct.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
-        publicId: expect.stringMatching(/^[a-z0-9]{4}(?:-[a-z0-9]{4}){3}$/),
+        publicId: expect.stringMatching(/^AVR-\d{15}$/),
         sizeChartType: 'SHOES',
         attributes: {
           audience: 'everyone',
-          composition: { ru: 'Хлопок 100%', uz: '100% paxta' },
+          composition: { ru: '100% хлопок', en: '100% cotton' },
           careInstructions: { ru: 'Машинная стирка', en: 'Machine wash' },
         },
         slug: expect.stringMatching(/^test-jacket-\d{6}$/),
@@ -385,7 +386,7 @@ describe('commerce admin routes', () => {
         preorderLimit: 0,
         preorderReserved: 0,
         preorderEstimatedAt: null,
-        images: { create: [expect.objectContaining({ mediaId, sortOrder: 0 })] },
+        images: { create: [expect.objectContaining({ mediaId, sortOrder: 0, coverCrop: { x: 18, y: 73, zoom: 1.6 } })] },
       }),
     }));
     expect(tx.auditLog.create).toHaveBeenCalledOnce();
@@ -555,6 +556,7 @@ describe('commerce admin routes', () => {
       preorderReserved: 3,
       translations: { ru: { title: 'Jacket' } },
       description: null,
+      attributes: { audience: 'everyone', other: 'preserve me' },
       images: [],
       variants: [],
     };
@@ -584,6 +586,7 @@ describe('commerce admin routes', () => {
       images: [],
       variants: [],
       salePriceUzs: 180000,
+      attributes: { audience: 'everyone', other: 'preserve me' },
     };
     const { app, tx } = createTestApp({ manualProduct });
     await start(app);
@@ -595,6 +598,8 @@ describe('commerce admin routes', () => {
         preorderLimit: 8,
         preorderEstimatedAt: '2031-02-03T00:00:00.000Z',
         sizeChartType: 'CLOTHING',
+        composition: { ru: 'Хлопок 100%', en: '100% cotton' },
+        careInstructions: { ru: 'Деликатная стирка', en: 'Gentle wash' },
       },
     });
 
@@ -605,53 +610,67 @@ describe('commerce admin routes', () => {
         preorderLimit: 8,
         preorderEstimatedAt: new Date('2031-02-03T00:00:00.000Z'),
         sizeChartType: 'CLOTHING',
+        attributes: {
+          audience: 'everyone',
+          other: 'preserve me',
+          composition: { ru: 'Хлопок 100%', en: '100% cotton' },
+          careInstructions: { ru: 'Деликатная стирка', en: 'Gentle wash' },
+        },
       }),
     }));
     await app.close();
   });
 
-  it('updates localized composition and care while preserving existing product attributes', async () => {
+  it('persists cover focal point and zoom for an existing product photo', async () => {
+    const imageId = '00000000-0000-4000-8000-000000000005';
     const manualProduct = {
       id: '00000000-0000-4000-8000-000000000004',
-      source: 'MANUAL',
-      categoryId: null,
-      preorderEnabled: false,
-      preorderLimit: 0,
-      preorderReserved: 0,
-      translations: { ru: { title: 'Jacket' } },
-      description: null,
-      attributes: {
-        audience: 'women',
-        composition: { ru: 'Old fabric', uz: 'Old text' },
-        customAttribute: 'keep me',
-      },
-      images: [],
+      source: 'MANUAL', status: 'DRAFT', publishedAt: null, categoryId: null,
+      preorderEnabled: false, preorderLimit: 0, preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } }, description: null,
+      images: [{ id: imageId, mediaId, url: 'https://cdn.example/photo.jpg', sortOrder: 0, coverCrop: { x: 50, y: 50, zoom: 1 } }],
       variants: [],
-      salePriceUzs: 180000,
+    };
+    const { app, tx } = createTestApp({ manualProduct });
+    await start(app);
+    const crop = { x: 21, y: 78, zoom: 1.7 };
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/admin/products/${manualProduct.id}`,
+      payload: { images: [{ id: imageId, coverCrop: crop }] },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(tx.commerceProductImage.update).toHaveBeenCalledWith({
+      where: { id: imageId },
+      data: { sortOrder: 0, coverCrop: crop },
+    });
+    await app.close();
+  });
+
+  it('allows an administrator to clear previously persisted cover crop metadata', async () => {
+    const imageId = '00000000-0000-4000-8000-000000000005';
+    const manualProduct = {
+      id: '00000000-0000-4000-8000-000000000004',
+      source: 'MANUAL', status: 'DRAFT', publishedAt: null, categoryId: null,
+      preorderEnabled: false, preorderLimit: 0, preorderReserved: 0,
+      translations: { ru: { title: 'Jacket' } }, description: null,
+      images: [{ id: imageId, mediaId, url: 'https://cdn.example/photo.jpg', sortOrder: 0, coverCrop: { x: 21, y: 78, zoom: 1.7 } }],
+      variants: [],
     };
     const { app, tx } = createTestApp({ manualProduct });
     await start(app);
     const response = await app.inject({
       method: 'PUT',
       url: `/api/v1/admin/products/${manualProduct.id}`,
-      payload: {
-        composition: 'Лён 100%',
-        compositionUz: '',
-        careInstructionsEn: 'Wash cold',
-      },
+      payload: { images: [{ id: imageId, coverCrop: null }] },
     });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(tx.commerceProduct.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        attributes: {
-          audience: 'women',
-          composition: { ru: 'Лён 100%' },
-          careInstructions: { en: 'Wash cold' },
-          customAttribute: 'keep me',
-        },
-      }),
-    }));
+    expect(tx.commerceProductImage.update).toHaveBeenCalledWith({
+      where: { id: imageId },
+      data: { sortOrder: 0, coverCrop: Prisma.DbNull },
+    });
     await app.close();
   });
 

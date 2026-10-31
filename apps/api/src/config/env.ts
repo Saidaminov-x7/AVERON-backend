@@ -74,6 +74,10 @@ const envSchema = z.object({
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().trim().min(1).max(100).default('gpt-4o-mini'),
   AI_TIMEOUT_MS: z.coerce.number().int().min(250).max(30_000).default(10_000),
+  // AVERON chat uses Gemini only after an explicit, budget-approved opt-in.
+  FEATURE_GEMINI_CHAT: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  GEMINI_API_KEY: z.preprocess((value) => typeof value === 'string' && !value.trim() ? undefined : value, z.string().trim().min(1).max(512).optional()),
+  GEMINI_CHAT_MODEL: z.string().trim().min(1).max(100).default('gemini-2.5-flash'),
 
   // Feature flags are explicit deployment opt-ins; unfinished capabilities default off.
   FEATURE_AI_SEARCH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
@@ -87,7 +91,7 @@ const envSchema = z.object({
   FEATURE_PINDUODUO_PARSER: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_IPOST: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_N8N: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
-  FEATURE_TELEGRAM_PRODUCT_PUBLISH: z.enum(['true', 'false']).default('true').transform((value) => value === 'true'),
+  FEATURE_TELEGRAM_PRODUCT_PUBLISH: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_AUTO_CURRENCY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   FEATURE_SMS_VERIFICATION: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   N8N_WEBHOOK_URL: z.preprocess(
@@ -144,6 +148,13 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   RATE_LIMIT_WINDOW: z.string().default('1 minute'),
 }).superRefine((values, context) => {
+  if (values.FEATURE_GEMINI_CHAT && !values.GEMINI_API_KEY) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['GEMINI_API_KEY'],
+      message: 'GEMINI_API_KEY is required when FEATURE_GEMINI_CHAT is enabled',
+    });
+  }
   for (const entry of values.TRUST_PROXY_ADDRESSES) {
     const slash = entry.indexOf('/');
     const address = slash === -1 ? entry : entry.slice(0, slash);

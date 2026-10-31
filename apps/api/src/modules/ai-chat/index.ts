@@ -6,10 +6,12 @@ import { sendSafeErrorReply, toSafeErrorResponse } from '../../lib/safe-error-re
 import { AIChatService } from './service';
 import { PublicAIService } from './public-service';
 import { sendMessageSchema, createSessionSchema, SendMessageDto, CreateSessionDto } from './schemas';
+import { safeErrorLogFields } from '../../lib/safe-error-log';
+import { toSafeErrorResponse } from '../../lib/safe-error-response';
 
 export const aiChatModule: FastifyPluginAsync = async (server) => {
-  const getService = (req: FastifyRequest) => new AIChatService(req.server.prisma);
-  const publicService = new PublicAIService(server.prisma);
+  const getService = (req: FastifyRequest) => new AIChatService(req.server.prisma, req.server.redis);
+  const publicService = new PublicAIService(server.prisma, server.redis);
   const phoneUserOnly = async (request: FastifyRequest, reply: FastifyReply) => {
     const user = await request.server.prisma.user.findUnique({
       where: { id: request.user.userId },
@@ -31,9 +33,9 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
       return reply.status(400).send({ message: 'Message must contain 1-2000 characters' });
     }
     try {
-      return reply.send(await publicService.chat(message, request.body.history));
+      return reply.send(await publicService.chat(message, request.body.history, request.user.userId));
     } catch (err) {
-      server.log.error({ errorName: safeErrorName(err) }, 'Public AI chat error');
+      server.log.error(safeErrorLogFields(err), 'Public AI chat error');
       return reply.status(503).send({ message: 'AI-сервис временно недоступен' });
     }
   });
@@ -78,7 +80,8 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
       );
       return messages;
     } catch (err) {
-      return sendSafeErrorReply(request, reply, err, 'AI chat operation failed');
+      const safeError = toSafeErrorResponse(err);
+      return reply.status(safeError.statusCode).send({ message: safeError.message });
     }
   });
 
@@ -96,7 +99,8 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
       await service.deleteSession(request.params.sessionId, request.user.userId);
       return reply.status(204).send();
     } catch (err) {
-      return sendSafeErrorReply(request, reply, err, 'AI chat operation failed');
+      const safeError = toSafeErrorResponse(err);
+      return reply.status(safeError.statusCode).send({ message: safeError.message });
     }
   });
 
@@ -123,11 +127,9 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
         timestamp: new Date().toISOString(),
       });
     } catch (err) {
-      const error = toSafeErrorResponse(err, 'AI service is temporarily unavailable. Please try again later.');
-      server.log.error({ errorName: safeErrorName(err) }, 'AI chat error');
-      return reply.status(error.statusCode ?? 503).send({
-        message: error.statusCode ? error.message : 'AI-сервис временно недоступен. Пожалуйста, повторите попытку позже.',
-      });
+      server.log.error(safeErrorLogFields(err), 'AI chat error');
+      const safeError = toSafeErrorResponse(err);
+      return reply.status(safeError.statusCode).send({ message: safeError.message });
     }
   });
 
@@ -147,6 +149,9 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
     reply.raw.setHeader('Connection', 'keep-alive');
     reply.raw.setHeader('X-Accel-Buffering', 'no');
     reply.raw.flushHeaders();
+    const abort = new AbortController();
+    const onClose = () => abort.abort();
+    reply.raw.once('close', onClose);
 
     try {
       const stream = service.streamMessage(
@@ -154,6 +159,7 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
         dto.message,
         dto.sessionId,
         dto.model,
+        abort.signal,
       );
 
       for await (const chunk of stream) {
@@ -163,10 +169,11 @@ export const aiChatModule: FastifyPluginAsync = async (server) => {
 
       reply.raw.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     } catch (err) {
-      const error = new Error('AI service is temporarily unavailable. Please try again later.');
-      server.log.error({ errorName: safeErrorName(err) }, 'AI stream error');
+      const error = err as Error;
+      server.log.error(safeErrorLogFields(err), 'AI stream error');
       reply.raw.write(`data: ${JSON.stringify({ error: error.message || 'AI-сервис временно недоступен' })}\n\n`);
     } finally {
+      reply.raw.removeListener('close', onClose);
       reply.raw.end();
     }
   });

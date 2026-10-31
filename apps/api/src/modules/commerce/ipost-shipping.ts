@@ -9,6 +9,7 @@ import { createIpostShipment, getIpostShipment, IPostBoundaryError } from '../in
 const orderParamsSchema = z.object({
   orderNumber: z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_-]+$/),
 }).strict();
+const shippingAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 const deliveryDestinationSchema = z.object({
   city: z.string().trim().min(1).max(100),
   address: z.string().trim().min(1).max(500),
@@ -69,7 +70,7 @@ export function createIpostShippingModule(options: {
 
   return async (app) => {
     app.post<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/ipost-shipment', {
-      preHandler: shippingAdmin,
+      preHandler: shippingAdminHandler,
       config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     }, async (request, reply) => {
       const parsedParams = orderParamsSchema.safeParse(request.params);
@@ -194,7 +195,7 @@ export function createIpostShippingModule(options: {
     });
 
     app.get<{ Params: { orderNumber: string } }>('/admin/orders/:orderNumber/ipost-shipment', {
-      preHandler: shippingAdmin,
+      preHandler: shippingAdminHandler,
       config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     }, async (request, reply) => {
       const parsedParams = orderParamsSchema.safeParse(request.params);
