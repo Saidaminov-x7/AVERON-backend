@@ -21,6 +21,11 @@ import { createCorsOriginAllowlist, isCorsOriginAllowed } from '../../lib/cors-o
 
 const authCookieOrigins = createCorsOriginAllowlist(config.CORS_ORIGINS);
 import { isSecureRequest } from '../../lib/secure-request';
+import { createCorsOriginAllowlist } from '../../lib/cors-origins';
+import { createTrustedCookieOriginGuard } from '../../lib/trusted-cookie-origin';
+
+const cookieOriginAllowlist = createCorsOriginAllowlist(config.CORS_ORIGINS);
+const requireTrustedCookieOrigin = createTrustedCookieOriginGuard(cookieOriginAllowlist);
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.addHook('onRequest', async (request, reply) => {

@@ -80,6 +80,7 @@ async function makeApp(provider: IPostProvider | null, delivery = initialDeliver
   const prisma = {
     ...tx,
     user,
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => {
       let unlock!: () => void;
       const locked = new Promise<void>((resolve) => { unlock = resolve; });
@@ -98,7 +99,7 @@ async function makeApp(provider: IPostProvider | null, delivery = initialDeliver
   app.decorate('prisma', prisma as never);
   app.register(createIpostShippingModule({ provider, isFeatureEnabled: () => provider !== null }), { prefix: '/api/v1' });
   await app.ready();
-  const token = app.jwt.sign({ userId: USER_ID, role: 'ADMIN' });
+  const token = app.jwt.sign({ userId: USER_ID, role: 'ADMIN', sessionId: 'test-session' });
   return { app, token, prisma, delivery };
 }
 

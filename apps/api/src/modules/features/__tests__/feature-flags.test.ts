@@ -97,6 +97,7 @@ describe('feature flags', () => {
   it('reports iPost as blocked until a real provider is configured', async () => {
     const app = Fastify();
     app.decorate('prisma', {
+      authSession: { findFirst: async () => ({ id: 'test-session' }) },
       user: { findUnique: async () => ({
         role: 'ADMIN',
         adminRole: 'SUPER_ADMIN',
@@ -110,7 +111,7 @@ describe('feature flags', () => {
     });
     await app.register(capabilitiesModule, { prefix: '/api/v1' });
     await app.ready();
-    const token = app.jwt.sign({ userId: 'local-admin', role: 'ADMIN' });
+    const token = app.jwt.sign({ userId: 'local-admin', role: 'ADMIN', sessionId: 'test-session' });
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/integration-diagnostics',

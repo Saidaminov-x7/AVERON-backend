@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createCorsOriginAllowlist, isCorsOriginAllowed } from './cors-origins';
+import { createCorsOriginAllowlist, isCorsOriginAllowed, isTrustedCookieOrigin } from './cors-origins';
 
 describe('CORS origin allowlist', () => {
   const origins = createCorsOriginAllowlist(['https://averon-admin-panel.vercel.app']);
@@ -15,5 +15,11 @@ describe('CORS origin allowlist', () => {
     expect(isCorsOriginAllowed('https://averon-frontend-three-git-preview.vercel.app', origins)).toBe(false);
     expect(isCorsOriginAllowed('https://averon.uz.attacker.example', origins)).toBe(false);
     expect(isCorsOriginAllowed('https://attacker.example', origins)).toBe(false);
+  });
+
+  it('requires an explicit allowlisted origin for cookie-authenticated requests', () => {
+    expect(isTrustedCookieOrigin(undefined, origins)).toBe(false);
+    expect(isTrustedCookieOrigin('https://attacker.example', origins)).toBe(false);
+    expect(isTrustedCookieOrigin('https://averon.uz', origins)).toBe(true);
   });
 });

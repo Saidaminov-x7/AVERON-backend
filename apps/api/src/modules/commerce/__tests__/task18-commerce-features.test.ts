@@ -14,14 +14,14 @@ const JWT_SECRET = globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2);
 function makeApp(prisma: Record<string, unknown>, modules: Array<unknown>) {
   const app = Fastify();
   app.register(fastifyJwt, { secret: JWT_SECRET });
-  app.decorate('prisma', prisma as never);
+  app.decorate('prisma', { authSession: { findFirst: async () => ({ id: 'test-session' }) }, ...prisma } as never);
   for (const module of modules) app.register(module as never, { prefix: '/api/v1' });
   return app;
 }
 
 async function tokenFor(app: ReturnType<typeof Fastify>, userId = USER_ID, role = 'USER') {
   await app.ready();
-  return app.jwt.sign({ userId, role });
+  return app.jwt.sign({ userId, role, sessionId: 'test-session' });
 }
 
 describe('Task 18 outfit boundary', () => {

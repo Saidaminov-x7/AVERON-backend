@@ -608,7 +608,7 @@ const start = async () => {
           verified: true,
         },
       });
-      server.log.info({ email: adminEmail }, 'Super admin account synchronized from environment');
+      server.log.info('Super admin account synchronized from environment');
     } else {
       server.log.warn('ADMIN_EMAIL and ADMIN_PASSWORD are not set; admin bootstrap skipped');
     }

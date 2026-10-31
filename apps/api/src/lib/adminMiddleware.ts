@@ -2,6 +2,7 @@
 
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { AdminRole } from '@prisma/client';
+import { requireActiveAuthSession } from './active-session';
 
 /**
  * Prehandler middleware: проверяет JWT-токен И наличие доступа к админ-панели (роль ADMIN или наличие adminRole).
@@ -14,8 +15,11 @@ export const adminMiddleware = async (
   try {
     await request.jwtVerify();
   } catch {
-    return reply.status(401).send({ message: 'Unauthorized' });
+    reply.status(401).send({ message: 'Unauthorized' });
+    return;
   }
+
+  if (!await requireActiveAuthSession(request, reply)) return;
 
   // Проверяем пользователя в БД для актуальной роли и проверки блокировки
   const user = await request.server.prisma.user.findUnique({

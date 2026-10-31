@@ -25,6 +25,7 @@ function makeApp(actor: Record<string, unknown>) {
   const deleteMedia = vi.fn(async () => ({ id: 'media-1' }));
   const app = Fastify();
   app.decorate('prisma', {
+    authSession: { findFirst: async () => ({ id: 'test-session' }) },
     user: { findUnique: findUser },
     media: { findUnique: findMedia, delete: deleteMedia },
     commerceProductImage: { count: countProductImages },
@@ -39,7 +40,7 @@ async function registerRoutes(app: ReturnType<typeof Fastify>) {
 }
 
 function token(app: ReturnType<typeof Fastify>, claims: Record<string, unknown>) {
-  return app.jwt.sign(claims);
+  return app.jwt.sign({ ...claims, sessionId: 'test-session' });
 }
 
 describe('media management access control', () => {
