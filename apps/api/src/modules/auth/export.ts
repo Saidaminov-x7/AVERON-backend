@@ -52,7 +52,7 @@ export async function exportUserDataHandler(request: FastifyRequest, reply: Fast
   }
 
   // Санитизация чувствительных полей хэшей
-  const { passwordHash, refreshTokenHash, twoFactorSecret, ...safeUserData } = user;
+  const { passwordHash, refreshTokenHash, twoFactorSecret, adminTotpSecret, ...safeUserData } = user;
 
   const exportData = {
     metadata: {
