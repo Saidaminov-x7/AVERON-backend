@@ -15,6 +15,17 @@ import { config } from '../../config';
 
 const RESET_TOKEN_TTL_SECONDS = 3600; // 1 час
 
+function escapeHtmlText(value: string): string {
+  const entities: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  return value.replace(/[&<>"']/g, (character) => entities[character]!);
+}
+
 /**
  * POST /auth/forgot-password
  * Принимает email пользователя, генерирует криптостойкий токен сброса пароля,
@@ -36,7 +47,7 @@ export const forgotPasswordHandler = async (
   // Защита от timing-атак и раскрытия существования аккаунта:
   // Если пользователь не найден или заблокирован, все равно возвращаем успешный ответ
   if (!user || user.isBlocked) {
-    request.log.info({ email: dto.email }, 'Password reset requested for nonexistent or blocked user');
+    request.log.info('Password reset requested for nonexistent or blocked user');
     return reply.send({
       message: 'Если аккаунт с таким email существует, ссылка для сброса пароля отправлена.',
     });
@@ -57,15 +68,14 @@ export const forgotPasswordHandler = async (
   // Формируем ссылку на страницу сброса пароля с использованием PUBLIC_SITE_URL и локали пользователя
   const siteBase = (config.PUBLIC_SITE_URL || 'https://ijarauz.uz').replace(/\/+$/, '');
   const userLocale = dto.locale || 'ru';
-  const resetLink = `${siteBase}/${userLocale}/reset-password?token=${resetToken}`;
+  let resetLink = `${siteBase}/${userLocale}/reset-password?token=${resetToken}`;
+  const emailResetLink = resetLink;
 
   // Логируем в консоль / логгер (особенно полезно для разработки и отладки)
-  request.log.info(
-    { userId: user.id, email: user.email, resetLink, siteBase, userLocale },
-    `[ForgotPassword] Reset link generated for ${user.email}`,
-  );
+  request.log.info({ userId: user.id, userLocale }, 'Password reset requested');
 
   // Отправляем уведомление через Telegram, если бот настроен (админу или в канал логов)
+  resetLink = '';
   if (config.TELEGRAM_BOT_TOKEN) {
     const adminChatId = config.TELEGRAM_ADMIN_CHAT_ID;
     if (adminChatId) {
@@ -82,6 +92,7 @@ export const forgotPasswordHandler = async (
     }
   }
 
+  resetLink = emailResetLink;
   // Если настроен Resend API для отправки почты
   if (config.RESEND_API_KEY) {
     try {
@@ -98,10 +109,10 @@ export const forgotPasswordHandler = async (
         : 'Восстановление пароля';
 
       const emailGreeting = userLocale === 'uz'
-        ? `Assalomu alaykum, ${user.name}!`
+        ? `Assalomu alaykum, ${escapeHtmlText(user.name)}!`
         : userLocale === 'en'
-        ? `Hello, ${user.name}!`
-        : `Здравствуйте, ${user.name}!`;
+        ? `Hello, ${escapeHtmlText(user.name)}!`
+        : `Здравствуйте, ${escapeHtmlText(user.name)}!`;
 
       const emailBody = userLocale === 'uz'
         ? 'Siz Ijarauz platformasidagi hisobingiz parolini tiklashni so‘radingiz.'
@@ -148,11 +159,11 @@ export const forgotPasswordHandler = async (
         }),
       });
     } catch (err) {
-      request.log.error({ err }, '[ForgotPassword] Error sending email via Resend');
+      request.log.error({ errorType: err instanceof Error ? err.name : 'unknown' }, '[ForgotPassword] Error sending email via Resend');
     }
   } else {
     request.log.warn(
-      { userId: user.id, email: user.email },
+      { userId: user.id },
       '[ForgotPassword] RESEND_API_KEY не настроен — email со ссылкой сброса НЕ отправлен пользователю!',
     );
   }
