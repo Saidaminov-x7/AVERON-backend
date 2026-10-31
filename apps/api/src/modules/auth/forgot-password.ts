@@ -15,6 +15,17 @@ import { config } from '../../config';
 
 const RESET_TOKEN_TTL_SECONDS = 3600; // 1 час
 
+function escapeHtmlText(value: string): string {
+  const entities: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  return value.replace(/[&<>"']/g, (character) => entities[character]!);
+}
+
 /**
  * POST /auth/forgot-password
  * Принимает email пользователя, генерирует криптостойкий токен сброса пароля,
@@ -94,10 +105,10 @@ export const forgotPasswordHandler = async (
         : 'Восстановление пароля';
 
       const emailGreeting = userLocale === 'uz'
-        ? `Assalomu alaykum, ${user.name}!`
+        ? `Assalomu alaykum, ${escapeHtmlText(user.name)}!`
         : userLocale === 'en'
-        ? `Hello, ${user.name}!`
-        : `Здравствуйте, ${user.name}!`;
+        ? `Hello, ${escapeHtmlText(user.name)}!`
+        : `Здравствуйте, ${escapeHtmlText(user.name)}!`;
 
       const emailBody = userLocale === 'uz'
         ? 'Siz Ijarauz platformasidagi hisobingiz parolini tiklashni so‘radingiz.'
