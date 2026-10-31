@@ -56,6 +56,7 @@ export async function exportUserDataHandler(request: FastifyRequest, reply: Fast
     passwordHash: _passwordHash,
     refreshTokenHash: _refreshTokenHash,
     twoFactorSecret: _twoFactorSecret,
+    adminTotpSecret: _adminTotpSecret,
     ...safeUserData
   } = user;
 
