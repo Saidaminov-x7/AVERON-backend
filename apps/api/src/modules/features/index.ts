@@ -5,6 +5,7 @@ import { featureFlags } from './feature-flags';
 import { isVisualSearchAvailable } from '../visual-search/runtime';
 import { catalogAiService } from '../commerce/catalog-ai-service';
 import { requireAdminRole } from '../../lib/adminMiddleware';
+import { isTelegramProductPublisherConfigured } from '../commerce/telegram-publisher';
 
 const diagnosticsAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 

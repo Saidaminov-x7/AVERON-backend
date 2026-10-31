@@ -70,7 +70,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'SUPPORT' | 'MODERAT
       findMany: vi.fn(async () => []),
       count: vi.fn(async () => 0),
     },
-    authSession: { findMany: vi.fn(async () => []) },
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })), findMany: vi.fn(async () => []) },
     auditLog: { create: vi.fn(async () => ({})) },
     $transaction: vi.fn(async (operations: Promise<unknown>[]) => Promise.all(operations)),
   } as never);
@@ -88,7 +88,7 @@ describe('admin user detail authorization', () => {
     'provides %s a safe user directory without contact data',
     async (adminRole) => {
       const { app } = await makeApp(adminRole);
-      const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+      const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
       const response = await app.inject({
         method: 'GET',
         url: '/admin/users?search=Visible',
@@ -111,7 +111,7 @@ describe('admin user detail authorization', () => {
 
   it('allows moderators to block users while redacting email from the response', async () => {
     const { app } = await makeApp('MODERATOR');
-    const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
     const response = await app.inject({
       method: 'PATCH',
       url: '/admin/users/moderated-user/block',
@@ -126,7 +126,7 @@ describe('admin user detail authorization', () => {
 
   it('keeps user blocking unavailable to read-only support staff', async () => {
     const { app, update } = await makeApp('SUPPORT');
-    const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
     const response = await app.inject({
       method: 'PATCH',
       url: '/admin/users/moderated-user/block',
@@ -142,7 +142,7 @@ describe('admin user detail authorization', () => {
     'keeps contact details out of quick user search for %s',
     async (adminRole) => {
       const { app, findMany } = await makeApp(adminRole);
-      const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+      const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
       const response = await app.inject({
         method: 'GET',
         url: '/admin/search/quick?type=users&q=Visible',
@@ -163,7 +163,7 @@ describe('admin user detail authorization', () => {
     'does not permit %s to enumerate staff from the user directory',
     async (adminRole) => {
       const { app } = await makeApp(adminRole);
-      const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+      const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
       const response = await app.inject({
         method: 'GET',
         url: '/admin/users?isStaff=true',
@@ -189,7 +189,7 @@ describe('admin user detail authorization', () => {
     'does not expose private user details to %s even when the JWT claims SUPER_ADMIN',
     async (adminRole) => {
       const { app, findUnique } = await makeApp(adminRole);
-      const token = app.jwt.sign({
+      const token = app.jwt.sign({ sessionId: 'test-session',
         userId: 'acting-admin',
         role: 'ADMIN',
         adminRole: 'SUPER_ADMIN',
@@ -214,7 +214,7 @@ describe('admin user detail authorization', () => {
     '/admin/users/private-user-id/sessions',
   ])('does not expose private account activity and session metadata at %s to support', async (url) => {
     const { app } = await makeApp('SUPPORT');
-    const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
 
     const response = await app.inject({
       method: 'GET',
@@ -230,7 +230,7 @@ describe('admin user detail authorization', () => {
     '/admin/users/private-user-id/sessions',
   ])('does not expose private account activity and session metadata at %s to moderators', async (url) => {
     const { app } = await makeApp('MODERATOR');
-    const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
 
     const response = await app.inject({
       method: 'GET',
@@ -245,7 +245,7 @@ describe('admin user detail authorization', () => {
     'allows %s to view account activity and active sessions',
     async (adminRole) => {
       const { app } = await makeApp(adminRole);
-      const token = app.jwt.sign({ userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPPORT' });
+      const token = app.jwt.sign({ sessionId: 'test-session', userId: 'acting-admin', role: 'ADMIN', adminRole: 'SUPPORT' });
 
       for (const url of [
         '/admin/users/private-user-id/activity',

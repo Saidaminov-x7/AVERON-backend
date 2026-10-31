@@ -47,9 +47,11 @@ import { getRuntimeCommitSha } from './lib/runtime-commit';
 import { safeErrorLogFields } from './lib/safe-error-log';
 import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
+import { startTelegramBot } from './lib/telegram';
+import { runScheduledBackup } from './lib/jobs/scheduled-backup';
+import { retryPendingWebhookDeliveries } from './lib/webhookDelivery';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
-import { createIdleConnectionManager } from './lib/idle-connection-manager';
 
 // ─── Инициализация клиентов ───────────────────────────────────────────────────
 
@@ -187,7 +189,11 @@ server.register(fastifyRateLimit, {
 // Confirmed anonymous route scans receive a short Redis-backed restriction.
 // Redis errors fail open, and the restriction never targets account IDs.
 if (config.TRUST_PROXY_ADDRESSES.length > 0) {
-  registerTemporarySourceRestrictionGuard(server, redis);
+  server.addHook('onRequest', async (request, reply) => {
+    if (await isSourceTemporarilyRestricted(redis, request.ip, '/unmatched', server.log)) {
+      return reply.status(429).send({ message: 'Too many requests. Try again later.' });
+    }
+  });
 }
 
 server.register(fastifyJwt, {
@@ -490,65 +496,7 @@ server.addHook('onResponse', async (request, reply) => {
     });
   }
 
-  // Escalate only repeated denials tied to an authenticated principal. Never
-  // block on a single failure or trust client-supplied account/IP identifiers.
-  void monitorAuthenticatedAuthorizationDenial({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    userId: request.user?.userId,
-    route: request.routeOptions.url ?? 'unmatched',
-    statusCode: reply.statusCode,
-  });
 
-  void monitorUnmatchedRouteScan({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    sourceIp: request.ip,
-    routeMatched: Boolean(request.routeOptions.url),
-    routeFingerprint: createHash('sha256')
-      .update(request.url.split('?', 1)[0].slice(0, 512))
-      .digest('hex'),
-    method: request.method,
-    authenticated: Boolean(request.user?.userId),
-    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
-    statusCode: reply.statusCode,
-  });
-
-  void monitorResourceNotFoundProbes({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    sourceIp: request.ip,
-    routeTemplate: request.routeOptions.url,
-    resourceFingerprint: createHash('sha256')
-      .update(JSON.stringify(request.params ?? {}).slice(0, 512))
-      .digest('hex'),
-    method: request.method,
-    authenticated: Boolean(request.user?.userId),
-    trustedClientIp: config.TRUST_PROXY_ADDRESSES.length > 0,
-    statusCode: reply.statusCode,
-  });
-
-  void monitorSuccessfulResourceEnumeration({
-    redis,
-    createAdminNotification: (data) => prisma.adminNotification.create({ data }),
-    warn: (fields, message) => server.log.warn(fields, message),
-    error: (fields, message) => server.log.error(fields, message),
-  }, {
-    method: request.method,
-    statusCode: reply.statusCode,
-    userId: request.user?.userId,
-    routeTemplate: request.routeOptions.url,
-    params: request.params as Record<string, unknown>,
-  });
 });
 
 // ─── Глобальный обработчик ошибок ────────────────────────────────────────────
@@ -619,6 +567,9 @@ registerNotFoundHandler(server, (request) => isSourceTemporarilyRestricted(redis
 
 
 // ─── Запуск и Graceful Shutdown ───────────────────────────────────────────────
+
+let scheduledBackupInterval: ReturnType<typeof setInterval> | undefined;
+let webhookRetryInterval: ReturnType<typeof setInterval> | undefined;
 
 const start = async () => {
   try {
@@ -698,7 +649,6 @@ const start = async () => {
         );
       }
     } catch {}
-    idleConnections.scheduleClose();
   } catch (err) {
     server.log.error(err, 'Failed to start server');
     process.exit(1);
@@ -709,7 +659,10 @@ const shutdown = async (signal: string) => {
   server.log.info(`Received ${signal}, graceful shutdown...`);
   try {
     await server.close();
-    await idleConnections.close();
+    if (scheduledBackupInterval) clearInterval(scheduledBackupInterval);
+    if (webhookRetryInterval) clearInterval(webhookRetryInterval);
+    await prisma.$disconnect();
+    redis.disconnect();
     server.log.info('Server closed gracefully');
     process.exit(0);
   } catch (err) {

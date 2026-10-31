@@ -2,6 +2,8 @@
 
 import { FastifyPluginAsync } from 'fastify';
 import { config } from '../../config';
+import { isSecureRequest } from '../../lib/secure-request';
+import { isTrustedCookieOrigin, createCorsOriginAllowlist } from '../../lib/cors-origins';
 import { registerHandler } from './register';
 import { loginHandler } from './login';
 import { verify2faHandler, resend2faHandler } from './verify-2fa';
@@ -24,6 +26,14 @@ function authRateLimitKey(scope: string, request: import('fastify').FastifyReque
     : {};
   return createAuthRateLimitKey(config.JWT_SECRET, scope, request.ip, fields.map((field) => body[field]));
 }
+
+const requireTrustedCookieOrigin = async (request: import('fastify').FastifyRequest, reply: import('fastify').FastifyReply) => {
+  const origin = request.headers.origin;
+  if ((origin && !isTrustedCookieOrigin(origin, createCorsOriginAllowlist(config.CORS_ORIGINS)))
+      || (!origin && Boolean(request.headers.cookie))) {
+    return reply.status(403).send({ message: 'Untrusted request origin' });
+  }
+};
 
 export const authModule: FastifyPluginAsync = async (server) => {
   server.addHook('onRequest', async (request, reply) => {

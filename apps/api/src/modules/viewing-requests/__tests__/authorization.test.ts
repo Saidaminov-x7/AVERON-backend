@@ -21,6 +21,7 @@ async function makeApp(user: {
   }));
   const update = vi.fn(async () => ({ id: 'request-id', status: 'CONFIRMED' }));
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: { findUnique: vi.fn(async () => ({
       role: user.role,
       adminRole: user.adminRole ?? null,
@@ -31,7 +32,7 @@ async function makeApp(user: {
   } as never);
   await app.register(viewingRequestsModule, { prefix: '/api/v1' });
   await app.ready();
-  const token = app.jwt.sign({ userId: 'current-user', role: 'ADMIN' });
+  const token = app.jwt.sign({ sessionId: 'test-session', userId: 'current-user', role: 'ADMIN' });
   return { app, token, findMany, update };
 }
 

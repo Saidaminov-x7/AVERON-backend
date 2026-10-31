@@ -1,4 +1,4 @@
-import { AdminRole } from '@prisma/client';
+import { AdminRole, Prisma } from '@prisma/client';
 import { FastifyPluginAsync } from 'fastify';
 import { requireAdminRole } from '../../lib/adminMiddleware';
 import { createErrorReportSchema, errorReportFilterSchema } from './schemas';

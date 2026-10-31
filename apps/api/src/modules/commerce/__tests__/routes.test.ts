@@ -16,6 +16,10 @@ vi.mock('../../../lib/adminMiddleware', () => ({
 }));
 
 import { buildManualVariantOptions, commerceModule } from '../index';
+vi.mock('../../integrations/domain-events', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../integrations/domain-events')>()),
+  dispatchDomainEvent: vi.fn(),
+}));
 import { dispatchDomainEvent } from '../../integrations/domain-events';
 
 const mediaId = '00000000-0000-4000-8000-000000000002';
@@ -359,6 +363,10 @@ describe('commerce admin routes', () => {
         titleEn: 'Test jacket',
         country: 'CN',
         sizeChartType: 'SHOES',
+        stock: 9,
+        colors: [{ name: 'Red', hex: '#ff0000' }],
+        sizes: ['S', 'M'],
+        variantStocks: [{ color: 'Red::#FF0000', size: 'S', stock: 2 }, { color: 'Red::#FF0000', size: 'M', stock: 7 }],
         composition: { ru: '100% хлопок', en: '100% cotton' },
         careInstructions: { ru: 'Машинная стирка', en: 'Machine wash' },
         salePriceUzs: 180000,

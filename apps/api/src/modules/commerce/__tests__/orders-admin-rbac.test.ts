@@ -11,6 +11,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
   await app.register(fastifyJwt, { secret: 'c'.repeat(64) });
   const findMany = vi.fn(async () => []);
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: {
       findUnique: vi.fn(async () => ({
         id: 'staff-user',
@@ -24,7 +25,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
   } as never);
   await app.register(commerceOrdersModule, { prefix: '/api/v1' });
   await app.ready();
-  const token = app.jwt.sign({ userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+  const token = app.jwt.sign({ sessionId: 'test-session', userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
   return { app, token, findMany };
 }
 
@@ -33,7 +34,7 @@ afterEach(async () => {
 });
 
 describe('admin order role policy', () => {
-  it('allows support to read orders but rejects order mutations', async () => {
+  it('denies support access to customer order details and mutations', async () => {
     const { app, token, findMany } = await makeApp('SUPPORT');
     const headers = { authorization: `Bearer ${token}` };
     const list = await app.inject({ method: 'GET', url: '/api/v1/admin/orders', headers });
@@ -44,8 +45,8 @@ describe('admin order role policy', () => {
       payload: {},
     });
 
-    expect(list.statusCode).toBe(200);
-    expect(findMany).toHaveBeenCalledOnce();
+    expect(list.statusCode).toBe(403);
+    expect(findMany).not.toHaveBeenCalled();
     expect(update.statusCode).toBe(403);
   });
 

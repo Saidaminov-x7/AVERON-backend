@@ -8,6 +8,7 @@ import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { AdminService } from './service';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
+import { sendSafeErrorReply } from '../../lib/safe-error-response';
 import {
   adminUsersFilterSchema,
   blockUserSchema,
@@ -41,6 +42,9 @@ export const adminModule: FastifyPluginAsync = async (server) => {
   server.get('/users', { preHandler: userDirectoryHandler }, async (request: FastifyRequest, reply: FastifyReply) => {
     const filter = adminUsersFilterSchema.parse(request.query);
     const includePersonalData = request.user.adminRole === AdminRole.SUPER_ADMIN || request.user.adminRole === AdminRole.ADMIN;
+    if (!includePersonalData && !filter.search) {
+      return reply.status(403).send({ message: 'Access denied. A search term is required.' });
+    }
     if (!includePersonalData && (filter.isStaff === true || filter.role === 'ADMIN')) {
       return reply.status(403).send({ message: 'Access denied' });
     }

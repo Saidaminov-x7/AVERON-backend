@@ -7,7 +7,6 @@ import { AIChatService } from './service';
 import { PublicAIService } from './public-service';
 import { sendMessageSchema, createSessionSchema, SendMessageDto, CreateSessionDto } from './schemas';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
-import { toSafeErrorResponse } from '../../lib/safe-error-response';
 
 export const aiChatModule: FastifyPluginAsync = async (server) => {
   const getService = (req: FastifyRequest) => new AIChatService(req.server.prisma, req.server.redis);

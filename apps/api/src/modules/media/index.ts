@@ -8,8 +8,8 @@ import { requireAdminRole } from '../../lib/adminMiddleware';
 import { readSingleMultipartFile } from '../../lib/singleMultipartFile';
 import { MediaService } from './service';
 import { uploadQuerySchema, mediaListQuerySchema } from './schemas';
-import { AdminRole } from '@prisma/client';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
+import { sendSafeErrorReply } from '../../lib/safe-error-response';
 
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const HARD_MAX_PRODUCT_PHOTO_SIZE_BYTES = 25 * 1024 * 1024;

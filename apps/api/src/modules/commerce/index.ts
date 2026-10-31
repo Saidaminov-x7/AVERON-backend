@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
 import { AdminRole, Prisma, ProductPublicationStatus } from '@prisma/client';
 import { requireAdminRole } from '../../lib/adminMiddleware';
@@ -740,12 +740,6 @@ export const commerceModule: FastifyPluginAsync = async (app) => {
       const descriptionsProvided = input.description !== undefined
         || input.descriptionUz !== undefined
         || input.descriptionEn !== undefined;
-      const productAttributesProvided = input.composition !== undefined
-        || input.compositionUz !== undefined
-        || input.compositionEn !== undefined
-        || input.careInstructions !== undefined
-        || input.careInstructionsUz !== undefined
-        || input.careInstructionsEn !== undefined;
       const updatedProduct = await tx.commerceProduct.update({
         where: { id },
         data: {

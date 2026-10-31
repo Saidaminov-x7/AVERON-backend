@@ -11,6 +11,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
   apps.push(app);
   await app.register(fastifyJwt, { secret: 'b'.repeat(64) });
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: {
       findUnique: vi.fn(async () => ({
         id: 'staff-user',
@@ -21,6 +22,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
       })),
     },
     commerceProduct: {
+      fields: { compareAtPriceUzs: 'mock-field-ref' },
       findMany: vi.fn(async () => []),
       count: vi.fn(async () => 0),
     },
@@ -39,7 +41,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
   await app.register(commerceModule, { prefix: '/commerce' });
   await app.register(productAiModule, { prefix: '/commerce' });
   await app.ready();
-  const token = app.jwt.sign({ userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+  const token = app.jwt.sign({ sessionId: 'test-session', userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
   return { app, token };
 }
 

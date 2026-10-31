@@ -98,18 +98,14 @@ describe('commerce product country validation', () => {
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
       country: 'CN',
-      composition: 'Хлопок 100%',
-      compositionUz: '100% paxta',
-      compositionEn: '100% cotton',
-      careInstructions: 'Машинная стирка',
-      careInstructionsUz: 'Mashinada yuvish',
-      careInstructionsEn: 'Machine wash',
+      composition: { ru: 'Хлопок 100%', uz: '100% paxta', en: '100% cotton' },
+      careInstructions: { ru: 'Машинная стирка', uz: 'Mashinada yuvish', en: 'Machine wash' },
       colors: [{ name: 'Тёмно-синий', hex: '#000080' }],
     }).success).toBe(true);
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
       country: 'CN',
-      composition: 'x'.repeat(2001),
+      composition: { ru: 'x'.repeat(4001) },
     }).success).toBe(false);
     expect(createManualProductSchema.safeParse({
       ...manualProduct,
@@ -117,7 +113,7 @@ describe('commerce product country validation', () => {
       colors: [{ name: 'Цвет 1', hex: '#000080' }],
     }).success).toBe(false);
     expect(updateManualProductSchema.safeParse({ colors: [{ name: 'Color 2', hex: '#000080' }] }).success).toBe(false);
-    expect(updateManualProductSchema.safeParse({ compositionEn: '' }).success).toBe(true);
+    expect(updateManualProductSchema.safeParse({ composition: { en: '' } }).success).toBe(true);
   });
 
   it('allows a manual product without sourceUrl and requires localized titles plus at least one photo', () => {

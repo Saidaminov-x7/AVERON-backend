@@ -12,6 +12,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
   const findMany = vi.fn(async () => []);
   const count = vi.fn(async () => 0);
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: {
       findUnique: vi.fn(async () => ({
         id: 'staff-user',
@@ -26,7 +27,7 @@ async function makeApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPPO
   } as never);
   await app.register(errorReportsModule, { prefix: '/error-reports' });
   await app.ready();
-  const token = app.jwt.sign({ userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+  const token = app.jwt.sign({ sessionId: 'test-session', userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
   return { app, token, findMany };
 }
 

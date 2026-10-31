@@ -6,7 +6,7 @@ import { requireAdminRole } from '../../lib/adminMiddleware';
 import { authMiddleware } from '../../lib/authMiddleware';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
 
-const orderReadHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.SUPPORT)];
+const orderReadHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 const orderWriteHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 
 const statusSchema = z.object({

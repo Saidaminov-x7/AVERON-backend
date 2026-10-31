@@ -17,6 +17,7 @@ async function buildApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPP
   const findMany = vi.fn(async () => []);
   const count = vi.fn(async () => 0);
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: {
       findUnique: vi.fn(async () => ({
         id: 'staff-user',
@@ -33,7 +34,7 @@ async function buildApp(adminRole: 'SUPER_ADMIN' | 'ADMIN' | 'MODERATOR' | 'SUPP
     productFavorite: { count },
   } as never);
   await app.register(analyticsModule, { prefix: '/analytics' });
-  const token = app.jwt.sign({ userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+  const token = app.jwt.sign({ sessionId: 'test-session', userId: 'staff-user', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
   return { app, token, groupBy, findMany, count };
 }
 

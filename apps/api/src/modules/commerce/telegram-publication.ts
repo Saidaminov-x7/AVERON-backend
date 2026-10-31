@@ -6,7 +6,7 @@ import { requireAdminRole } from '../../lib/adminMiddleware';
 import { safeErrorLogFields } from '../../lib/safe-error-log';
 import { config } from '../../config';
 import { featureFlags } from '../features/feature-flags';
-import { buildTelegramCard, sendTelegramCard, TelegramPublishError, type TelegramCardProduct } from './telegram-publisher';
+import { buildTelegramCard, sendTelegramCard, TelegramPublishError, isTelegramProductPublisherConfigured, type TelegramCardProduct } from './telegram-publisher';
 
 const telegramAdminHandler = [requireAdminRole(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)];
 import { domainEventBus } from '../integrations/domain-events';

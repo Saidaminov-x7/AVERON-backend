@@ -316,6 +316,79 @@ export const analyticsModule: FastifyPluginAsync = async (server) => {
     });
   });
 
+  // First-time visitors and first paid orders in the selected UTC reporting window.
+  server.get('/admin/journey', { preHandler: analyticsAdminHandler }, async (request, reply) => {
+    const parsed = dateRangeQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
+    const { startDate, endDate } = getDateRange(parsed.data);
+    if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || startDate > endDate) {
+      return reply.status(400).send({ code: 'INVALID_DATE_RANGE' });
+    }
+    const dayMs = 24 * 60 * 60 * 1000;
+    const firstVisits = await server.prisma.visitLog.groupBy({
+      by: ['deviceId'],
+      where: { createdAt: { lte: endDate } },
+      _min: { createdAt: true },
+    });
+    const cohorts = new Map<string, Date>();
+    for (const visit of firstVisits) {
+      if (visit._min.createdAt && visit._min.createdAt >= startDate) {
+        cohorts.set(visit.deviceId, visit._min.createdAt);
+      }
+    }
+    const matureVisitors = [...cohorts.values()].filter((date) => endDate.getTime() - date.getTime() >= 3 * dayMs).length;
+    const events = await server.prisma.commerceAnalyticsEvent.findMany({
+      where: { eventName: 'purchase', deviceId: { in: [...cohorts.keys()] }, orderId: { not: null } },
+      select: { deviceId: true, orderId: true },
+    });
+    const orderIds = events.map((event) => event.orderId).filter((id): id is string => Boolean(id));
+    const orders = orderIds.length
+      ? await server.prisma.commerceOrder.findMany({
+        where: { id: { in: orderIds }, status: { in: [...PAID_ORDER_STATUSES] } },
+        select: { id: true, createdAt: true, totalRevenue: true, refundAmount: true, items: { select: { quantity: true } } },
+      })
+      : [];
+    const byOrder = new Map(orders.map((order) => [order.id, order]));
+    const firstPurchase = new Map<string, { day: number; orderId: string; units: number; revenueUzs: number }>();
+    for (const event of events) {
+      const firstVisit = cohorts.get(event.deviceId);
+      const order = event.orderId ? byOrder.get(event.orderId) : null;
+      if (!firstVisit || !order || order.createdAt < firstVisit || order.createdAt > endDate) continue;
+      const day = Math.floor((order.createdAt.getTime() - firstVisit.getTime()) / dayMs);
+      const existing = firstPurchase.get(event.deviceId);
+      if (existing && (day > existing.day || (day === existing.day && order.id >= existing.orderId))) continue;
+      firstPurchase.set(event.deviceId, {
+        day,
+        orderId: order.id,
+        units: order.items.reduce((sum, item) => sum + item.quantity, 0),
+        revenueUzs: Math.max(0, asNumber(order.totalRevenue) - asNumber(order.refundAmount)),
+      });
+    }
+    const daily = new Map<number, { day: string; purchases: number; units: number; revenueUzs: number }>();
+    for (const purchase of firstPurchase.values()) {
+      const current = daily.get(purchase.day) ?? { day: String(purchase.day), purchases: 0, units: 0, revenueUzs: 0 };
+      current.purchases += 1;
+      current.units += purchase.units;
+      current.revenueUzs += purchase.revenueUzs;
+      daily.set(purchase.day, current);
+    }
+    const buyers = firstPurchase.size;
+    const firstTimeVisitors = cohorts.size;
+    const purchases = [...firstPurchase.values()];
+    const day3Buyers = purchases.filter((purchase) => purchase.day <= 3).length;
+    return reply.send({
+      firstTimeVisitors,
+      buyers,
+      conversionRate: firstTimeVisitors ? buyers / firstTimeVisitors : 0,
+      avgDaysToFirstPurchase: buyers ? purchases.reduce((sum, purchase) => sum + purchase.day, 0) / buyers : 0,
+      avgProductsInFirstOrder: buyers ? purchases.reduce((sum, purchase) => sum + purchase.units, 0) / buyers : 0,
+      matureVisitors,
+      day3Buyers,
+      day3ConversionRate: matureVisitors ? day3Buyers / matureVisitors : 0,
+      daily: Array.from({ length: Math.max(0, ...daily.keys()) + 1 }, (_, day) =>
+        daily.get(day) ?? { day: String(day), purchases: 0, units: 0, revenueUzs: 0 }),
+    });
+  });
   server.get('/admin/export', { preHandler: analyticsAdminHandler }, async (request, reply) => {
     const parsed = exportQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ code: 'INVALID_EXPORT_QUERY' });

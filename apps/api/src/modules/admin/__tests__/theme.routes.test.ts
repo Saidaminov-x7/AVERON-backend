@@ -13,6 +13,7 @@ async function makeApp(user: Record<string, unknown> | null) {
     secret: globalThis.crypto.randomUUID().replaceAll('-', '').repeat(2),
   });
   app.decorate('prisma', {
+    authSession: { findFirst: vi.fn(async () => ({ id: 'test-session' })) },
     user: { findUnique: vi.fn(async () => user) },
     adminThemeSettings: {
       upsert: vi.fn(async () => ({ id: 'singleton', primaryColor: '#2563eb' })),
@@ -55,7 +56,7 @@ describe('admin theme routes authorization', () => {
       isBlocked: false,
       isDeleted: false,
     });
-    const token = app.jwt.sign({ userId, role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId, role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
 
     const response = await app.inject({
       method: 'GET',
@@ -88,7 +89,7 @@ describe('admin theme routes authorization', () => {
       adminRole: 'SUPER_ADMIN',
       ...accountState,
     });
-    const token = app.jwt.sign({ userId: 'inactive-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'inactive-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
 
     for (const [method, url] of [
       ['GET', '/admin/admin-theme'],
@@ -116,7 +117,7 @@ describe('admin theme routes authorization', () => {
       isBlocked: false,
       isDeleted: false,
     });
-    const token = app.jwt.sign({ userId: 'customer-1', role: 'CUSTOMER' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'customer-1', role: 'CUSTOMER' });
 
     const response = await app.inject({
       method,
@@ -139,7 +140,7 @@ describe('admin theme routes authorization', () => {
       isBlocked: false,
       isDeleted: false,
     });
-    const token = app.jwt.sign({ userId: 'limited-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'limited-admin', role: 'ADMIN', adminRole: 'SUPER_ADMIN' });
 
     const response = await app.inject({
       method,
@@ -176,7 +177,7 @@ describe('admin profile routes authorization', () => {
       isBlocked: false,
       isDeleted: false,
     });
-    const token = app.jwt.sign({ userId: 'customer-1', role: 'CUSTOMER' });
+    const token = app.jwt.sign({ sessionId: 'test-session', userId: 'customer-1', role: 'CUSTOMER' });
 
     const response = await app.inject({
       method,
