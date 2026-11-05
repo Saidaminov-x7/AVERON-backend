@@ -113,7 +113,7 @@ export const updateSiteSettingsSchema = z.object({
     })
   ).optional().nullable(),
   maintenancePasswordEnabled: z.boolean().optional(),
-  maintenanceBypassPassword: z.string().max(100).optional().nullable(),
+  maintenanceBypassPassword: z.string().trim().min(12).max(100).optional().nullable(),
   mobilePinchZoomEnabled: z.boolean().optional(),
 });
 

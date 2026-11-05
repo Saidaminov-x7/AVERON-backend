@@ -2,7 +2,7 @@
 # Multi-stage production build for the AVERON backend monorepo
 
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 # Устанавливаем системные зависимости для sharp и argon2
 RUN apk add --no-cache python3 make g++ libc6-compat openssl
@@ -31,7 +31,7 @@ COPY apps/api/ ./apps/api/
 RUN pnpm --filter api build
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 RUN apk add --no-cache libc6-compat openssl dumb-init
 

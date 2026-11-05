@@ -42,7 +42,6 @@ const SITE_SETTINGS_ADMIN_SELECT = {
   webPushEnabled: true,
   oneIdAuthEnabled: true,
   openTelemetryEnabled: true,
-  maintenanceBypassPassword: true,
   maintenancePasswordEnabled: true,
   mobilePinchZoomEnabled: true,
   updatedAt: true,
@@ -1164,11 +1163,28 @@ export class AdminService {
   }
 
   async updateSiteSettings(dto: UpdateSiteSettingsDto, adminId: string, ip?: string) {
-    const { navLinks, ...restDto } = dto;
+    const { navLinks, maintenanceBypassPassword, maintenancePasswordEnabled, ...restDto } = dto;
+    const normalizedPassword = maintenanceBypassPassword?.trim();
+    if (maintenancePasswordEnabled === true && !normalizedPassword) {
+      const existingSettings = await this.prisma.siteSettings.findUnique({
+        where: { id: 'singleton' },
+        select: { maintenanceBypassPassword: true },
+      });
+      if (!existingSettings?.maintenanceBypassPassword) {
+        throw Object.assign(new Error('MAINTENANCE_PASSWORD_REQUIRED'), { statusCode: 400 });
+      }
+    }
+    const hashedPassword = normalizedPassword ? await argon2.hash(normalizedPassword) : null;
+
     const updateData: Prisma.SiteSettingsUncheckedUpdateInput = {
       ...restDto,
       updatedById: adminId,
     };
+    if (hashedPassword) {
+      updateData.maintenanceBypassPassword = hashedPassword;
+    } else if (maintenancePasswordEnabled === false) {
+      updateData.maintenanceBypassPassword = null;
+    }
     if (navLinks !== undefined) {
       updateData.navLinks = navLinks === null ? Prisma.DbNull : navLinks;
     }
@@ -1182,6 +1198,8 @@ export class AdminService {
       autoModerationEnabled: dto.autoModerationEnabled ?? false,
       maxProductPhotos: dto.maxProductPhotos ?? 15,
       maxProductPhotoSizeMb: dto.maxProductPhotoSizeMb ?? 10,
+      maintenancePasswordEnabled: maintenancePasswordEnabled ?? false,
+      maintenanceBypassPassword: hashedPassword,
       updatedById: adminId,
     };
     if (navLinks !== undefined && navLinks !== null) {
@@ -1195,11 +1213,12 @@ export class AdminService {
       select: SITE_SETTINGS_ADMIN_SELECT,
     });
 
+    const { maintenanceBypassPassword: _maintenanceBypassPassword, ...auditMeta } = dto;
     await this.log({
       adminId,
       action: 'SITE_SETTINGS_UPDATED',
       resource: 'settings',
-      meta: dto,
+      meta: auditMeta,
       ip,
       userAgent: 'admin-panel',
     });

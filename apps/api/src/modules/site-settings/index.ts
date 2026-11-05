@@ -2,6 +2,9 @@
 // Публичный эндпоинт настроек сайта — без авторизации, кэшируется в Redis
 
 import { FastifyPluginAsync } from 'fastify';
+import argon2 from 'argon2';
+import { timingSafeEqual } from 'node:crypto';
+import { z } from 'zod';
 
 const CACHE_KEY = 'site:settings:public';
 const CACHE_TTL = 30; // 30 секунд — короткий TTL для быстрого отклика на изменения
@@ -87,25 +90,44 @@ export const siteSettingsPublicModule: FastifyPluginAsync = async (server) => {
    * Возвращает { allowed: true } если пароль верный.
    */
   server.post<{ Body: { password: string } }>('/public/check-bypass', async (request, reply) => {
-    const { password } = request.body || {};
-    if (!password) {
+    const body = z.object({ password: z.string().trim().min(1).max(100) }).strict().safeParse(request.body);
+    if (!body.success) {
       return reply.status(400).send({ message: 'Password is required' });
     }
 
+    const { password } = body.data;
     const settings = await server.prisma.siteSettings.findUnique({
       where: { id: 'singleton' },
-      select: { maintenanceBypassPassword: true },
+      select: { maintenanceBypassPassword: true, maintenancePasswordEnabled: true },
     });
 
     const bypassPassword = settings?.maintenanceBypassPassword;
-    if (!bypassPassword) {
-      return reply.status(404).send({ message: 'No bypass password configured' });
+    if (!settings?.maintenancePasswordEnabled || !bypassPassword) {
+      return reply.status(404).send({ allowed: false, message: 'No bypass password configured' });
     }
 
-    if (password === bypassPassword) {
-      return { allowed: true };
+    let passwordMatches = false;
+    if (bypassPassword.startsWith('$argon2')) {
+      try {
+        passwordMatches = await argon2.verify(bypassPassword, password);
+      } catch {
+        passwordMatches = false;
+      }
+    } else {
+      const submitted = Buffer.from(password, 'utf8');
+      const legacy = Buffer.from(bypassPassword, 'utf8');
+      passwordMatches = submitted.length === legacy.length && timingSafeEqual(submitted, legacy);
+      if (passwordMatches) {
+        const upgradedHash = await argon2.hash(bypassPassword);
+        const upgraded = await server.prisma.siteSettings.updateMany({
+          where: { id: 'singleton', maintenanceBypassPassword: bypassPassword },
+          data: { maintenanceBypassPassword: upgradedHash },
+        });
+        if (upgraded.count !== 1) passwordMatches = false;
+      }
     }
 
+    if (passwordMatches) return { allowed: true };
     return reply.status(401).send({ allowed: false, message: 'Неверный пароль' });
   });
 
