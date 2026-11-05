@@ -438,13 +438,9 @@ export const adminModule: FastifyPluginAsync = async (server) => {
             take: 10000,
           });
 
-          const headers = ['ID', 'Device ID', 'Day Key', 'IP Address', 'User Agent', 'Page', 'Created At'];
+          const headers = ['Date', 'Page', 'Created At'];
           const rows = visits.map(v => [
-            v.id,
-            v.deviceId,
             v.dayKey,
-            v.ip,
-            v.userAgent?.substring(0, 100) || '',
             v.path,
             v.createdAt.toISOString(),
           ]);
@@ -674,6 +670,12 @@ export const adminModule: FastifyPluginAsync = async (server) => {
     const restored = await request.server.prisma.user.update({
       where: { id },
       data: { isDeleted: false, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        isDeleted: true,
+      },
     });
     return reply.send({ success: true, user: restored });
   });

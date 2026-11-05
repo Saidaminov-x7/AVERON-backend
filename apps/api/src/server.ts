@@ -252,7 +252,6 @@ if (config.NODE_ENV !== 'production') {
   });
 }
 
-import { registerErrorHandler } from './lib/errorHandler';
 import { v2 as cloudinary } from 'cloudinary';
 
 // ─── Декораторы DI ────────────────────────────────────────────────────────────
@@ -278,9 +277,6 @@ server.addHook('onRequest', async (request, reply) => {
     });
   }
 });
-
-// ─── Единый обработчик ошибок ────────────────────────────────────────────────
-registerErrorHandler(server);
 
 // ─── Маршруты модулей ─────────────────────────────────────────────────────────
 
