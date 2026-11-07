@@ -47,6 +47,7 @@ import { getRuntimeCommitSha } from './lib/runtime-commit';
 import { safeErrorLogFields } from './lib/safe-error-log';
 import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
+import { createIdleConnectionManager } from './lib/idle-connection-manager';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
@@ -67,9 +68,44 @@ prisma.$on('query', (e) => {
 });
 
 const redis = new Redis(config.REDIS_URL, {
+  lazyConnect: true,
   maxRetriesPerRequest: 3,
   enableReadyCheck: true,
   retryStrategy: (times) => Math.min(times * 50, 2000),
+});
+
+const connectionIdleMs = 30_000;
+const prismaIdleManager = createIdleConnectionManager({
+  idleMs: connectionIdleMs,
+  connect: () => prisma.$connect(),
+  disconnect: () => prisma.$disconnect(),
+  onError: (error) => server.log.warn(safeErrorLogFields(error), '[Database] Idle disconnect failed'),
+});
+const redisIdleManager = createIdleConnectionManager({
+  idleMs: connectionIdleMs,
+  connect: async () => {
+    if (redis.status !== 'ready' && redis.status !== 'connect' && redis.status !== 'connecting') {
+      await redis.connect();
+    }
+  },
+  disconnect: async () => {
+    if (redis.status === 'ready' || redis.status === 'connect' || redis.status === 'connecting') {
+      redis.disconnect();
+    }
+  },
+  onError: (error) => server.log.warn(safeErrorLogFields(error), '[Redis] Idle disconnect failed'),
+});
+
+// Close idle connections so Railway Serverless can detect inactivity. Prisma
+// middleware scopes database use to individual queries; Fastify hooks do the
+// same for Redis, which the global rate limiter uses on every request.
+prisma.$use(async (_params, next) => {
+  await prismaIdleManager.acquire();
+  try {
+    return await next(_params);
+  } finally {
+    prismaIdleManager.release();
+  }
 });
 
 // Убедимся, что директория для хранения файлов существует
@@ -125,6 +161,10 @@ const isAdaptiveRateLimitEnabled = createAdaptiveRateLimitCache(
 
 redis.on('error', (err) => {
   server.log.error(safeErrorLogFields(err), '[Redis] Connection error');
+});
+
+server.addHook('onRequest', async () => {
+  await redisIdleManager.acquire();
 });
 
 // ─── Плагины безопасности ─────────────────────────────────────────────────────
@@ -492,6 +532,10 @@ server.addHook('onResponse', async (request, reply) => {
 
 });
 
+server.addHook('onResponse', async () => {
+  redisIdleManager.release();
+});
+
 // ─── Глобальный обработчик ошибок ────────────────────────────────────────────
 
 server.setErrorHandler((error, request, reply) => {
@@ -587,6 +631,10 @@ const start = async () => {
 
     await server.listen({ port: config.PORT, host: '0.0.0.0' });
     server.log.info(`✅ Server listening on port ${config.PORT} (${config.NODE_ENV})`);
+    // The startup admin sync may have opened Prisma; let both clients close
+    // after the same quiet grace period used for request activity.
+    prismaIdleManager.scheduleClose();
+    redisIdleManager.scheduleClose();
 
     // Предупреждение о включённых флагах Категории 2 (без полной бэкенд-интеграции)
     try {
@@ -626,6 +674,7 @@ const shutdown = async (signal: string) => {
   server.log.info(`Received ${signal}, graceful shutdown...`);
   try {
     await server.close();
+    await Promise.all([prismaIdleManager.close(), redisIdleManager.close()]);
     await prisma.$disconnect();
     redis.disconnect();
     server.log.info('Server closed gracefully');

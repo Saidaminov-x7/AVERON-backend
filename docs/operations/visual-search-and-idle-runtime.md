@@ -23,7 +23,7 @@ Dedicated commands run the Telegram polling worker (`pnpm --filter api telegram:
 
 <!-- Выключена до продакшена. -->
 
-Production snapshot (2026-11-07): Railway has an always-on Telegram worker. The API sleep setting is enabled, but its live deployment still starts background work; deploy this change before expecting it to sleep. The maintenance cron is intentionally disabled until production. When it is re-enabled, it needs the same database/cache references and should run `pnpm --filter api maintenance:once`; Railway's minimum cron interval is five minutes. Keep PostgreSQL and Redis always on.
+Production snapshot (2026-11-07): Railway has an always-on Telegram worker. The API sleep setting is enabled. Railway also requires five minutes without outbound traffic; this API therefore closes idle PostgreSQL and Redis connections after a 30-second grace period, then reconnects on the next request. The maintenance cron is intentionally disabled until production. When it is re-enabled, it needs the same database/cache references and should run `pnpm --filter api maintenance:once`; Railway's minimum cron interval is five minutes. Keep PostgreSQL and Redis always on.
 
 After deploying this change, smoke-test admin Telegram 2FA, webhook retry delivery when maintenance is re-enabled, checkout, login, and health endpoints. Verify that the API reaches `SLEEPING` after at least ten quiet minutes and that a catalog/API request wakes it successfully; repeat after a cold start and check logs for connection failures. Do not claim the service sleeps until this lifecycle is observed live. Frontend server-side requests and direct `GET /` visitors or bots can wake the API; Railway sleep is based on inbound traffic, not whether a person is visibly browsing.
 
