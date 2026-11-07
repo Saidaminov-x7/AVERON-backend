@@ -47,9 +47,6 @@ import { getRuntimeCommitSha } from './lib/runtime-commit';
 import { safeErrorLogFields } from './lib/safe-error-log';
 import { safeHttpErrorMessage } from './lib/safe-error-response';
 import { isSourceTemporarilyRestricted } from './lib/temporary-source-restriction';
-import { startTelegramBot } from './lib/telegram';
-import { runScheduledBackup } from './lib/jobs/scheduled-backup';
-import { retryPendingWebhookDeliveries } from './lib/webhookDelivery';
 import { registerN8nEventPublisher } from './modules/integrations/n8n-publisher';
 import { registerTelegramProductPublisher } from './modules/commerce/telegram-publication';
 
@@ -564,9 +561,6 @@ registerNotFoundHandler(server, (request) => isSourceTemporarilyRestricted(redis
 
 // ─── Запуск и Graceful Shutdown ───────────────────────────────────────────────
 
-let scheduledBackupInterval: ReturnType<typeof setInterval> | undefined;
-let webhookRetryInterval: ReturnType<typeof setInterval> | undefined;
-
 const start = async () => {
   try {
     const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
@@ -593,29 +587,6 @@ const start = async () => {
 
     await server.listen({ port: config.PORT, host: '0.0.0.0' });
     server.log.info(`✅ Server listening on port ${config.PORT} (${config.NODE_ENV})`);
-
-    // Запускаем Telegram-бота для 2FA
-    startTelegramBot(redis, server.log);
-
-    // Первичная очистка истёкших промо-акций сразу при старте
-    // Первичная запись снапшота целостности базы данных
-    runScheduledBackup(prisma, server.log).catch((err) => {
-      server.log.error(safeErrorLogFields(err), '[Backup] Error during startup runScheduledBackup check');
-    });
-
-    // Периодическая проверка целостности и снапшот данных (каждые 24 часа)
-    scheduledBackupInterval = setInterval(() => {
-      runScheduledBackup(prisma, server.log).catch((err) => {
-        server.log.error(safeErrorLogFields(err), '[Backup] Error in runScheduledBackup interval');
-      });
-    }, 24 * 60 * 60 * 1000);
-
-    // Периодический воркер повторной доставки вебхуков (каждые 60 секунд)
-    webhookRetryInterval = setInterval(() => {
-      retryPendingWebhookDeliveries(prisma, server.log).catch((err) => {
-        server.log.error(safeErrorLogFields(err), '[Webhook] Error in retryPendingWebhookDeliveries');
-      });
-    }, 60 * 1000);
 
     // Предупреждение о включённых флагах Категории 2 (без полной бэкенд-интеграции)
     try {
@@ -655,8 +626,6 @@ const shutdown = async (signal: string) => {
   server.log.info(`Received ${signal}, graceful shutdown...`);
   try {
     await server.close();
-    if (scheduledBackupInterval) clearInterval(scheduledBackupInterval);
-    if (webhookRetryInterval) clearInterval(webhookRetryInterval);
     await prisma.$disconnect();
     redis.disconnect();
     server.log.info('Server closed gracefully');
